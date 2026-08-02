@@ -243,14 +243,12 @@ def require_schema(con):
     # before the separate captaincy dataset has been imported.
     ensure_captain_table(con)
     ensure_rising_star_table(con)
-    ensure_family_draft_table(con)
 
 
 def solve(con, constraints, limit=25, order="obscurity"):
     """Intersect constraints and return ranked players."""
     ensure_captain_table(con)
     ensure_rising_star_table(con)
-    ensure_family_draft_table(con)
     return core.solve(con, constraints, SCHEMA, limit=limit, order=order)
 
 
@@ -258,7 +256,6 @@ def count(con, constraints):
     """How many players satisfy every constraint."""
     ensure_captain_table(con)
     ensure_rising_star_table(con)
-    ensure_family_draft_table(con)
     return core.count(con, constraints, SCHEMA)
 
 
@@ -266,7 +263,6 @@ def square(con, constraints, order="obscurity"):
     """Eligible count plus the single best answer, for a prefilled board."""
     ensure_captain_table(con)
     ensure_rising_star_table(con)
-    ensure_family_draft_table(con)
     return core.square(con, constraints, SCHEMA, order=order)
 
 
@@ -330,22 +326,3 @@ from rising_star import (  # noqa: E402
 
 BUILDERS.update(RISING_STAR_BUILDERS)
 RISING_STAR_BUILDER_NAMES = set(RISING_STAR_BUILDERS)
-
-
-# Optional Wikipedia AFL father-son / AFLW father-daughter relationship layer.
-# Both people are linked independently; only trusted AFL links become answers.
-from family_draft import (  # noqa: E402
-    FAMILY_DRAFT_BUILDERS,
-    ensure_family_draft_table,
-    family_draft_available,
-    family_draft_count,
-    father_son_selection,
-    father_also_played_afl,
-    father_played_for,
-    parent_child_pair,
-    child_of_father_id,
-    child_of_father_name,
-)
-
-BUILDERS.update(FAMILY_DRAFT_BUILDERS)
-FAMILY_DRAFT_BUILDER_NAMES = set(FAMILY_DRAFT_BUILDERS)

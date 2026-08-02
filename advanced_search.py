@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 import core
-import query_filters_family as Q
+import query_filters as Q
 
 
 def _db_revision(db):
@@ -49,7 +49,6 @@ EXAMPLES = [
     'game.disposals>=30 game.goals>=3 postseason:true',
     'season.goals>=50 debut:1980..1999 sort:score limit:50',
     'award:brownlow-medal drafted_by:Carlton',
-    'father_son:true father_club:Collingwood games>=50',
 ]
 
 
@@ -57,7 +56,7 @@ def search_page(sport, con):
     """Render the reusable, URL-addressable player search page."""
     st.markdown("# Advanced Search")
     st.caption(
-        "Combine player, team, era, captaincy, family, match-stat, award and draft "
+        "Combine player, team, era, captaincy, match-stat, award and draft "
         "filters. Values are parameterised; only known fields and statistics "
         "can become SQL."
     )
@@ -83,7 +82,7 @@ def search_page(sport, con):
             "Repeat `club:` for AND. Use `club_any:` for OR. Supported stat "
             "scopes are `game.`, `season.`, `career.` and `avg.`. URL links "
             "may use `q=` or structured parameters such as `club=`, "
-            "`captain=1`, `father_son=1`, `father_club=`, `games_min=` and "
+            "`captain=1`, `captain_from=`/`captain_to=`, `games_min=` and "
             "`game_disposals_min=`. All game-scoped conditions apply to "
             "the same match."
         )
@@ -95,8 +94,7 @@ def search_page(sport, con):
     try:
         # Optional layers may provide connection-local placeholder tables.
         for helper_name in ("ensure_captain_table",
-                            "ensure_rising_star_table",
-                            "ensure_family_draft_table"):
+                            "ensure_rising_star_table"):
             ensure = getattr(sport.C, helper_name, None)
             if ensure:
                 ensure(con)
