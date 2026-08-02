@@ -42,6 +42,10 @@ class ClubSource:
         )
 
     @property
+    def afltables_all_games_url(self) -> str:
+        return f"https://afltables.com/afl/teams/{self.afltables_slug}/allgames.html"
+
+    @property
     def afltables_all_time_url(self) -> str:
         return (
             "https://afltables.com/afl/stats/alltime/"
@@ -71,11 +75,40 @@ CLUBS: tuple[ClubSource, ...] = (
 )
 
 CLUB_BY_ID = {club.club_id: club for club in CLUBS}
+
+# Source-only identities. These are NOT current clubs and never appear in the
+# Club Explorer or the 18-club catalogue: they exist so that All Games pages
+# cover the whole match history. Brisbane Bears and Fitzroy stay separate from
+# Brisbane Lions. South Melbourne and Footscray are already covered by the
+# Sydney and Western Bulldogs pages, so they are not repeated here.
+HISTORICAL_SOURCES: tuple[ClubSource, ...] = (
+    ClubSource("brisbane_bears", "Brisbane Bears", "Brisbane Bears",
+               "brisbaneb", "Brisbane Bears", "BB"),
+    ClubSource("fitzroy", "Fitzroy", "Fitzroy Football Club",
+               "fitzroy", "Fitzroy", "FITZ"),
+    ClubSource("university", "University", "University Football Club",
+               "university", "University", "UNI"),
+)
+
+ALL_GAMES_SOURCES: tuple[ClubSource, ...] = CLUBS + HISTORICAL_SOURCES
+ALL_GAMES_BY_ID = {club.club_id: club for club in ALL_GAMES_SOURCES}
+
+
+def all_games_clubs(club_ids: list[str] | None = None) -> list[ClubSource]:
+    """Clubs whose All Games pages are required for complete match coverage."""
+    if not club_ids:
+        return list(ALL_GAMES_SOURCES)
+    unknown = sorted(set(club_ids) - set(ALL_GAMES_BY_ID))
+    if unknown:
+        raise ValueError(f"unknown club id(s): {', '.join(unknown)}")
+    return [ALL_GAMES_BY_ID[cid] for cid in club_ids]
+
 SOURCE_FILES = {
     "wikipedia": "wikipedia.json",
     "afltables_player_totals": "afltables_player_totals.html",
     "afltables_records": "afltables_records.html",
     "afltables_all_time": "afltables_all_time_players.html",
+    "afltables_all_games": "afltables_all_games.html",
 }
 
 STAT_HEADERS = {

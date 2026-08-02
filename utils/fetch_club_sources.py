@@ -137,6 +137,7 @@ def validate_afltables(data: bytes, club_name: str, source_type: str) -> None:
         "afltables_player_totals": "player totals",
         "afltables_records": "most ",
         "afltables_all_time": "all time player list",
+        "afltables_all_games": "all games",
     }[source_type]
     if required not in probe:
         raise ValueError(f"{source_type}: expected marker {required!r} not found")
@@ -205,6 +206,7 @@ def source_urls(club) -> list[tuple[str, str]]:
         ("afltables_player_totals", club.afltables_player_totals_url),
         ("afltables_records", club.afltables_records_url),
         ("afltables_all_time", club.afltables_all_time_url),
+        ("afltables_all_games", club.afltables_all_games_url),
     ]
 
 
