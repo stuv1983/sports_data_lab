@@ -240,7 +240,9 @@ AFL = Sport(
     schema=AFL_SCHEMA,
     vocab=Vocab(),
     theme="afl",
-    missing_db_hint="No gridley.db found. Run `python build_db.py` first.",
+    missing_db_hint=("No AFL database found at "
+                     f"{sport_db('afl', 'gridley.db')}. "
+                     "Run `python build_db.py` first."),
     empty_hint=("Nothing satisfies both. Note that disposals, marks and "
                 "tackles are not recorded before 1965 — no earlier player "
                 "can have them."),

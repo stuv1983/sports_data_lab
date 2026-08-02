@@ -23,6 +23,9 @@ import os
 import sys
 import sqlite3
 import urllib.request
+from pathlib import Path
+
+from data_paths import default_db
 
 DATA_URL = (
     "https://github.com/jimmyday12/fitzRoy_data/raw/main/"
@@ -290,6 +293,19 @@ def build(db_path, refresh=False, skip_matches=False):
         else:
             derive_matches.run(db_path)
 
+    # The ladder built above orders on points and percentage alone, which is
+    # ambiguous when both tie, and it does not carry the club_path_* columns.
+    # repair_database.py is the canonical fix and is idempotent, so run it here
+    # rather than leaving it as a step someone has to remember -- forgetting it
+    # produces a database that looks complete but has the wrong wooden spoons.
+    print()
+    try:
+        import repair_database
+    except ImportError:
+        print("repair_database.py not found -- ladder repair not applied.")
+    else:
+        repair_database.run(db_path)
+
 
 def obscurity_score(p):
     """
@@ -318,65 +334,102 @@ def obscurity_score(p):
              + 0.10 * finals + 0.15 * era)
     return score.round(1)
 
+# ---------------------------------------------------------------- layers
+
+def refresh_layers(db_path, verbose=True):
+    """Re-link every optional import layer against a freshly built database.
+
+    A rebuild reassigns player_id values, so each layer that resolves names to
+    ids has to be re-run afterwards or it silently points at the wrong people.
+
+    Every step is individually tolerant: a layer whose source files are not
+    present locally is skipped with a note rather than failing the build. What
+    is NOT tolerated is a layer writing somewhere other than `db_path` -- that
+    is how a rebuild previously ended up split across two database files, one
+    holding the core stats and the other holding the enrichment.
+    """
+    import subprocess
+    from data_paths import raw_dir
+
+    def step(label, fn):
+        print()
+        print(f"-- {label}")
+        try:
+            fn()
+        except Exception as exc:
+            print(f"   {label} skipped: {exc}")
+
+    def script(name, *args):
+        """Run a loader that only exposes a command line, with an explicit --db."""
+        cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                            name), "--db", str(db_path), *args]
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            raise RuntimeError(f"{name} exited {result.returncode}")
+
+    # Draft, awards and All-Australian come from the Draftguru scrape, then are
+    # linked to player_ids in two further passes. Skipped when unscraped.
+    def draftguru():
+        root = raw_dir("afl") / "draftguru"
+        if not root.is_dir():
+            raise RuntimeError(f"no Draftguru scrape at {root}")
+        script("load_draftguru.py", "--root", str(root))
+        script("link_draft.py")
+        script("link_people.py")
+
+    step("draft, awards and All-Australian", draftguru)
+
+    def captains():
+        import load_captains
+        load_captains.refresh_default(db_path=str(db_path), verbose=verbose)
+
+    step("club captaincy", captains)
+
+    def rising_star():
+        import load_rising_star
+        load_rising_star.refresh_default(db_path=str(db_path), verbose=verbose)
+
+    step("Rising Star nominations", rising_star)
+
+    def family_draft():
+        import load_family_draft
+        load_family_draft.refresh_default(db_path=str(db_path), verbose=verbose)
+
+    step("family draft", family_draft)
+
+    def family_relationships():
+        import load_family_relationships
+        load_family_relationships.refresh_default(str(db_path), verbose=verbose)
+
+    step("family relationships", family_relationships)
+
+    def club_sources():
+        from utils import load_club_sources
+        load_club_sources.refresh_default(db_path=str(db_path), verbose=verbose)
+
+    step("club metadata and records", club_sources)
+
+    def club_all_games():
+        from utils import load_club_all_games
+        raw = load_club_all_games.DEFAULT_RAW_DIR
+        if not raw.is_dir():
+            raise RuntimeError(f"no cached club pages at {raw}")
+        load_club_all_games.run(Path(db_path), raw)
+
+    step("club all-games match sources", club_all_games)
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default="data/afl/afl.db")
+    ap.add_argument("--db", default=default_db("afl"))
     ap.add_argument("--refresh", action="store_true")
     ap.add_argument("--no-matches", action="store_true",
                     help="skip the derive_matches.py step")
+    ap.add_argument("--core-only", action="store_true",
+                    help="skip every optional import layer")
     a = ap.parse_args()
     build(a.db, a.refresh, a.no_matches)
-
-
-# SDL_CAPTAIN_REFRESH — keep the optional club-captaincy layer in sync.
-# Appended by apply_update.py. A rebuild can reassign player_id values, so
-# the captaincy CSVs are re-linked after every successful build. Safe no-op
-# when no CSVs exist under data/afl/raw/; never fails the build itself.
-if __name__ == "__main__":
-    try:
-        import load_captains as _sdl_captains
-        _sdl_captains.refresh_default(verbose=True)
-    except Exception as _sdl_exc:
-        print(f"captaincy refresh skipped: {_sdl_exc}")
-
-# SDL_RISING_STAR_REFRESH — re-link the optional nomination layer after a
-# clean database rebuild.  This is a safe no-op when no local CSV exists.
-if __name__ == "__main__":
-    try:
-        import load_rising_star as _sdl_rising_star
-        _sdl_rising_star.refresh_default(verbose=True)
-    except Exception as _sdl_exc:
-        print(f"Rising Star refresh skipped: {_sdl_exc}")
-
-
-# SDL_FAMILY_DRAFT_REFRESH — re-link the local Wikipedia relationship layer
-# after a clean database rebuild. Safe no-op when the CSV is not present.
-if __name__ == "__main__":
-    try:
-        import load_family_draft as _sdl_family_draft
-        _sdl_family_draft.refresh_default(verbose=True)
-    except Exception as _sdl_exc:
-        print(f"Family-draft refresh skipped: {_sdl_exc}")
-
-
-# SDL_FAMILY_RELATIONSHIPS_REFRESH — relink the optional broad family layer
-# after a clean database rebuild. Safe no-op when its local CSVs do not exist.
-if __name__ == "__main__":
-    try:
-        import load_family_relationships as _sdl_family_relationships
-        _sdl_family_relationships.refresh_default(verbose=True)
-    except Exception as _sdl_exc:
-        print(f"family relationship refresh skipped: {_sdl_exc}")
-
-
-# SDL_CLUB_DATA_REFRESH — re-link locally cached club metadata and records
-# after a clean database rebuild. Safe no-op when no club source files exist.
-if __name__ == "__main__":
-    try:
-        from utils import load_club_sources as _sdl_club_sources
-        _sdl_club_sources.refresh_default(
-            db_path=getattr(a, "db", "gridley.db"), verbose=True
-        )
-    except Exception as _sdl_exc:
-        print(f"club data refresh skipped: {_sdl_exc}")
+    if not a.core_only:
+        print()
+        print(f"Refreshing optional layers -> {a.db}")
+        refresh_layers(a.db)

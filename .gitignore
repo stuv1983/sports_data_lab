@@ -5,13 +5,14 @@
 *.sqlite3
 afldata.rda
 
-# Database snapshots
-gridley-before-*.db
-test_gridley.db
-
 # Scraped, cached and generated third-party data
 data/
 sql/
+
+# Superseded files kept out of the way but not yet thrown out: one-off
+# "apply this hotfix" installers, *.bak_* backups, completed migration tools
+# and replaced databases. These belong here, not at the project root.
+archive/
 
 # Python-generated files
 __pycache__/
@@ -27,25 +28,15 @@ __pycache__/
 *.bak
 *.bak_*
 *.broken_*
-parse_criteria.py.broken_rising_star
 
 # Editor and operating-system files
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-# One-off migration, repair and investigation tools
-apply_*_update.py
-fix_*_patch.py
-investigate_*_mismatch.py
-CLEANUP.md
-VALIDATION_*.md
 
 # Local diagnostics and coverage output
 discover/
 *.rda
 .coverage
 htmlcov/
-
-# added by cleanup_repo.py
-*.pyc

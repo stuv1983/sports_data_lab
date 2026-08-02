@@ -27,15 +27,16 @@ Only `unique` and `resolved` rows get a player_id. Nothing is silently linked.
     python link_draft.py --report        # show ambiguous rows for review
 """
 
-# Run standalone from anywhere: the project root is one level up.
+# Run standalone from anywhere: this file lives at the project root.
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
 import argparse
 import sqlite3
 import sys
 
+from data_paths import default_db
 from names import normalise_name
 
 # A draftee normally debuts within a few years of being drafted.
@@ -209,7 +210,7 @@ CLUB_FIX = {
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default="data/afl/afl.db")
+    ap.add_argument("--db", default=default_db("afl"))
     ap.add_argument("--report", action="store_true")
     a = ap.parse_args()
 

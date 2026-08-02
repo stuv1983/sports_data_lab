@@ -41,8 +41,9 @@ try:
     )
 except ImportError:  # standalone bundle validation
     def default_db(sport_key: str) -> str:
-        modern = Path("data") / sport_key / f"{sport_key}.db"
-        return str(modern if modern.exists() else Path("gridley.db"))
+        root = Path(__file__).resolve().parent
+        modern = root / "data" / sport_key / f"{sport_key}.db"
+        return str(modern if modern.exists() else root / "gridley.db")
 
     def family_member_sources(sport_key: str = "afl") -> list[Path]:
         path = Path("data") / sport_key / "raw" / "wikipedia_family_members.csv"
@@ -599,14 +600,14 @@ def load(
     return members, relationships
 
 
-def refresh_default(*, verbose: bool = True) -> bool:
+def refresh_default(db_path: str | None = None, *, verbose: bool = True) -> bool:
     member_paths = family_member_sources("afl")
     relationship_paths = family_relationship_sources("afl")
     if not member_paths or not relationship_paths:
         if verbose:
             print("family relationship refresh skipped: source CSVs not found")
         return False
-    db = default_db("afl")
+    db = db_path or default_db("afl")
     if not Path(db).exists():
         if verbose:
             print(f"family relationship refresh skipped: database not found: {db}")

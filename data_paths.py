@@ -6,6 +6,11 @@ modern-versus-legacy decision is written exactly once.
 
 from pathlib import Path
 
+#: The repository root. Every path below is anchored here rather than to the
+#: process working directory, so `streamlit run C:\sports_data_lab\app.py`
+#: finds the same database whichever folder it was launched from.
+ROOT = Path(__file__).resolve().parent
+
 #: Legacy single-file databases that predate the data/<sport>/ layout.
 LEGACY = {"afl": "gridley.db", "nba": "nba.db"}
 
@@ -13,12 +18,12 @@ LEGACY = {"afl": "gridley.db", "nba": "nba.db"}
 def sport_db(sport_key: str, legacy: str | None = None) -> str:
     """Return ``data/<sport>/<sport>.db`` when present, else a legacy path."""
     key = sport_key.strip().lower()
-    modern = Path("data") / key / f"{key}.db"
+    modern = ROOT / "data" / key / f"{key}.db"
     if legacy is None:
         legacy = LEGACY.get(key)
     if modern.exists() or legacy is None:
         return str(modern)
-    return str(Path(legacy))
+    return str(ROOT / legacy)
 
 
 def default_db(sport_key: str) -> str:
@@ -27,7 +32,7 @@ def default_db(sport_key: str) -> str:
 
 
 def raw_dir(sport_key: str) -> Path:
-    return Path("data") / sport_key.strip().lower() / "raw"
+    return ROOT / "data" / sport_key.strip().lower() / "raw"
 
 
 def cache_dir(sport_key: str, name: str | None = None) -> Path:
@@ -39,7 +44,7 @@ def cache_dir(sport_key: str, name: str | None = None) -> Path:
 
         data/afl/cache/captain_pages/
     """
-    base = Path("data") / sport_key.strip().lower() / "cache"
+    base = ROOT / "data" / sport_key.strip().lower() / "cache"
     return base / name if name else base
 
 

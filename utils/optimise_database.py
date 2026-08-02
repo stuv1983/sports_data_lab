@@ -17,6 +17,8 @@ import argparse
 import sqlite3
 from pathlib import Path
 
+from data_paths import default_db
+
 INDEXES = [
     # Player profile, teammate, club-history and leaderboard access paths.
     ("idx_sdl_games_player_season_date", "games",
@@ -94,8 +96,8 @@ def create_sql(name: str, table: str, columns: tuple[str, ...],
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--db", default="gridley.db",
-                        help="AFL SQLite database (default: gridley.db)")
+    parser.add_argument("--db", default=default_db("afl"),
+                        help=f"AFL SQLite database (default: {default_db('afl')})")
     parser.add_argument("--apply", action="store_true",
                         help="create missing indexes and refresh statistics")
     args = parser.parse_args(argv)

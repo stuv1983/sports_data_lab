@@ -160,19 +160,36 @@ The build process:
 5. builds season goal and team-season tables;
 6. creates SQLite indexes;
 7. derives the canonical `matches` table;
-8. links player-game rows to stable match IDs.
+8. links player-game rows to stable match IDs;
+9. re-links every optional layer that has local source files (see
+   **Optional data layers** below).
 
-The default legacy database path is:
+Step 9 matters. A rebuild reassigns `player_id` values, so any layer that
+resolves names to ids has to be re-run afterwards or it points at the wrong
+people. `build_db.py` now does this itself, into the same database it just
+built. Use `--core-only` to skip it, and `--db` to build somewhere else:
 
-```text
-gridley.db
+```bash
+python build_db.py --db scratch.db      # everything lands in scratch.db
+python build_db.py --core-only          # base tables only
 ```
 
-The repository also supports the multi-sport layout:
+### Database location
+
+There is one canonical database path, resolved by `data_paths.py`:
 
 ```text
 data/afl/afl.db
 ```
+
+`gridley.db` at the repository root is the pre-`data/` legacy location. It is
+still read as a fallback when no `data/afl/afl.db` exists, but nothing writes
+there by default. Every script resolves the path through
+`data_paths.default_db("afl")` rather than hardcoding it, so the application
+and the loaders cannot drift onto different files.
+
+Paths are anchored to the repository root, not the working directory, so the
+application finds its database whichever folder it is launched from.
 
 When both layouts are possible, `data_paths.py` resolves the active database consistently.
 
@@ -220,7 +237,8 @@ The base database remains usable without optional datasets. Builders and filters
 
 Draftguru data supports draft history, recruitment source, father-son, academy, trade, free-agency and related criteria.
 
-Typical import flow:
+`build_db.py` runs this layer automatically when a Draftguru scrape is present
+under `data/afl/raw/draftguru`. To re-run it on its own:
 
 ```bash
 python load_draftguru.py
@@ -228,6 +246,8 @@ python link_draft.py
 python link_people.py
 ```
 
+Run the three in that order: the loader writes `dg_people`, `draft`, `awards`
+and `all_australian`, and the two link passes resolve them to `player_id`s.
 The precise commands available may vary as import tooling is updated. Check each script's `--help` output before running it.
 
 ### Awards
@@ -301,14 +321,33 @@ and season/game record leaderboards from locally cached source files.
 
 ```bash
 python utils/fetch_club_sources.py --report
-python utils/load_club_sources.py --db gridley.db --report --details
-python utils/test_club_sources.py
+python utils/load_club_sources.py --report --details
+python tests/test_club_sources.py
 ```
 
 AFL Tables automatic requests are permission-gated. The utility can print or
 open the complete reviewed source manifest for browser-assisted saving, while
-Wikipedia is fetched through the MediaWiki API. See
-`README_CLUB_DATA_UPDATE.md` for the full workflow.
+Wikipedia is fetched through the MediaWiki API. Run
+`python utils/fetch_club_sources.py --help` for the full workflow.
+
+### Club all-games match sources
+
+A separate pass reads each club's AFL Tables "all games" page and reconciles
+the two clubs' accounts of the same match against each other and against the
+derived `matches` table:
+
+```bash
+python utils/fetch_historical_all_games.py
+python utils/load_club_all_games.py --report
+```
+
+This writes `club_match_sources`, `match_details` (quarter-by-quarter scores,
+attendance, scheduled time) and `club_match_source_issues`, and backfills
+attendance onto `matches` where both clubs agree.
+
+**This layer has no user interface yet.** The data loads and is queryable
+through the CLI and SQL, but no application page reads it. Nothing depends on
+it, so it is safe to skip.
 
 ### Family-draft relationships
 
@@ -393,7 +432,7 @@ Selected files:
 | `build_db.py` | Base AFL SQLite database builder |
 | `derive_matches.py` | Canonical match table and stable match IDs |
 | `repair_database.py` | Non-download database repair workflow |
-| `data_paths.py` | Legacy and multi-sport database path policy |
+| `data_paths.py` | Single source of truth for every database and data path |
 | `awards.py` | Award and recruitment constraints |
 | `captains.py` | Club captaincy constraints |
 | `rising_star.py` | Rising Star nomination constraints |
@@ -402,9 +441,13 @@ Selected files:
 | `club_explorer.py` | Current-club metadata and records page |
 | `utils/fetch_club_sources.py` | Cache current-club source pages |
 | `utils/load_club_sources.py` | Parse and load club metadata and records |
+| `utils/load_club_all_games.py` | Reconcile per-club match sources (no UI yet) |
+| `utils/clean_project.py` | Review and remove generated artefacts |
+| `utils/optimise_database.py` | Propose and create missing indexes |
+| `tests/` | Every test, runnable under pytest or standalone |
 | `ACKNOWLEDGEMENTS.md` | Data-source credits and reuse notes |
 
-Database files, caches, downloaded pages, generated SQL and third-party source datasets are excluded through `.gitignore`.
+Database files, caches, downloaded pages, generated SQL and third-party source datasets are excluded through `.gitignore`, as is `archive/`.
 
 ## Validation and tests
 
@@ -414,48 +457,65 @@ Compile the Python source:
 python -m compileall -q .
 ```
 
-Core regression tests:
+Every test lives in `tests/` and the whole suite runs under pytest:
 
 ```bash
-python test_core_regressions.py
-python test_query_filters.py
-python test_repair_database.py
+python -m pytest -q
 ```
 
-Integration tests:
+Each file is also runnable on its own, which prints a per-check report:
 
 ```bash
-python test_integration.py
-python test_awards_integration.py --db gridley.db
+python tests/test_core_regressions.py
+python tests/test_query_filters.py
+python tests/test_club_sources.py
 ```
 
-Optional-layer regression tests can be run after their matching files and local data are present:
+### The clean-build gate
+
+`tests/test_integration.py` rebuilds a complete database from the cached
+`.rda` and runs the release checks against it. That takes minutes, so pytest
+skips it by default. Opt in explicitly:
 
 ```bash
-python test_captains.py
-python test_footywire_rising_star.py
-python test_family_draft.py
+SDL_INTEGRATION=1 python -m pytest -q      # bash
+$env:SDL_INTEGRATION=1; python -m pytest -q   # PowerShell
 ```
 
-Some integration tests build or modify temporary databases. Review their command-line options before pointing them at a database you need to retain.
+Or run it directly, which is the usual way:
+
+```bash
+python tests/test_integration.py
+python tests/test_awards_integration.py
+```
+
+It builds `test_gridley.db` in the repository root rather than touching the
+live database. Review the command-line options of any test before pointing it
+at a database you need to retain.
+
+Advanced Search has a live smoke test that runs real queries, read-only,
+against the actual database:
+
+```bash
+python tests/test_advanced_search_live.py
+```
 
 ## Clean-up
 
-Generated update artefacts and legacy captain files can be reviewed with the clean-up utility.
-
-Dry run:
-
-```bash
-python clean_project.py --root .
-```
-
-Apply reviewed changes:
+`utils/clean_project.py` reviews generated artefacts and legacy files. It is a
+dry run unless `--apply` is supplied.
 
 ```bash
-python clean_project.py --root . --apply
+python utils/clean_project.py --root .
+python utils/clean_project.py --root . --apply
 ```
 
 Database snapshots are retained unless deletion is explicitly requested.
+
+Superseded material — one-off hotfix installers, `*.bak_*` backups, replaced
+databases and completed migration tools — is moved to `archive/` rather than
+deleted. That directory is gitignored and can be emptied once a release is
+tagged and confirmed.
 
 ## Privacy and redistribution
 

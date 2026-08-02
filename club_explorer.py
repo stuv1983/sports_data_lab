@@ -70,8 +70,8 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
     if not club_data_available(con):
         st.info(
             "Club data is not loaded. Run `python utils/fetch_club_sources.py "
-            "--report`, then `python utils/load_club_sources.py --db "
-            "gridley.db --report --details`."
+            "--report`, then `python utils/load_club_sources.py --report "
+            "--details`."
         )
         return
 

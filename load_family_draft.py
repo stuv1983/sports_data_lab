@@ -37,8 +37,9 @@ try:
     from data_paths import default_db, family_draft_sources
 except ImportError:  # bundle-only validation before installation
     def default_db(sport_key: str) -> str:
-        modern = Path("data") / sport_key / f"{sport_key}.db"
-        return str(modern if modern.exists() else Path("gridley.db"))
+        root = Path(__file__).resolve().parent
+        modern = root / "data" / sport_key / f"{sport_key}.db"
+        return str(modern if modern.exists() else root / "gridley.db")
 
     def family_draft_sources(sport_key: str = "afl") -> list[Path]:
         base = Path("data") / sport_key / "raw"

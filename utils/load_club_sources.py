@@ -32,7 +32,14 @@ else:
                                source_path)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DB = PROJECT_ROOT / "gridley.db"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from data_paths import default_db  # noqa: E402  (needs the path above)
+
+#: Resolved through data_paths so this loader writes to the same file the
+#: application reads. Hardcoding a path here is what previously split the
+#: club layer away from the rest of the database.
+DEFAULT_DB = Path(default_db("afl"))
 TRUSTED = {"unique", "resolved"}
 
 

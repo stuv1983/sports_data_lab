@@ -419,8 +419,9 @@ def health_page(SPORT, con) -> None:
 def default_db() -> str:
     try:
         from data_paths import sport_db
-    except ImportError:
-        return "gridley.db"
+    except ImportError:      # data_paths sits beside this file; near-dead path
+        from pathlib import Path
+        return str(Path(__file__).resolve().parent / "gridley.db")
     return sport_db("afl", "gridley.db")
 
 

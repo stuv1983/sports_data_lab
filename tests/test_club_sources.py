@@ -8,8 +8,10 @@ import sqlite3
 import sys
 import tempfile
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+ROOT = Path(__file__).resolve().parents[1]
+#: The modules under test live in utils/, which is not a package on the path.
+sys.path.insert(0, str(ROOT / "utils"))
+sys.path.insert(0, str(ROOT))
 
 from club_sources import CLUBS, CLUB_BY_ID, fallback_name_key, source_name_to_display
 from fetch_club_sources import validate_afltables
@@ -165,7 +167,7 @@ def test_era_linking() -> None:
 
 def test_real_saved_records_fixture() -> None:
     fixtures = [
-        HERE.parent / "data" / "afl" / "raw" / "clubs" / "richmond" / "afltables_records.html",
+        ROOT / "data" / "afl" / "raw" / "clubs" / "richmond" / "afltables_records.html",
         Path(r"/mnt/data/AFL Tables - Richmond - Player Season And Game Records (1965-2026).html"),
     ]
     fixture = next((path for path in fixtures if path.exists()), None)
@@ -178,7 +180,7 @@ def test_real_saved_records_fixture() -> None:
 
 
 def test_cached_record_pages() -> None:
-    raw = HERE.parent / "data" / "afl" / "raw" / "clubs"
+    raw = ROOT / "data" / "afl" / "raw" / "clubs"
     if not raw.exists():
         return
     pages = sorted(raw.glob("*/afltables_records.html"))

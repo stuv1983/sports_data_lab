@@ -423,18 +423,20 @@ def default_sources() -> list[Path]:
 def default_db() -> str:
     try:
         from data_paths import sport_db
-    except ImportError:
-        return "gridley.db"
+    except ImportError:      # data_paths sits beside this file; near-dead path
+        from pathlib import Path
+        return str(Path(__file__).resolve().parent / "gridley.db")
     return sport_db("afl", "gridley.db")
 
 
-def refresh_default(verbose: bool = True) -> dict[str, int] | None:
+def refresh_default(db_path: str | None = None,
+                    verbose: bool = True) -> dict[str, int] | None:
     sources = default_sources()
     if not sources:
         if verbose:
             print("Rising Star refresh skipped: no source CSVs found")
         return None
-    return load_sources(default_db(), sources, verbose=verbose)
+    return load_sources(db_path or default_db(), sources, verbose=verbose)
 
 
 def main(argv: list[str] | None = None) -> int:

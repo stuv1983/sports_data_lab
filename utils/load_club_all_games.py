@@ -54,7 +54,13 @@ else:
     from .club_sources import ALL_GAMES_BY_ID
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DB = PROJECT_ROOT / "gridley.db"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from data_paths import default_db  # noqa: E402  (needs the path above)
+
+#: Resolved through data_paths so this loader writes to the same file the
+#: application reads. See the note in load_club_sources.py.
+DEFAULT_DB = Path(default_db("afl"))
 DEFAULT_RAW_DIR = PROJECT_ROOT / "data" / "afl" / "raw" / "clubs"
 SOURCE_FILENAME = "afltables_all_games.html"
 

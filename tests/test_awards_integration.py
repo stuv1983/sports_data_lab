@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Regression checks for the Draftguru award/person integration.
 
-This complements the clean-build integration suite and can be run against an
-already-built database:
+This complements the clean-build integration suite and runs against an
+already-built database, the canonical one unless told otherwise:
 
-    python test_awards_integration.py --db gridley.db
+    python tests/test_awards_integration.py
+    python tests/test_awards_integration.py --db scratch.db
 """
 
 # --- test bootstrap: run from the repository root, import project modules ---
@@ -21,6 +22,7 @@ _os.chdir(_ROOT)
 import argparse
 import sqlite3
 
+import data_paths
 import awards as A
 import constraints as C
 import link_draft as LD
@@ -49,7 +51,7 @@ def count_players(con, constraint):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default="gridley.db")
+    ap.add_argument("--db", default=data_paths.default_db("afl"))
     args = ap.parse_args()
 
     con = sqlite3.connect(args.db)
@@ -97,7 +99,10 @@ def main():
     # supported optional layer with their own suite
     # (test_footywire_rising_star.py), so this list must no longer expect
     # them to be declined.  Only criteria with no data source at all remain.
-    now_supported = ('club captain', 'rising star')
+    # BROTHER PLAYED joined them once the broad Wikipedia family layer landed
+    # (test_family_relationships.py). historic_grids.py and test_integration.py
+    # were updated for that at the time; this file was missed.
+    now_supported = ('club captain', 'rising star', 'brother played')
     genuinely_unsupported = [
         text for text in unsupported
         if not any(term in text.casefold() for term in now_supported)

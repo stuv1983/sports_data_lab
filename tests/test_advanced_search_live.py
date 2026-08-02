@@ -20,6 +20,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
+# Runnable standalone as well as under pytest, so it bootstraps its own path.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 FAILURES: list[str] = []
 
 

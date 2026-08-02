@@ -18,7 +18,10 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+ROOT = Path(__file__).resolve().parents[1]
+#: The modules under test live in utils/, which is not a package on the path.
+sys.path.insert(0, str(ROOT / "utils"))
+sys.path.insert(0, str(ROOT))
 
 from club_all_games import (ParseError, check_against_footers, parse_all_games,
                             parse_attendance, parse_date_text, parse_game_key,

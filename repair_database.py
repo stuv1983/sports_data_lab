@@ -8,10 +8,10 @@ is recommended before any migration of a working copy.
 
 from __future__ import annotations
 
-# Run standalone from anywhere: the project root is one level up.
+# Run standalone from anywhere: this file lives at the project root.
 import sys as _sys
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
 import argparse
 import datetime as dt

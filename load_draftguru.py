@@ -30,6 +30,11 @@ because a quietly-empty column looks identical to a genuinely blank one
 once it is in the database.
 """
 
+# Run standalone from anywhere: this file lives at the project root.
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+
 import argparse
 import glob
 import json
@@ -38,6 +43,7 @@ import re
 import sqlite3
 import sys
 
+from data_paths import default_db, raw_dir
 from names import normalise_name
 
 # ---------------------------------------------------------------- headers
@@ -361,8 +367,8 @@ def attach_person(df, people):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default="data/afl/raw/draftguru")
-    ap.add_argument("--db", default="data/afl/afl.db")
+    ap.add_argument("--root", default=str(raw_dir("afl") / "draftguru"))
+    ap.add_argument("--db", default=default_db("afl"))
     ap.add_argument("--inspect", action="store_true",
                     help="report headers per file and write nothing")
     a = ap.parse_args()
