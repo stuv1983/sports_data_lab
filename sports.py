@@ -73,6 +73,10 @@ class Sport:
     #: its era must be declined, not silently answered from partial data.
     stat_eras: dict = field(default_factory=dict)
     enabled: bool = True
+    #: Optional imported club catalogue shown after the standard layers.
+    club_data_table: str = ""
+    #: Optional broad-family availability probe on the constraints module.
+    family_probe: str = ""
 
     # -- module access ------------------------------------------------
     @property
@@ -150,6 +154,14 @@ class Sport:
             # counts inside the same aligned panel instead of a separate
             # caption in a different font.
             rows.append((label, self.layer_value(probe, con)))
+
+        # These richer AFL layers need descriptive counts rather than the
+        # generic single-number optional-layer format. Keeping them here puts
+        # every ready state in the same aligned status block.
+        if self.club_data_table:
+            rows.append(("Club data", self.club_data_value(con)))
+        if self.family_probe:
+            rows.append(("Family links", self.family_links_value(con)))
         return rows
 
     def layer_value(self, probe, con):
@@ -173,6 +185,105 @@ class Sport:
             return bool(fn(con))
         except Exception:
             return False
+
+    @staticmethod
+    def _table_exists(con, table):
+        if not table:
+            return False
+        try:
+            return bool(con.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type IN ('table','view') AND name=?", (table,)
+            ).fetchone())
+        except sqlite3.Error:
+            return False
+
+    @staticmethod
+    def _table_columns(con, table):
+        try:
+            return {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+        except sqlite3.Error:
+            return set()
+
+    def club_data_value(self, con):
+        """Status text for the optional current-club catalogue."""
+        table = self.club_data_table
+        if not self._table_exists(con, table):
+            return "not loaded"
+        columns = self._table_columns(con, table)
+        try:
+            if "is_current" in columns:
+                total = con.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE is_current=1"
+                ).fetchone()[0]
+            else:
+                total = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        except sqlite3.Error:
+            return "not loaded"
+        if not total:
+            return "not loaded"
+        noun = "club" if int(total) == 1 else "clubs"
+        return f"ready ({int(total):,} current {noun})"
+
+    def family_links_value(self, con):
+        """Status text for linked family members and explicit relationships."""
+        ready = self.layer_ready(self.family_probe, con)
+        if not ready:
+            ready = (self._table_exists(con, "family_members") and
+                     self._table_exists(con, "family_relationships"))
+        if not ready:
+            return "not loaded"
+
+        members = self._family_counter(
+            con, "family_member_count", self._fallback_family_members
+        )
+        relationships = self._family_counter(
+            con, "trusted_relationship_count",
+            self._fallback_family_relationships,
+        )
+        if members is not None and relationships is not None:
+            return (f"ready ({members:,} linked players; "
+                    f"{relationships:,} explicit relationships)")
+        if members is not None:
+            return f"ready ({members:,} linked players)"
+        return "ready"
+
+    def _family_counter(self, con, name, fallback):
+        counter = getattr(self.C, name, None)
+        if counter is not None:
+            try:
+                value = counter(con)
+                if value is not None:
+                    return int(value)
+            except Exception:
+                pass
+        try:
+            value = fallback(con)
+            return None if value is None else int(value)
+        except sqlite3.Error:
+            return None
+
+    def _fallback_family_members(self, con):
+        if not self._table_exists(con, "family_members"):
+            return None
+        columns = self._table_columns(con, "family_members")
+        where = ["player_id IS NOT NULL"] if "player_id" in columns else []
+        if "match_status" in columns:
+            where.append("match_status IN ('unique','resolved')")
+        predicate = " WHERE " + " AND ".join(where) if where else ""
+        distinct = "DISTINCT player_id" if "player_id" in columns else "*"
+        return con.execute(
+            f"SELECT COUNT({distinct}) FROM family_members{predicate}"
+        ).fetchone()[0]
+
+    def _fallback_family_relationships(self, con):
+        if not self._table_exists(con, "family_relationships"):
+            return None
+        # Source relationships are already explicit. The constraints module's
+        # trusted counter remains authoritative when available.
+        return con.execute(
+            "SELECT COUNT(*) FROM family_relationships"
+        ).fetchone()[0]
 
     #: Optional import layers: display label -> the name of the zero-cost
     #: availability function on the sport's constraints module. Never list
@@ -256,6 +367,8 @@ AFL = Sport(
                      "Award data": "awards_available",
                      "Captain data": "captain_available",
                      "Rising Star": "rising_star_available"},
+    club_data_table="clubs",
+    family_probe="family_relationships_available",
 )
 
 

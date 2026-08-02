@@ -39,10 +39,6 @@ C = SPORT.C
 SCHEMA = SPORT.schema
 V = SPORT.vocab
 
-PALETTE = theme.controls(st, SPORT.key)
-st.markdown(theme.css(PALETTE), unsafe_allow_html=True)
-
-
 def db_revision(db):
     """Cheap cache key that changes whenever the SQLite file is replaced."""
     stat = os.stat(db)
@@ -260,7 +256,7 @@ with st.sidebar.expander("Database status", expanded=False):
             club_rows = con.execute(
                 "SELECT COUNT(*) FROM clubs WHERE active=1"
             ).fetchone()[0]
-            st.caption(f"Club data: ready ({club_rows} current clubs).")
+            pass  # ready state is shown in Database status
         else:
             st.caption("Run `utils/fetch_club_sources.py`, then "
                        "`utils/load_club_sources.py` for Club Explorer.")
@@ -270,13 +266,15 @@ with st.sidebar.expander("Database status", expanded=False):
             n_relationships = getattr(
                 C, "trusted_relationship_count", lambda _con: 0
             )(con)
-            st.caption(
-                f"Family links: ready ({n_family:,} linked players; "
-                f"{n_relationships:,} explicit relationships)."
-            )
+            pass  # ready state is shown in Database status
         else:
             st.caption("Run `scrape_wikipedia_families.py`, then "
                        "`load_family_relationships.py` for family links.")
+
+
+# ---------------------------------------------------------- appearance
+PALETTE = theme.controls(st, SPORT.key)
+st.markdown(theme.css(PALETTE), unsafe_allow_html=True)
 
 
 # ------------------------------------------------------- axis definition

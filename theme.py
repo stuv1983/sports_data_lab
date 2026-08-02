@@ -1,17 +1,13 @@
 """
 theme.py -- Appearance modes and the stylesheet they drive.
 
-The existing stylesheet was already written entirely against CSS custom
-properties, so switching themes only means emitting a different `:root`
-block. Three modes:
+AFL gets an AFL-inspired navy, red and white scheme in addition to the
+existing dark, light and custom modes. Appearance controls are intentionally
+kept inside one collapsed sidebar expander so they do not compete with search,
+navigation or database information.
 
-    Dark    -- the sport's own dark palette (chalkboard green, hardwood)
-    Light   -- a legible daylight palette
-    Custom  -- seven colour pickers, seeded from whichever mode was last
-               active so the user starts from something that works
-
-Palette keys are stable across modes; anything added here must be added
-to every palette or the stylesheet will fall back to an unset variable.
+Palette keys are stable across modes; anything added here must be added to
+every palette or the stylesheet will fall back to an unset variable.
 """
 
 KEYS = ["board", "panel", "line", "chalk", "muted", "accent", "hover",
@@ -30,6 +26,13 @@ LABELS = {
 }
 
 PALETTES = {
+    # AFL-inspired application colours: deep navy, red and white. This is a
+    # project theme, not a reproduction of an AFL-owned logo or artwork.
+    ("afl", "AFL"): {
+        "board": "#071B2B", "panel": "#0C2A42", "line": "#31506A",
+        "chalk": "#F7F9FC", "muted": "#A7B9C8", "accent": "#E31837",
+        "hover": "#123A57",
+    },
     ("afl", "Dark"): {
         "board": "#0E1A16", "panel": "#16241F", "line": "#2C3F37",
         "chalk": "#E8E4D6", "muted": "#7C8F87", "accent": "#E8A33D",
@@ -55,17 +58,34 @@ PALETTES = {
 #: Gridley colours a solved cell by how rare the answer was. The same
 #: idea drives the board here, keyed to our own obscurity rating.
 TILE_DEFAULTS = {
-    "afl": {"tile_rare": "#4C2FB0", "tile_common": "#C42794"},
+    "afl": {"tile_rare": "#005A9C", "tile_common": "#D71920"},
     "nba": {"tile_rare": "#3E2A93", "tile_common": "#C4451F"},
 }
 
-MODES = ["Dark", "Light", "Custom"]
+MODES = {
+    "afl": ["AFL", "Dark", "Light", "Custom"],
+    "nba": ["Dark", "Light", "Custom"],
+}
+
+
+def modes(sport_key):
+    """Return the schemes offered by one sport."""
+    return list(MODES.get(sport_key, MODES["afl"]))
+
+
+def default_mode(sport_key):
+    """AFL uses its branded scheme; other sports retain their dark default."""
+    return "AFL" if sport_key == "afl" else "Dark"
 
 
 def palette(sport_key, mode, custom=None):
-    """Resolve a palette. Custom falls back to Dark for any missing key."""
-    base = PALETTES.get((sport_key, mode if mode != "Custom" else "Dark"),
-                        PALETTES[("afl", "Dark")])
+    """Resolve a complete palette for a sport and appearance mode."""
+    fallback_mode = default_mode(sport_key)
+    requested = mode if mode != "Custom" else fallback_mode
+    base = PALETTES.get(
+        (sport_key, requested),
+        PALETTES.get((sport_key, fallback_mode), PALETTES[("afl", "AFL")]),
+    )
     tiles = TILE_DEFAULTS.get(sport_key, TILE_DEFAULTS["afl"])
     base = {**tiles, **base}
     if mode != "Custom":
@@ -76,36 +96,50 @@ def palette(sport_key, mode, custom=None):
 
 
 def controls(st, sport_key, key_prefix=""):
-    """
-    Render the appearance section in the sidebar and return the palette.
-
-    Colour pickers only appear in Custom mode, seeded from the palette
-    that was on screen a moment ago, so switching to Custom never drops
-    the user onto a blank or jarring board.
-    """
+    """Render a compact, collapsed Appearance section and return its palette."""
     k = lambda name: f"{key_prefix}theme_{name}"  # noqa: E731
+    offered = modes(sport_key)
+    state_key = k("mode")
 
-    mode = st.sidebar.radio("Appearance", MODES, key=k("mode"),
-                            horizontal=True)
+    # Old sessions may contain a mode no longer valid for the selected sport.
+    if st.session_state.get(state_key) not in (None, *offered):
+        st.session_state.pop(state_key, None)
 
-    if mode != "Custom":
-        resolved = palette(sport_key, mode)
-        st.session_state[k("seed")] = resolved
-        return resolved
+    with st.sidebar.expander("Appearance", expanded=False):
+        mode = st.radio(
+            "Colour scheme",
+            offered,
+            index=offered.index(default_mode(sport_key)),
+            key=state_key,
+            horizontal=True,
+            label_visibility="collapsed",
+        )
 
-    seed = st.session_state.get(k("seed")) or palette(sport_key, "Dark")
-    custom = {}
-    with st.sidebar.expander("Custom colours", expanded=True):
+        if mode != "Custom":
+            resolved = palette(sport_key, mode)
+            st.session_state[k("seed")] = resolved
+            return resolved
+
+        seed = st.session_state.get(k("seed")) or palette(
+            sport_key, default_mode(sport_key)
+        )
+        custom = {}
         left, right = st.columns(2)
         for i, name in enumerate(KEYS):
             col = left if i % 2 == 0 else right
             custom[name] = col.color_picker(
-                LABELS[name], seed.get(name, "#000000"), key=k(name))
-        if st.button("Reset to dark", key=k("reset")):
+                LABELS[name], seed.get(name, "#000000"), key=k(name)
+            )
+
+        reset_label = "Reset to AFL" if sport_key == "afl" else "Reset to dark"
+        if st.button(reset_label, key=k("reset")):
             for name in KEYS:
                 st.session_state.pop(k(name), None)
-            st.session_state[k("seed")] = palette(sport_key, "Dark")
+            st.session_state[k("seed")] = palette(
+                sport_key, default_mode(sport_key)
+            )
             st.rerun()
+
     return palette(sport_key, "Custom", custom)
 
 
