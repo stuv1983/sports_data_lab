@@ -362,7 +362,7 @@ def attach_person(df, people):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="data/afl/raw/draftguru")
-    ap.add_argument("--db", default="gridley.db")
+    ap.add_argument("--db", default="data/afl/afl.db")
     ap.add_argument("--inspect", action="store_true",
                     help="report headers per file and write nothing")
     a = ap.parse_args()

@@ -46,3 +46,6 @@ discover/
 *.rda
 .coverage
 htmlcov/
+
+# added by cleanup_repo.py
+*.pyc

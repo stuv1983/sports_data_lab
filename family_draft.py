@@ -42,9 +42,28 @@ def _main_table_exists(con) -> bool:
     ).fetchone())
 
 
+def _query_only(con) -> bool:
+    """Whether SQLite currently rejects all writes, including TEMP writes."""
+    row = con.execute("PRAGMA query_only").fetchone()
+    return bool(row and row[0])
+
+
 def ensure_family_draft_table(con) -> None:
-    """Make family SQL safe before the optional import has been run."""
+    """Make family SQL safe before the optional import has been run.
+
+    The Streamlit connection uses both ``mode=ro`` and ``PRAGMA query_only=ON``.
+    SQLite treats ``CREATE TEMP TABLE`` as a write under ``query_only``, so the
+    old placeholder strategy raised ``attempt to write a readonly database``
+    for any father-son query before ``load_family_draft.py`` had ever been run.
+    On a query-only connection, simply leave the optional table absent:
+    ``family_draft_available()`` already reports the dataset as not loaded, and
+    Advanced Search turns that into a clean QuerySyntaxError rather than a
+    crash.  This mirrors ensure_family_relationship_tables() in
+    family_relationships.py, which carries the same guard.
+    """
     if not _main_table_exists(con):
+        if _query_only(con):
+            return
         con.execute(_PLACEHOLDER_SQL)
 
 

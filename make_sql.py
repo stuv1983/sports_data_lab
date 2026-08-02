@@ -15,6 +15,11 @@ Or run the whole board at once:
     sqlite3 gridley.db ".read sql/run_all.sql"
 """
 
+# Run standalone from anywhere: the project root is one level up.
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+
 import os
 import constraints as C
 

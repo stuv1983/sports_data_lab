@@ -243,12 +243,14 @@ def require_schema(con):
     # before the separate captaincy dataset has been imported.
     ensure_captain_table(con)
     ensure_rising_star_table(con)
+    ensure_family_relationship_tables(con)
 
 
 def solve(con, constraints, limit=25, order="obscurity"):
     """Intersect constraints and return ranked players."""
     ensure_captain_table(con)
     ensure_rising_star_table(con)
+    ensure_family_relationship_tables(con)
     return core.solve(con, constraints, SCHEMA, limit=limit, order=order)
 
 
@@ -256,6 +258,7 @@ def count(con, constraints):
     """How many players satisfy every constraint."""
     ensure_captain_table(con)
     ensure_rising_star_table(con)
+    ensure_family_relationship_tables(con)
     return core.count(con, constraints, SCHEMA)
 
 
@@ -263,6 +266,7 @@ def square(con, constraints, order="obscurity"):
     """Eligible count plus the single best answer, for a prefilled board."""
     ensure_captain_table(con)
     ensure_rising_star_table(con)
+    ensure_family_relationship_tables(con)
     return core.square(con, constraints, SCHEMA, order=order)
 
 
@@ -326,3 +330,25 @@ from rising_star import (  # noqa: E402
 
 BUILDERS.update(RISING_STAR_BUILDERS)
 RISING_STAR_BUILDER_NAMES = set(RISING_STAR_BUILDERS)
+
+
+# Optional broad Wikipedia family layer. This is separate from the narrower
+# father-son/father-daughter draft dataset in family_draft.py.
+from family_relationships import (  # noqa: E402
+    FAMILY_RELATIONSHIP_BUILDERS,
+    ensure_family_relationship_tables,
+    family_relationships_available,
+    family_member_count,
+    trusted_relationship_count,
+    family_member,
+    sibling_also_played,
+    brother_also_played,
+    parent_or_child_also_played,
+    father_or_son_also_played,
+    extended_family_also_played,
+    same_listed_family_as,
+    relative_played_for,
+)
+
+BUILDERS.update(FAMILY_RELATIONSHIP_BUILDERS)
+FAMILY_RELATIONSHIP_BUILDER_NAMES = set(FAMILY_RELATIONSHIP_BUILDERS)

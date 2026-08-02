@@ -14,6 +14,11 @@ there is never substituted: see the module docstring in historic_grids.py
 for why Practice mode is a separate, loudly-labelled thing.
 """
 
+# Run standalone from anywhere: the project root is one level up.
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+
 from historic_grids import GRIDS as _GRIDS
 
 #: Complete captures, in the historical dict shape: every criterion here

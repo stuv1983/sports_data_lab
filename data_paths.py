@@ -86,3 +86,20 @@ def family_draft_sources(sport_key: str = "afl") -> list[Path]:
         return [canonical]
     fallback = base / "family_draft.csv"
     return [fallback] if fallback.exists() else []
+
+
+def family_relationship_dir(sport_key: str = "afl") -> Path:
+    """Local Wikipedia broad-family CSV directory."""
+    return raw_dir(sport_key)
+
+
+def family_member_sources(sport_key: str = "afl") -> list[Path]:
+    """CSV rows for every person in a listed football family."""
+    path = family_relationship_dir(sport_key) / "wikipedia_family_members.csv"
+    return [path] if path.exists() else []
+
+
+def family_relationship_sources(sport_key: str = "afl") -> list[Path]:
+    """CSV rows for explicit sibling/parent/extended relationships."""
+    path = family_relationship_dir(sport_key) / "wikipedia_family_relationships.csv"
+    return [path] if path.exists() else []

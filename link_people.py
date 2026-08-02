@@ -33,6 +33,11 @@ Statuses match link_draft.py's vocabulary, and only `unique` / `resolved`
     python link_people.py --report        # show ambiguous people
 """
 
+# Run standalone from anywhere: the project root is one level up.
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+
 import argparse
 import sqlite3
 import sys
@@ -287,7 +292,7 @@ def from_draft_links(con):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default="gridley.db")
+    ap.add_argument("--db", default="data/afl/afl.db")
     ap.add_argument("--report", action="store_true")
     a = ap.parse_args()
 

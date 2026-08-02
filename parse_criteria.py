@@ -53,7 +53,9 @@ STAT_WORDS = {
 
 # Criteria the database genuinely cannot express.
 UNSUPPORTED = {
-    r"\bbrother|\bfather\b|\bson\b|related": "family links aren't in the data",
+    # Retained as a fallback only. Family wording with a trusted mapping
+    # is handled by _parse_family_criterion before this dict is consulted.
+    r"\bbrother|\bfather\b|\bson\b|related": "no trusted family link for that wording",
     r"\b(born|from) (tas|vic|wa|sa|nsw|qld|nt)": "birthplace isn't in the data",
     r"tasmanian|indigenous|irish|father[- ]son|academy":
         "player background isn't in the available linked data",
@@ -90,6 +92,60 @@ def _max_bound(t, n):
     if _INCLUSIVE_MAX.search(t):
         return n
     return max(n - 1, 0)
+
+
+def _family_builders_available():
+    """True when constraints.py exposes the broad family relationship layer."""
+    return all(
+        hasattr(C, name)
+        for name in (
+            "family_member",
+            "sibling_also_played",
+            "brother_also_played",
+            "parent_or_child_also_played",
+            "father_or_son_also_played",
+            "extended_family_also_played",
+            "relative_played_for",
+        )
+    )
+
+
+def _parse_family_criterion(t):
+    """
+    Map a broad family square onto the Wikipedia family relationship layer.
+
+    Returns (constraint, label), or None so wording with no trusted mapping
+    still falls through to the UNSUPPORTED decline instead of guessing.
+    Only trusted (uniquely or confidently linked) relationships are matched
+    by the builders, so a square answers conservatively or not at all.
+    """
+    if not _family_builders_available():
+        return None
+
+    # "RELATIVE PLAYED FOR GEELONG" / "BROTHER PLAYED AT CARLTON"
+    if re.search(r"\bplayed (?:for|at|with)\b|\bat\b", t):
+        for alias, club in sorted(
+                CLUB_ALIASES.items(), key=lambda kv: len(kv[0]), reverse=True):
+            if re.search(rf"(?<![a-z]){re.escape(alias)}(?![a-z])", t):
+                return (C.relative_played_for(club),
+                        f"relative played for {club}")
+
+    if re.search(r"\bbrothers?\b", t):
+        return C.brother_also_played(), "brother also played"
+    if re.search(r"\bsiblings?\b|\bsisters?\b|\btwins?\b", t):
+        return C.sibling_also_played(), "sibling also played"
+    if re.search(r"\bfathers?\b|\bdad\b|\bsons?\b", t):
+        return C.father_or_son_also_played(), "father/son also played"
+    if re.search(r"\bparents?\b|\bmothers?\b|\bmum\b|\bdaughters?\b|"
+                 r"\bchild(?:ren)?\b", t):
+        return C.parent_or_child_also_played(), "parent/child also played"
+    if re.search(r"\bgrand(?:father|mother|son|daughter|parent|child)\b|"
+                 r"\bcousins?\b|\buncles?\b|\baunts?\b|\bnephews?\b|"
+                 r"\bnieces?\b|\bin[- ]laws?\b", t):
+        return C.extended_family_also_played(), "extended family also played"
+    if re.search(r"\brelatives?\b|\bfamily\b", t):
+        return C.family_member(), "AFL/VFL family member"
+    return None
 
 
 def parse(text):
@@ -213,6 +269,18 @@ def parse(text):
         if len(years) == 1:
             return C.rising_star_nominee_in(years[0]), f"{years[0]} Rising Star nominee"
         return C.rising_star_nominee(), "Rising Star nominee"
+
+    # SDL_FAMILY_PARSE -- optional broad Wikipedia family layer. Runs before
+    # the UNSUPPORTED decline so "BROTHER PLAYED" resolves to real answers,
+    # and after the awards block so father-son *selections* stay a draft
+    # criterion rather than a relationship one.
+    if re.search(r"\bbrother|\bsibling|\bsister|\btwin|\bfather|\bdad\b|"
+                 r"\bmother|\bmum\b|\bparent|\bson\b|\bsons\b|"
+                 r"\bdaughter|\bchild|\bgrand|\bcousin|\buncle|\baunt|"
+                 r"\bnephew|\bniece|\bin[- ]law|\brelative|\bfamily", t):
+        family_hit = _parse_family_criterion(t)
+        if family_hit is not None:
+            return family_hit
 
     for pat, why in UNSUPPORTED.items():
         if re.search(pat, t):

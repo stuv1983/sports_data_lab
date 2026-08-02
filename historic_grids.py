@@ -108,7 +108,10 @@ GRIDS = [
         cols=("West Coast", "WOODEN SPOON WINNER", "PLAYED IN A FINAL"),
         rows=("LEADING GOALKICKER TEAM", "JAKE WATERMAN TEAMMATE",
               "BROTHER PLAYED"),
-        unsupported=('BROTHER PLAYED',),
+        # BROTHER PLAYED was unsupported when this grid was captured. The
+        # broad Wikipedia family layer now answers it, so the criterion is
+        # no longer declined and the board is fully playable.
+        unsupported=(),
     ),
     HistoricGrid(
         number=1110, date="2026-07-30",

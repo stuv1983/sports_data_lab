@@ -14,7 +14,8 @@ Palette keys are stable across modes; anything added here must be added
 to every palette or the stylesheet will fall back to an unset variable.
 """
 
-KEYS = ["board", "panel", "line", "chalk", "muted", "accent", "hover"]
+KEYS = ["board", "panel", "line", "chalk", "muted", "accent", "hover",
+        "tile_rare", "tile_common"]
 
 LABELS = {
     "board": "Background",
@@ -24,6 +25,8 @@ LABELS = {
     "muted": "Muted text",
     "accent": "Accent",
     "hover": "Hover",
+    "tile_rare": "Rare tile",
+    "tile_common": "Common tile",
 }
 
 PALETTES = {
@@ -49,6 +52,13 @@ PALETTES = {
     },
 }
 
+#: Gridley colours a solved cell by how rare the answer was. The same
+#: idea drives the board here, keyed to our own obscurity rating.
+TILE_DEFAULTS = {
+    "afl": {"tile_rare": "#4C2FB0", "tile_common": "#C42794"},
+    "nba": {"tile_rare": "#3E2A93", "tile_common": "#C4451F"},
+}
+
 MODES = ["Dark", "Light", "Custom"]
 
 
@@ -56,6 +66,8 @@ def palette(sport_key, mode, custom=None):
     """Resolve a palette. Custom falls back to Dark for any missing key."""
     base = PALETTES.get((sport_key, mode if mode != "Custom" else "Dark"),
                         PALETTES[("afl", "Dark")])
+    tiles = TILE_DEFAULTS.get(sport_key, TILE_DEFAULTS["afl"])
+    base = {**tiles, **base}
     if mode != "Custom":
         return dict(base)
     merged = dict(base)
@@ -111,6 +123,8 @@ def css(p):
   --muted:  {p['muted']};
   --amber:  {p['accent']};
   --hover:  {p['hover']};
+  --tile-rare:   {p['tile_rare']};
+  --tile-common: {p['tile_common']};
 }}
 
 .stApp {{ background: var(--board); }}
@@ -126,10 +140,20 @@ h1 {{ font-weight: 700 !important; font-size: 2.1rem !important; }}
 
 body, p, div, label, span {{ color: var(--chalk); }}
 
-/* Square face: a painted panel carrying the prefilled answer. */
+/* Square face: a Gridley-style gradient tile. The hue carries meaning --
+   indigo for a rare best answer, magenta for a common one -- so the board
+   reads at a glance without anyone parsing the star row. */
 .square {{
-  background: var(--panel);
-  border: 1px solid var(--line);
+  background:
+    radial-gradient(circle at 22% 18%, rgba(255,255,255,.16) 0 1px, transparent 1px),
+    radial-gradient(circle at 68% 34%, rgba(255,255,255,.11) 0 1px, transparent 1px),
+    radial-gradient(circle at 41% 77%, rgba(255,255,255,.13) 0 1px, transparent 1px),
+    radial-gradient(circle at 84% 66%, rgba(255,255,255,.09) 0 1px, transparent 1px),
+    linear-gradient(150deg,
+      color-mix(in srgb, var(--tile-common) 82%, black) 0%,
+      var(--tile-common) 55%,
+      color-mix(in srgb, var(--tile-common) 72%, #ff7ad9) 100%);
+  border: 1px solid color-mix(in srgb, var(--tile-common) 60%, black);
   border-radius: 2px;
   padding: .6rem .7rem .5rem .7rem;
   min-height: 104px;
@@ -137,23 +161,48 @@ body, p, div, label, span {{ color: var(--chalk); }}
   flex-direction: column;
   justify-content: space-between;
 }}
-.square.is-open {{ border-color: var(--amber); }}
-.square.is-empty {{ opacity: .55; }}
+.square.tile-rare {{
+  background:
+    radial-gradient(circle at 22% 18%, rgba(255,255,255,.18) 0 1px, transparent 1px),
+    radial-gradient(circle at 68% 34%, rgba(255,255,255,.12) 0 1px, transparent 1px),
+    radial-gradient(circle at 41% 77%, rgba(255,255,255,.14) 0 1px, transparent 1px),
+    radial-gradient(circle at 84% 66%, rgba(255,255,255,.10) 0 1px, transparent 1px),
+    linear-gradient(150deg,
+      color-mix(in srgb, var(--tile-rare) 74%, black) 0%,
+      var(--tile-rare) 58%,
+      color-mix(in srgb, var(--tile-rare) 70%, #7f6bff) 100%);
+  border-color: color-mix(in srgb, var(--tile-rare) 55%, black);
+}}
+.square.is-open {{
+  border-color: var(--amber);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 55%, transparent);
+}}
+.square.is-empty {{
+  background: var(--panel);
+  border: 1px solid var(--line);
+  opacity: .55;
+}}
 .square-name {{
   font-family: 'Oswald', sans-serif;
   text-transform: uppercase;
   letter-spacing: .03em;
   font-size: .95rem;
   line-height: 1.1;
-  color: var(--chalk);
+  color: #FFFFFF;
+  text-shadow: 0 1px 2px rgba(0,0,0,.45);
 }}
+.square.is-empty .square-name {{ color: var(--chalk); text-shadow: none; }}
 .square-meta {{
   font-family: 'IBM Plex Mono', monospace;
   font-size: .66rem;
-  color: var(--muted);
+  color: rgba(255,255,255,.78);
   letter-spacing: .04em;
   text-transform: uppercase;
 }}
+.square.is-empty .square-meta {{ color: var(--muted); }}
+.square .stars-back {{ color: rgba(255,255,255,.30); }}
+.square .stars-fore {{ color: #FFD87A; }}
+.square .stars-num  {{ color: rgba(255,255,255,.78); }}
 
 /* The open button sits under each square face. */
 div[data-testid="column"] .stButton > button {{

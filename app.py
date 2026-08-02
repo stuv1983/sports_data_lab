@@ -210,11 +210,19 @@ CAPTAIN_OK = getattr(C, "captain_available", lambda _con: False)(con)
 CAPTAIN_BUILDERS = getattr(C, "CAPTAIN_BUILDER_NAMES", set())
 RISING_STAR_OK = getattr(C, "rising_star_available", lambda _con: False)(con)
 RISING_STAR_BUILDERS = getattr(C, "RISING_STAR_BUILDER_NAMES", set())
+FAMILY_RELATIONSHIPS_OK = getattr(
+    C, "family_relationships_available", lambda _con: False
+)(con)
+FAMILY_RELATIONSHIP_BUILDERS = getattr(
+    C, "FAMILY_RELATIONSHIP_BUILDER_NAMES", set()
+)
 AVAILABLE = [k for k in C.BUILDERS
              if (DRAFT_OK or k not in C.DRAFT_BUILDERS)
              and (AWARDS_OK or k not in C.AWARD_BUILDER_NAMES)
              and (CAPTAIN_OK or k not in CAPTAIN_BUILDERS)
-             and (RISING_STAR_OK or k not in RISING_STAR_BUILDERS)]
+             and (RISING_STAR_OK or k not in RISING_STAR_BUILDERS)
+             and (FAMILY_RELATIONSHIPS_OK
+                  or k not in FAMILY_RELATIONSHIP_BUILDERS)]
 
 st.sidebar.markdown(
     f"<div class='brand'>{SPORT.label}</div>"
@@ -238,6 +246,19 @@ with st.sidebar.expander("Database status", expanded=False):
     if not RISING_STAR_OK and SPORT.key == "afl":
         st.caption("Run `fetch_footywire_rising_star.py`, "
                    "then `load_rising_star.py`.")
+    if SPORT.key == "afl":
+        if FAMILY_RELATIONSHIPS_OK:
+            n_family = getattr(C, "family_member_count", lambda _con: 0)(con)
+            n_relationships = getattr(
+                C, "trusted_relationship_count", lambda _con: 0
+            )(con)
+            st.caption(
+                f"Family links: ready ({n_family:,} linked players; "
+                f"{n_relationships:,} explicit relationships)."
+            )
+        else:
+            st.caption("Run `scrape_wikipedia_families.py`, then "
+                       "`load_family_relationships.py` for family links.")
 
 
 # ------------------------------------------------------- axis definition

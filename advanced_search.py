@@ -84,10 +84,13 @@ def search_page(sport, con):
             "Repeat `club:` for AND. Use `club_any:` for OR. Supported stat "
             "scopes are `game.`, `season.`, `career.` and `avg.`. Family "
             "fields are `family:`, `family_relation:`, `related_to:` and "
-            "`relative_club:`. `family_relation:` accepts `sibling`, "
-            "`brother`, `parent_child`, `father_son`, `extended` or `spouse`. "
-            "URL links may use `q=` or structured parameters. All game-scoped "
-            "conditions apply to the same match."
+            "`relative_club:`. Valid family relations are `sibling`, "
+            "`brother`, `parent_child`, `father_son`, `extended` and "
+            "`spouse`. URL links may use `q=` or structured parameters such "
+            "as `club=`, `captain=1`, `family_relation=brother`, "
+            "`captain_from=`/`captain_to=`, `games_min=` and "
+            "`game_disposals_min=`. All game-scoped conditions apply to the "
+            "same match."
         )
 
     if not query.strip():
@@ -96,9 +99,11 @@ def search_page(sport, con):
 
     try:
         # Optional layers may provide connection-local placeholder tables.
-        for helper_name in ("ensure_captain_table",
-                            "ensure_rising_star_table",
-                            "ensure_family_relationship_tables"):
+        for helper_name in (
+            "ensure_captain_table",
+            "ensure_rising_star_table",
+            "ensure_family_relationship_tables",
+        ):
             ensure = getattr(sport.C, helper_name, None)
             if ensure:
                 ensure(con)

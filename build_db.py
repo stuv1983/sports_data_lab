@@ -321,7 +321,7 @@ def obscurity_score(p):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default="gridley.db")
+    ap.add_argument("--db", default="data/afl/afl.db")
     ap.add_argument("--refresh", action="store_true")
     ap.add_argument("--no-matches", action="store_true",
                     help="skip the derive_matches.py step")
@@ -358,3 +358,13 @@ if __name__ == "__main__":
         _sdl_family_draft.refresh_default(verbose=True)
     except Exception as _sdl_exc:
         print(f"Family-draft refresh skipped: {_sdl_exc}")
+
+
+# SDL_FAMILY_RELATIONSHIPS_REFRESH — relink the optional broad family layer
+# after a clean database rebuild. Safe no-op when its local CSVs do not exist.
+if __name__ == "__main__":
+    try:
+        import load_family_relationships as _sdl_family_relationships
+        _sdl_family_relationships.refresh_default(verbose=True)
+    except Exception as _sdl_exc:
+        print(f"family relationship refresh skipped: {_sdl_exc}")

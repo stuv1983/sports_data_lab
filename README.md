@@ -274,6 +274,23 @@ The importer can also be run separately:
 python load_rising_star.py
 ```
 
+### Broad family relationships
+
+Wikipedia's broad football-family list can be scraped and conservatively
+linked for sibling, parent-child and extended-family search:
+
+```bash
+python scrape_wikipedia_families.py --report
+python load_family_relationships.py --report --details
+```
+
+Advanced Search examples:
+
+```text
+family_relation:brother postseason:true sort:obscurity
+related_to:"Gary Ablett" relative_club:Geelong
+```
+
 ### Family-draft relationships
 
 Family-draft data is loaded and linked separately:

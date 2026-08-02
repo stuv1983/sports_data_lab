@@ -312,9 +312,14 @@ def test_grid_fixtures(con):
         # an optional layer like draft/award/captain data, so a clean core
         # build has no rising_star_nominees table.  The criterion must still
         # parse; executing its SQL belongs to the enriched-database suite.
+        # VALIDATION_FAMILY_LAYER_V1 — the broad Wikipedia family layer is
+        # optional like draft/award/captain/Rising Star data, so a clean
+        # core build has no family tables.  The criterion must still parse;
+        # executing its SQL belongs to test_family_relationships.py.
         optional = {'draft', 'draft_links', 'awards',
                     'all_australian', 'person_links', 'captaincies',
-                    'rising_star_nominees'}
+                    'rising_star_nominees',
+                    'family_members', 'family_relationships'}
         if referenced & optional:
             return
         n = con.execute(
@@ -454,14 +459,20 @@ def test_historic_grid_library(con):
             check(f"{grid.key}: all nine intersections execute",
                   report.squares_ok is True, report.line())
 
-    # VALIDATION_OPTIONAL_RISING_STAR_V1 — Rising Star nominations moved from
-    # "unsupported" to a supported optional layer, exactly as CLUB CAPTAIN did.
-    # Only criteria with no data source at all belong in this list.
-    genuinely_unsupported = ("BROTHER PLAYED",)
+    # VALIDATION_FAMILY_LAYER_V1 — BROTHER PLAYED moved from "unsupported" to
+    # the broad Wikipedia family layer, exactly as CLUB CAPTAIN and Rising
+    # Star nominations did before it. Only criteria with no data source at
+    # all belong in this list, and none of the captured grids now carry one.
+    genuinely_unsupported = ()
     declined = {item.text for report in reports for item in report.unsupported}
     for criterion in genuinely_unsupported:
         check(f"{criterion} is still declined", criterion in declined,
               "; ".join(sorted(declined)) or "none")
+
+    brother, brother_label = P.parse("BROTHER PLAYED")
+    check("BROTHER PLAYED parses as the optional family constraint",
+          brother is not None and brother_label == "brother also played",
+          brother_label or "declined")
 
     captain, captain_label = P.parse("CLUB CAPTAIN")
     check("CLUB CAPTAIN parses as the optional captaincy constraint",

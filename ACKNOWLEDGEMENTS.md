@@ -38,6 +38,13 @@ AFL father-son and AFLW father-daughter draft relationships. Retrieved through
 the MediaWiki API with the source revision and CC BY-SA 4.0 attribution stored
 beside the local CSV. Raw source files and the derived database remain local.
 
+**Wikipedia — List of Australian rules football families** —
+<https://en.wikipedia.org/wiki/List_of_Australian_rules_football_families>
+Family membership and explicitly stated sibling, parent-child and extended
+family relationships. The scraper records the source URL and revision ID and
+keeps ambiguous prose out of trusted query results. Wikipedia content is
+available under CC BY-SA; attribution and revision metadata are retained.
+
 **Gridley** — <https://gridleygame.com>
 The daily AFL grid puzzle the solver was originally written for. This
 project is an unaffiliated fan tool; it does not reproduce Gridley's puzzles
