@@ -1,0 +1,351 @@
+"""
+constraints.py -- AFL square descriptions, compiled to SQL.
+
+Every constraint compiles to a fragment selecting DISTINCT player_id.
+Intersecting two of them solves one square of the grid.
+
+Used by app.py (the Streamlit grid), make_sql.py (the .sql files),
+parse_criteria.py and gridley.py.
+
+WHAT CHANGED
+------------
+The sport-agnostic half of this module now lives in core.py: the solver,
+the standalone-SQL renderer, the schema check, and every builder that
+differed between sports only by column name. This file keeps its full
+public surface -- every function, BUILDERS entry and constant that other
+modules imported before is still importable from here, with identical
+behaviour -- but the shared machinery is written once.
+
+The AFL-specific parts that stay here are the ones with no honest NBA
+counterpart: grand finals, premierships, wooden spoons, leading
+goalkickers, and the Draftguru draft layer.
+"""
+
+import core
+import sports
+
+# The schema and vocabulary lists are declared once, in sports.py, because
+# the sport picker needs them before this module is imported.
+SCHEMA = sports.AFL_SCHEMA
+STATS = sports.AFL_STATS
+CLUBS = sports.AFL_CLUBS
+VENUE_ALIASES = sports.AFL_VENUE_ALIASES
+
+_G = core.Generic(SCHEMA)
+
+
+# ------------------------------------------------- generic, bound to AFL
+# Re-exported under the names callers already use.
+
+played_for = _G.played_for
+debut_club = _G.debut_club
+one_club_player = _G.one_club_player
+played_for_n_clubs = _G.played_for_n_clubs
+multi_club_player = _G.multi_club_player
+
+career_games_min = _G.career_games_min
+career_games_max = _G.career_games_max
+career_goals_min = _G.career_score_min
+career_goals_max = _G.career_score_max
+career_goals_between = _G.career_score_between
+
+stat_in_a_game = _G.stat_in_a_game
+two_stats_same_game = _G.two_stats_same_game
+season_stat_average_min = _G.season_stat_average_min
+
+#: Exposed so the UI and the tests can state the threshold rather than
+#: leaving it buried in a default argument.
+SEASON_AVG_MIN_GAMES = _G.SEASON_AVG_MIN_GAMES
+
+goals_at_multiple_clubs = _G.score_at_multiple_clubs
+games_at_multiple_clubs = _G.games_at_multiple_clubs
+
+played_in_season_range = _G.played_in_season_range
+debuted_between = _G.debuted_between
+
+teammate_of = _G.teammate_of
+teammate_of_id = _G.teammate_of_id
+
+played_at_venue = _G.played_at_venue
+
+# Finals are the AFL's name for the post-season. The semantics are the
+# generic ones; only the wording differs.
+finals_games_min = _G.postseason_games_min
+played_in_a_final = _G.played_postseason
+never_played_finals = _G.never_played_postseason
+no_finals_wins = _G.no_postseason_wins
+never_won_a_final = _G.never_won_postseason
+won_a_final = _G.won_postseason
+won_a_final_at = _G.won_postseason_at
+goal_average_in_finals = _G.score_average_in_postseason
+
+
+def _venue(name):
+    """Kept for callers that resolved a venue alias directly."""
+    return SCHEMA.canonical_venue(name)
+
+
+# -------------------------------------------------------- AFL-specific
+# A grand final is one nominated round, not simply the last post-season
+# game, so these read `round` rather than the generic is_final flag.
+
+def premiership_player():
+    return ("""SELECT DISTINCT player_id FROM games
+               WHERE UPPER(TRIM(round)) = 'GF' AND result = 'W'""", [])
+
+
+def no_grand_finals():
+    """Never played in a grand final."""
+    return ("""SELECT player_id FROM players WHERE player_id NOT IN
+               (SELECT player_id FROM games
+                WHERE UPPER(TRIM(round)) = 'GF')""", [])
+
+
+def played_a_grand_final():
+    return ("""SELECT DISTINCT player_id FROM games
+               WHERE UPPER(TRIM(round)) = 'GF'""", [])
+
+
+def leading_goalkicker():
+    """Led their club's goalkicking in at least one season."""
+    return ("""SELECT DISTINCT player_id FROM season_goals
+               WHERE is_club_leading = 1""", [])
+
+
+def wooden_spoon_player():
+    """Played for a club in a season it finished last."""
+    return ("""SELECT DISTINCT g.player_id FROM games g
+               JOIN team_seasons t
+                 ON t.season = g.season AND t.club_now = g.club_now
+               WHERE t.wooden_spoon = 1""", [])
+
+
+# ----------------------------------------------------- draft constraints
+# These read draft_links, and deliberately only trust rows that
+# link_draft.py resolved unambiguously. Ambiguous rows are excluded.
+
+_LINKED = ("SELECT player_id FROM draft_links "
+           "WHERE match_status IN ('unique','resolved') AND player_id IS NOT NULL")
+
+_DRAFT_JOIN = """SELECT l.player_id FROM draft_links l JOIN draft d
+                   ON d.rowid = l.draft_rowid
+                 WHERE l.match_status IN ('unique','resolved')
+                   AND l.player_id IS NOT NULL"""
+
+
+def draft_pick_between(lo, hi):
+    """National Draft selection between two pick numbers, inclusive.
+
+    Draftguru restarts pick numbering for the Rookie, Pre-Season and
+    Mid-Season drafts. Without the draft-type predicate, a normal "top-10
+    draft pick" square silently includes all of those separate pick 1-10s.
+    """
+    return (f"""{_DRAFT_JOIN}
+                  AND LOWER(d.draft_type) LIKE '%national%'
+                  AND d.pick BETWEEN ? AND ?""", [lo, hi])
+
+
+def draft_of_type(kind):
+    """National / Rookie / Pre-Season / Mid-Season / Trade / Free Agency."""
+    return (f"""{_DRAFT_JOIN}
+                  AND LOWER(d.draft_type) LIKE ?""", [f"%{kind.lower()}%"])
+
+
+def drafted_by(club):
+    return (f"""{_DRAFT_JOIN}
+                  AND LOWER(d.club) LIKE ?""", [f"%{club.lower()}%"])
+
+
+def drafted_by_but_never_played_for(club):
+    """Drafted by a club, never played a senior game for it."""
+    return (f"""{_DRAFT_JOIN}
+                  AND LOWER(d.club) LIKE ?
+                  AND l.player_id NOT IN (
+                      SELECT player_id FROM games
+                      WHERE club_now = ? OR club_hist = ?)""",
+            [f"%{club.lower()}%", club, club])
+
+
+def recruited_from(source):
+    """Original club / junior club substring, e.g. 'Glenelg', 'Oakleigh'."""
+    return (f"""{_DRAFT_JOIN}
+                  AND LOWER(d.original_club) LIKE ?""",
+            [f"%{source.lower()}%"])
+
+
+def drafted_between(lo, hi):
+    return (f"""{_DRAFT_JOIN}
+                  AND d.draft_year BETWEEN ? AND ?""", [lo, hi])
+
+
+# ---------------------------------------------------------------- registry
+
+BUILDERS = {
+    "Played for club":            (played_for, ["club"]),
+    "150+ / N+ career games":     (career_games_min, ["games"]),
+    "Fewer than N career games":  (career_games_max, ["games"]),
+    "N+ career goals":            (career_goals_min, ["goals"]),
+    "N or fewer career goals":    (career_goals_max, ["goals"]),
+    "Season average of a stat":   (season_stat_average_min, ["stat", "avg"]),
+    "N+ of a stat in one game":   (stat_in_a_game, ["stat", "n"]),
+    "Two stats in the same game": (two_stats_same_game,
+                                   ["stat_a", "n_a", "stat_b", "n_b"]),
+    "N+ goals at 2+ clubs":       (goals_at_multiple_clubs, ["goals", "clubs"]),
+    "N+ games at 2+ clubs":       (games_at_multiple_clubs, ["games", "clubs"]),
+    "Teammate of…":               (teammate_of_id, ["player_id"]),
+    "No finals wins (played finals)": (no_finals_wins, []),
+    "Never won a final":          (never_won_a_final, []),
+    "Never played finals":        (never_played_finals, []),
+    "Premiership player":         (premiership_player, []),
+    "Played between seasons":     (played_in_season_range, ["from", "to"]),
+    "Debuted between seasons":    (debuted_between, ["from", "to"]),
+    "One-club player":            (one_club_player, []),
+    "Played for N+ clubs":        (played_for_n_clubs, ["clubs"]),
+    "Multi-club player":          (multi_club_player, []),
+    "First career game for club": (debut_club, ["club"]),
+    "Played at venue":            (played_at_venue, ["venue"]),
+    "Won a final at venue":       (won_a_final_at, ["venue"]),
+    "N+ finals games":            (finals_games_min, ["n"]),
+    "Played in a final":          (played_in_a_final, []),
+    "Won a final":                (won_a_final, []),
+    "No grand finals":            (no_grand_finals, []),
+    "Played a grand final":       (played_a_grand_final, []),
+    "Goal average in finals":     (goal_average_in_finals, ["avg"]),
+    "Club leading goalkicker":    (leading_goalkicker, []),
+    "Wooden spoon season":        (wooden_spoon_player, []),
+    "Draft pick between":         (draft_pick_between, ["from", "to"]),
+    "Draft type (National/Rookie…)": (draft_of_type, ["kind"]),
+    "Drafted by club":            (drafted_by, ["club"]),
+    "Drafted by club, never played there": (drafted_by_but_never_played_for,
+                                            ["club"]),
+    "Recruited from…":            (recruited_from, ["source"]),
+    "Drafted between years":      (drafted_between, ["from", "to"]),
+}
+
+DRAFT_BUILDERS = {"Draft pick between", "Draft type (National/Rookie…)",
+                  "Drafted by club", "Drafted by club, never played there",
+                  "Recruited from…", "Drafted between years"}
+
+
+def draft_available(con):
+    """True when the Draftguru draft import and linker are loaded."""
+    return core.have_tables(con, "draft", "draft_links")
+
+
+# ------------------------------------------------- engine, bound to AFL
+# Thin wrappers so existing callers keep their signatures. The bodies are
+# in core.py and shared with every other sport.
+
+def require_schema(con):
+    """Fail loudly at startup if the database predates a migration."""
+    core.require_schema(con, SCHEMA)
+    # A connection-local empty table keeps optional captain constraints safe
+    # before the separate captaincy dataset has been imported.
+    ensure_captain_table(con)
+    ensure_rising_star_table(con)
+    ensure_family_draft_table(con)
+
+
+def solve(con, constraints, limit=25, order="obscurity"):
+    """Intersect constraints and return ranked players."""
+    ensure_captain_table(con)
+    ensure_rising_star_table(con)
+    ensure_family_draft_table(con)
+    return core.solve(con, constraints, SCHEMA, limit=limit, order=order)
+
+
+def count(con, constraints):
+    """How many players satisfy every constraint."""
+    ensure_captain_table(con)
+    ensure_rising_star_table(con)
+    ensure_family_draft_table(con)
+    return core.count(con, constraints, SCHEMA)
+
+
+def square(con, constraints, order="obscurity"):
+    """Eligible count plus the single best answer, for a prefilled board."""
+    ensure_captain_table(con)
+    ensure_rising_star_table(con)
+    ensure_family_draft_table(con)
+    return core.square(con, constraints, SCHEMA, order=order)
+
+
+def to_standalone_sql(constraints, limit=25):
+    """Render an intersection as a single pasteable SQL statement."""
+    return core.to_standalone_sql(constraints, SCHEMA, limit=limit)
+
+
+# Star-rating helpers, re-exported so the UI never imports core directly.
+star_value = core.star_value
+stars_text = core.stars_text
+stars_html = core.stars_html
+STAR_DISCLAIMER = core.STAR_DISCLAIMER
+
+
+# Optional club-captain layer. The persistent table is created by
+# load_captains.py; a TEMP placeholder keeps parsing and old databases safe.
+from captains import (  # noqa: E402
+    CAPTAIN_BUILDERS,
+    captain_available,
+    captain_count,
+    ensure_captain_table,
+    club_captain,
+    captain_of,
+    captain_between,
+    captain_of_between,
+)
+
+BUILDERS.update(CAPTAIN_BUILDERS)
+CAPTAIN_BUILDER_NAMES = set(CAPTAIN_BUILDERS)
+
+
+# Optional Draftguru award/signing constraints. The module ships with the
+# separate Draftguru update, so its absence must degrade to "no award
+# builders" rather than break every import of this module.
+try:
+    from awards import AWARD_BUILDERS, AWARD_SLUGS, awards_available  # noqa: E402
+except ImportError:
+    AWARD_BUILDERS: dict = {}
+    AWARD_SLUGS: dict = {}
+
+    def awards_available(_con) -> bool:
+        return False
+
+BUILDERS.update(AWARD_BUILDERS)
+AWARD_BUILDER_NAMES = set(AWARD_BUILDERS)
+
+# Optional FootyWire Rising Star nomination layer.  The network fetcher is
+# permission-gated; load_rising_star.py links local CSV rows to players.
+from rising_star import (  # noqa: E402
+    RISING_STAR_BUILDERS,
+    ensure_rising_star_table,
+    rising_star_available,
+    rising_star_count,
+    rising_star_nominee,
+    rising_star_nominee_in,
+    rising_star_nominee_between,
+    rising_star_nominee_for,
+    rising_star_nominee_for_between,
+)
+
+BUILDERS.update(RISING_STAR_BUILDERS)
+RISING_STAR_BUILDER_NAMES = set(RISING_STAR_BUILDERS)
+
+
+# Optional Wikipedia AFL father-son / AFLW father-daughter relationship layer.
+# Both people are linked independently; only trusted AFL links become answers.
+from family_draft import (  # noqa: E402
+    FAMILY_DRAFT_BUILDERS,
+    ensure_family_draft_table,
+    family_draft_available,
+    family_draft_count,
+    father_son_selection,
+    father_also_played_afl,
+    father_played_for,
+    parent_child_pair,
+    child_of_father_id,
+    child_of_father_name,
+)
+
+BUILDERS.update(FAMILY_DRAFT_BUILDERS)
+FAMILY_DRAFT_BUILDER_NAMES = set(FAMILY_DRAFT_BUILDERS)

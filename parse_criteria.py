@@ -1,0 +1,410 @@
+"""
+parse_criteria.py -- Turn Gridley's criterion text into constraints.
+
+Gridley writes squares as short phrases: "150+ GAMES PLAYED",
+"30+ GOALS TWO DIFF CLUBS", "MASON WOOD TEAMMATE". This maps those to
+the constraint functions in constraints.py.
+
+Anything it can't map returns None with a reason, so an unrecognised
+square is reported rather than silently answered wrong.
+"""
+
+import re
+import constraints as C
+import awards as A
+
+# Gridley shows clubs as logos, not text. Column identity usually arrives
+# as a club name or slug from the API; these are the aliases we accept.
+CLUB_ALIASES = {
+    "st kilda": "St Kilda", "saints": "St Kilda", "stkilda": "St Kilda",
+    "north melbourne": "North Melbourne", "kangaroos": "North Melbourne",
+    "north": "North Melbourne", "roos": "North Melbourne",
+    "western bulldogs": "Western Bulldogs", "bulldogs": "Western Bulldogs",
+    "footscray": "Footscray", "dogs": "Western Bulldogs",
+    "brisbane lions": "Brisbane Lions", "lions": "Brisbane Lions",
+    "brisbane bears": "Brisbane Bears", "bears": "Brisbane Bears",
+    "greater western sydney": "GWS", "gws": "GWS", "giants": "GWS",
+    "sydney": "Sydney", "swans": "Sydney", "south melbourne": "Sydney",
+    "adelaide": "Adelaide", "crows": "Adelaide",
+    "port adelaide": "Port Adelaide", "power": "Port Adelaide",
+    "west coast": "West Coast", "eagles": "West Coast",
+    "fremantle": "Fremantle", "dockers": "Fremantle",
+    "gold coast": "Gold Coast", "suns": "Gold Coast",
+    "carlton": "Carlton", "blues": "Carlton",
+    "collingwood": "Collingwood", "magpies": "Collingwood", "pies": "Collingwood",
+    "essendon": "Essendon", "bombers": "Essendon",
+    "geelong": "Geelong", "cats": "Geelong",
+    "hawthorn": "Hawthorn", "hawks": "Hawthorn",
+    "melbourne": "Melbourne", "demons": "Melbourne", "dees": "Melbourne",
+    "richmond": "Richmond", "tigers": "Richmond",
+    "fitzroy": "Fitzroy", "university": "University",
+}
+
+# Criterion words -> the stat column they refer to.
+STAT_WORDS = {
+    "disposal": "disposals", "kick": "kicks", "handball": "handballs",
+    "mark": "marks", "goal": "goals", "behind": "behinds",
+    "tackle": "tackles", "hit out": "hitouts", "hitout": "hitouts",
+    "inside 50": "inside50s", "clearance": "clearances",
+    "rebound": "rebounds", "contested possession": "contested",
+    "one percenter": "one_percenters", "bounce": "bounces",
+    "goal assist": "goal_assists", "brownlow vote": "brownlow",
+}
+
+# Criteria the database genuinely cannot express.
+UNSUPPORTED = {
+    r"\bbrother|\bfather\b|\bson\b|related": "family links aren't in the data",
+    r"\b(born|from) (tas|vic|wa|sa|nsw|qld|nt)": "birthplace isn't in the data",
+    r"tasmanian|indigenous|irish|father[- ]son|academy":
+        "player background isn't in the available linked data",
+    r"guernsey|jumper number|number \d+": "jumper numbers aren't stored",
+    r"\bcoach": "coaching records aren't in the players table",
+}
+
+
+def _num(s, default=None):
+    m = re.search(r"(\d+)", s)
+    return int(m.group(1)) if m else default
+
+
+# Phrases that mean "at most n" rather than "fewer than n". Gridley writes
+# both, and the difference is a whole boundary player.
+_INCLUSIVE_MAX = re.compile(r"or fewer|or less|at most|no more than|up to")
+_STRICT_MAX = re.compile(r"less than|fewer than|under|below|\bunder\b|<")
+
+
+def _is_max(t):
+    """True if the criterion caps a total rather than setting a floor."""
+    return bool(_STRICT_MAX.search(t) or _INCLUSIVE_MAX.search(t))
+
+
+def _max_bound(t, n):
+    """
+    Translate a capped phrase into the inclusive bound the SQL wants.
+
+    "LESS THAN 20 GOALS" is 19, not 20. The builders take an inclusive
+    `<=`, so the strict wording has to lose one here, where the words are
+    still in front of us -- doing it inside the builder would leave two
+    near-identical functions chosen by guesswork.
+    """
+    if _INCLUSIVE_MAX.search(t):
+        return n
+    return max(n - 1, 0)
+
+
+def parse(text):
+    """
+    Return (constraint, label) or (None, reason).
+    `text` is one Gridley criterion, e.g. "30+ GOALS TWO DIFF CLUBS".
+    """
+    if not text:
+        return None, "empty criterion"
+
+    t = " ".join(str(text).lower().split())
+    t = t.replace("’", "'").replace("+", "+ ")
+    t = " ".join(t.split())
+
+    # 1. A bare club name.
+    stripped = t.replace("+", "").strip()
+    if stripped in CLUB_ALIASES:
+        club = CLUB_ALIASES[stripped]
+        return C.played_for(club), club
+
+    # 2. Awards and Draftguru signing types. These must run before the
+    # unsupported checks so "All-Australian captain" is not mistaken for
+    # unsupported club captaincy, and explicit father-son selections are
+    # not swallowed by the broader family-link decline.
+    if re.search(r"all[- ]australian", t):
+        if "captain" in t:
+            return A.all_australian_captain(), "All-Australian captain"
+        if "squad" in t:
+            return A.all_australian_squad(), "All-Australian squad"
+        yr = re.search(r"(\d{4})\s*[-–]\s*(\d{4})", t)
+        if yr:
+            lo, hi = int(yr.group(1)), int(yr.group(2))
+            return A.all_australian_between(lo, hi), f"All-Australian {lo}-{hi}"
+        one_year = re.search(r"\b((?:19|20)\d{2})\b", t)
+        if one_year:
+            year = int(one_year.group(1))
+            return A.all_australian_between(year, year), f"{year} All-Australian"
+        times = re.search(r"(\d+)\s*(?:x|times?)\b", t)
+        n = int(times.group(1)) if times else None
+        if n and n > 1:
+            return A.all_australian(n), f"{n}x All-Australian"
+        return A.all_australian(1), "All-Australian"
+
+    if re.search(r"brownlow (medal(?:list|ist)?|winner)", t):
+        return A.brownlow_medallist(), "Brownlow Medallist"
+    if re.search(r"coleman", t):
+        return A.coleman_medallist(), "Coleman Medallist"
+    if re.search(r"norm smith", t):
+        return A.norm_smith_medallist(), "Norm Smith Medallist"
+    if re.search(r"rising star (winner|medallist)", t):
+        return A.won_award("rising-star"), "Rising Star winner"
+
+    state_awards = {
+        "magarey": "magarey-medal",
+        "sandover": "sandover-medal",
+        "liston": "liston-trophy",
+        "morrish": "morrish-medal",
+        "larke": "larke-medal",
+        "hunter harrison": "hunter-harrison-medal",
+        "gardiner": "gardiner-medal",
+        "geoff christian": "geoff-christian-medal",
+    }
+    for phrase, slug in state_awards.items():
+        if phrase in t:
+            return A.won_award(slug), f"{phrase.title()} medallist"
+    if re.search(r"state[- ]league medallist", t):
+        return A.state_league_medallist(), "state-league medallist"
+
+    if re.search(r"best and fairest|b&f", t):
+        m = re.search(r"(\d+)\+?\s*(?:different\s+)?clubs?", t)
+        if m:
+            n = int(m.group(1))
+            return A.best_and_fairest_at_multiple_clubs(n), f"B&F at {n}+ clubs"
+        for alias, club in CLUB_ALIASES.items():
+            if re.search(rf"\b{re.escape(alias)}\b", t):
+                return A.best_and_fairest_at(club), f"{club} best and fairest"
+        n = _num(t)
+        return A.best_and_fairest(n or 1), "club best and fairest"
+
+    if re.search(r"(number|pick) ?(one|1)\b.*(draft|pick)|#1 (draft )?pick", t):
+        return A.number_one_draft_pick(), "number one draft pick"
+    if re.search(r"\bfather[- ]son(?: selection)?\b", t):
+        return A.father_son(), "father-son selection"
+    if re.search(r"\bacademy selection\b", t):
+        return A.academy_selection(), "academy selection"
+
+    # 3. Explicitly unsupported.
+    # Parse optional linked club-captain criteria.
+    # All-Australian captain is parsed earlier by the awards block.
+    if re.search(r"\bclub captain\b|^captain$|\bwas (?:a )?captain\b|"
+                 r"\bcaptained(?: of| for)?\b", t):
+        aliases = globals().get(
+            "CLUB_ALIASES", {club.lower(): club for club in C.CLUBS})
+        for alias, club in sorted(
+                aliases.items(), key=lambda item: len(item[0]), reverse=True):
+            if re.search(rf"(?<![a-z]){re.escape(alias)}(?![a-z])", t):
+                return C.captain_of(club), f"{club} captain"
+        return C.club_captain(), "club captain"
+
+    # SDL_RISING_STAR_PARSE — optional FootyWire nomination layer.
+    if (re.search(r"\brising star\b", t)
+            and re.search(r"\bnominee|nomination|nominated\b", t)
+            and not re.search(r"\bwinner|won\b", t)):
+        years = [int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", t)]
+        aliases = globals().get(
+            "CLUB_ALIASES", {club.lower(): club for club in C.CLUBS})
+        club = None
+        for alias, canonical in sorted(
+                aliases.items(), key=lambda item: len(item[0]), reverse=True):
+            if re.search(rf"(?<![a-z]){re.escape(alias)}(?![a-z])", t):
+                club = canonical
+                break
+        if club and len(years) >= 2:
+            return (C.rising_star_nominee_for_between(club, years[0], years[1]),
+                    f"{club} Rising Star nominee {years[0]}–{years[1]}")
+        if club:
+            return C.rising_star_nominee_for(club), f"{club} Rising Star nominee"
+        if len(years) >= 2:
+            return (C.rising_star_nominee_between(years[0], years[1]),
+                    f"Rising Star nominee {years[0]}–{years[1]}")
+        if len(years) == 1:
+            return C.rising_star_nominee_in(years[0]), f"{years[0]} Rising Star nominee"
+        return C.rising_star_nominee(), "Rising Star nominee"
+
+    for pat, why in UNSUPPORTED.items():
+        if re.search(pat, t):
+            return None, why
+
+    # 4. Teammate of a named player.
+    m = re.match(r"^(.+?)\s+teammate$", t)
+    if m:
+        name = m.group(1).strip().title()
+        return C.teammate_of(name), f"{name} teammate"
+
+    # 3b. Venue squares. "MCG WON A FINAL" must beat the generic rules.
+    venue_hit = None
+    for alias in sorted(C.VENUE_ALIASES, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(alias)}\b", t):
+            venue_hit = alias
+            break
+    if venue_hit:
+        canon = C.VENUE_ALIASES[venue_hit]
+        if re.search(r"won a final|final win", t):
+            return C.won_a_final_at(canon), f"won a final at {venue_hit}"
+        return C.played_at_venue(canon), f"played at {venue_hit}"
+
+    # 3c. "<CLUB> FIRST CAREER GAME" / "DEBUTED FOR <CLUB>"
+    if re.search(r"first (career )?game|debut", t):
+        for alias, club in CLUB_ALIASES.items():
+            if re.search(rf"\b{re.escape(alias)}\b", t):
+                return C.debut_club(club), f"{club} first career game"
+
+    # 3d. Finals counts and averages.
+    m = re.search(r"(\d+)\+?\s*finals? games?", t)
+    if m:
+        return C.finals_games_min(int(m.group(1))), f"{m.group(1)}+ finals games"
+    m = re.search(r"([\d.]+)\+?\s*goals?\s*(avg|average)", t)
+    if m and "final" in t:
+        return (C.goal_average_in_finals(float(m.group(1))),
+                f"{m.group(1)}+ goal avg in finals")
+    if re.search(r"no grand final", t):
+        return C.no_grand_finals(), "no grand finals"
+    # Winning a grand final is a premiership, and must be tested before the
+    # bare "grand final" rule below, which would otherwise answer the
+    # weaker "played in one" for a criterion that says "won".
+    if re.search(r"(won|win|winner).{0,12}grand final|grand final (win|winner)",
+                 t):
+        return C.premiership_player(), "premiership player"
+    if re.search(r"played (in )?a grand final|grand final", t):
+        return C.played_a_grand_final(), "played a grand final"
+    # "WON A FINALS GAME" -- a finals win anywhere, as opposed to
+    # won_a_final_at(), which the venue branch above has already claimed.
+    # The negation guard matters: "NO FINALS WINS" and "NEVER WON A FINAL"
+    # both contain a win phrase and mean the exact opposite. They belong to
+    # the rules in section 4 below, so this must not swallow them.
+    if (re.search(r"(won|win).{0,6}(a |an )?finals?( game| match)?\b"
+                  r"|finals? (win|victory)", t)
+            and not re.search(r"\bno\b|\bnever\b|\bwithout\b|\bzero\b", t)):
+        return C.won_a_final(), "won a final"
+    if re.search(r"played (in )?a final|finals? appearance", t):
+        return C.played_in_a_final(), "played in a final"
+
+    # 3d-bis. Season averages: "AVG 5+ MARKS — SEASON".
+    # Grouped per player-season, so one qualifying season is enough. The
+    # finals guard keeps "1+ GOAL AVG IN FINALS" on the finals-average
+    # builder handled above.
+    if re.search(r"\bavg\b|\baverage[ds]?\b", t) and "final" not in t:
+        m = re.search(r"([\d.]+)", t)
+        if m:
+            for word, col in STAT_WORDS.items():
+                if word in t:
+                    n = float(m.group(1))
+                    n = int(n) if n.is_integer() else n
+                    return (C.season_stat_average_min(col, n),
+                            f"{n}+ {col} avg in a season "
+                            f"(min {C.SEASON_AVG_MIN_GAMES} games)")
+
+    # 3e. Season and club awards derivable from the data.
+    if re.search(r"leading goal ?kicker", t):
+        return C.leading_goalkicker(), "club leading goalkicker"
+    if re.search(r"wooden spoon", t):
+        return C.wooden_spoon_player(), "wooden spoon season"
+    if re.search(r"multi[- ]club", t):
+        return C.multi_club_player(), "multi-club player"
+
+    # 3f. Two stats in the same game: "30+ DISPOSALS & 3+ GOALS GAME"
+    if "&" in t or " and " in t:
+        pairs = re.findall(r"(\d+)\+?\s*([a-z ]+?)(?=\s*(?:&| and |$))", t)
+        found = []
+        for n, word in pairs:
+            for w, col in STAT_WORDS.items():
+                if w in word:
+                    found.append((col, int(n)))
+                    break
+        if len(found) >= 2:
+            (sa, na), (sb, nb) = found[0], found[1]
+            return (C.two_stats_same_game(sa, na, sb, nb),
+                    f"{na}+ {sa} & {nb}+ {sb}")
+
+    # 4. Finals and premierships.
+    if re.search(r"no finals win", t):
+        return C.no_finals_wins(), "no finals wins"
+    if re.search(r"never (won|win) a? ?final", t):
+        return C.never_won_a_final(), "never won a final"
+    if re.search(r"no finals|never played finals", t):
+        return C.never_played_finals(), "never played finals"
+    if re.search(r"premiership|flag|grand final win", t):
+        return C.premiership_player(), "premiership player"
+
+    # 5. One-club / multi-club.
+    if re.search(r"one[- ]club", t):
+        return C.one_club_player(), "one-club player"
+    m = re.search(r"(\d+)\+?\s*(?:different\s+)?clubs?", t)
+    if m and not re.search(r"goal|game", t):
+        n = int(m.group(1))
+        return C.played_for_n_clubs(n), f"{n}+ clubs"
+
+    # 6. "N+ goals/games for two different clubs".
+    two_clubs = re.search(r"(two|2|three|3)\s*(?:diff\w*|different)?\s*clubs", t)
+    if two_clubs:
+        k = {"two": 2, "2": 2, "three": 3, "3": 3}[two_clubs.group(1)]
+        n = _num(t)
+        if "goal" in t and n:
+            return (C.goals_at_multiple_clubs(n, k),
+                    f"{n}+ goals at {k} clubs")
+        if "game" in t and n:
+            return (C.games_at_multiple_clubs(n, k),
+                    f"{n}+ games at {k} clubs")
+
+    # 7. Career games.
+    # The second clause catches "UNDER 50 GAMES", which names no career
+    # keyword at all. Rules 6 and 8 have already claimed the phrasings
+    # where a bare "games" means something else ("50+ GAMES TWO DIFF
+    # CLUBS", "40+ DISPOSALS IN A GAME"), so a cap word plus "games" here
+    # can only be a career total.
+    if (re.search(r"games? (played|career)|career games?|^\d+\+? games?$", t)
+            or (_is_max(t) and re.search(r"\bgames?\b", t))):
+        n = _num(t)
+        if n:
+            if _is_max(t):
+                bound = _max_bound(t, n)
+                return (C.career_games_max(bound),
+                        f"{bound} or fewer games")
+            return C.career_games_min(n), f"{n}+ games played"
+
+    # 8. A stat threshold in a single game.
+    if re.search(r"in a (game|match)|single game|\bgame\b|\bmatch\b", t):
+        n = _num(t)
+        for word, col in STAT_WORDS.items():
+            if word in t and n:
+                return C.stat_in_a_game(col, n), f"{n}+ {col} in a game"
+
+    # 9. Career goals, floor or cap.
+    # "LESS THAN 20 GOALS — CAREER" is career_goals_max(19). Without the
+    # cap branch this fell through to career_goals_min(20) and answered
+    # the exact opposite question.
+    if "goal" in t:
+        n = _num(t)
+        if n and re.search(r"career|total|\d+\+? goals?$|goals? career", t):
+            if _is_max(t):
+                bound = _max_bound(t, n)
+                return (C.career_goals_max(bound),
+                        f"{bound} or fewer career goals")
+            return C.career_goals_min(n), f"{n}+ career goals"
+
+    # 10. Era / season range.
+    m = re.search(r"(18|19|20)(\d0)s", t)
+    if m:
+        lo = int(m.group(1) + m.group(2))
+        return C.played_in_season_range(lo, lo + 9), f"played in the {lo}s"
+    m = re.search(r"(\d{4})\s*[-–]\s*(\d{4})", t)
+    if m:
+        lo, hi = int(m.group(1)), int(m.group(2))
+        return C.played_in_season_range(lo, hi), f"played {lo}-{hi}"
+
+    # 11. A club name embedded in a longer phrase.
+    for alias, club in CLUB_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", t):
+            return C.played_for(club), club
+
+    return None, f"couldn't interpret: {text!r}"
+
+
+def parse_grid(rows, cols):
+    """Parse six criteria. Returns (parsed_rows, parsed_cols, problems)."""
+    problems = []
+    out = []
+    for axis, items in (("row", rows), ("column", cols)):
+        parsed = []
+        for i, raw in enumerate(items, 1):
+            con, label = parse(raw)
+            if con is None:
+                problems.append(f"{axis} {i} ({raw!r}): {label}")
+                parsed.append((str(raw), None))
+            else:
+                parsed.append((label, con))
+        out.append(parsed)
+    return out[0], out[1], problems

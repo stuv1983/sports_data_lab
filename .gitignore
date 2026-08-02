@@ -1,0 +1,48 @@
+# Built databases and source datasets
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+afldata.rda
+
+# Database snapshots
+gridley-before-*.db
+test_gridley.db
+
+# Scraped, cached and generated third-party data
+data/
+sql/
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Temporary update and repair artefacts
+*.zip
+*.bak
+*.bak_*
+*.broken_*
+parse_criteria.py.broken_rising_star
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# One-off migration, repair and investigation tools
+apply_*_update.py
+fix_*_patch.py
+investigate_*_mismatch.py
+CLEANUP.md
+VALIDATION_*.md
+
+# Local diagnostics and coverage output
+discover/
+*.rda
+.coverage
+htmlcov/
