@@ -210,6 +210,15 @@ CAPTAIN_OK = getattr(C, "captain_available", lambda _con: False)(con)
 CAPTAIN_BUILDERS = getattr(C, "CAPTAIN_BUILDER_NAMES", set())
 RISING_STAR_OK = getattr(C, "rising_star_available", lambda _con: False)(con)
 RISING_STAR_BUILDERS = getattr(C, "RISING_STAR_BUILDER_NAMES", set())
+CLUB_DATA_TABLES = {
+    "clubs", "club_source_snapshots", "club_wikipedia_fields",
+    "club_player_totals", "club_player_register", "club_player_records",
+}
+CLUB_DATA_OK = CLUB_DATA_TABLES <= {
+    row[0] for row in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    )
+}
 FAMILY_RELATIONSHIPS_OK = getattr(
     C, "family_relationships_available", lambda _con: False
 )(con)
@@ -246,6 +255,15 @@ with st.sidebar.expander("Database status", expanded=False):
     if not RISING_STAR_OK and SPORT.key == "afl":
         st.caption("Run `fetch_footywire_rising_star.py`, "
                    "then `load_rising_star.py`.")
+    if SPORT.key == "afl":
+        if CLUB_DATA_OK:
+            club_rows = con.execute(
+                "SELECT COUNT(*) FROM clubs WHERE active=1"
+            ).fetchone()[0]
+            st.caption(f"Club data: ready ({club_rows} current clubs).")
+        else:
+            st.caption("Run `utils/fetch_club_sources.py`, then "
+                       "`utils/load_club_sources.py` for Club Explorer.")
     if SPORT.key == "afl":
         if FAMILY_RELATIONSHIPS_OK:
             n_family = getattr(C, "family_member_count", lambda _con: 0)(con)
@@ -410,6 +428,7 @@ def season_span(sport_key, db, revision):
 NAV_ITEMS = [
     "Home",
     "Player Search",
+    "Club Explorer",
     "Advanced Search",
     "Stats Explorer",
     "Random Discovery",
@@ -428,6 +447,9 @@ if PAGE != "Grid Solver":
         explore.home_page(SPORT, con, DRAFT_OK, AWARDS_OK)
     elif PAGE == "Player Search":
         explore.player_page(SPORT, con, player_picker)
+    elif PAGE == "Club Explorer":
+        import club_explorer
+        club_explorer.club_explorer_page(SPORT, con)
     elif PAGE == "Advanced Search":
         import advanced_search
         advanced_search.search_page(SPORT, con)

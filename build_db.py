@@ -368,3 +368,15 @@ if __name__ == "__main__":
         _sdl_family_relationships.refresh_default(verbose=True)
     except Exception as _sdl_exc:
         print(f"family relationship refresh skipped: {_sdl_exc}")
+
+
+# SDL_CLUB_DATA_REFRESH — re-link locally cached club metadata and records
+# after a clean database rebuild. Safe no-op when no club source files exist.
+if __name__ == "__main__":
+    try:
+        from utils import load_club_sources as _sdl_club_sources
+        _sdl_club_sources.refresh_default(
+            db_path=getattr(a, "db", "gridley.db"), verbose=True
+        )
+    except Exception as _sdl_exc:
+        print(f"club data refresh skipped: {_sdl_exc}")

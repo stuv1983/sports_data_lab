@@ -45,6 +45,18 @@ family relationships. The scraper records the source URL and revision ID and
 keeps ambiguous prose out of trusted query results. Wikipedia content is
 available under CC BY-SA; attribution and revision metadata are retained.
 
+**Wikipedia AFL club pages** — <https://en.wikipedia.org>
+Current-club identity, names, nicknames, colours, grounds, roles, honours and
+other infobox metadata. Retrieved through the MediaWiki API with source page,
+revision ID, timestamp and raw snapshot retained locally. Wikipedia content is
+available under CC BY-SA; attribution metadata is preserved.
+
+**AFL Tables club summaries** — <https://afltables.com>
+Current-club player totals, all-time player lists and season/game record
+leaderboards. Source HTML and derived database tables remain local and are not
+redistributed. Automated fetching is disabled unless the operator explicitly
+confirms permission; offline parsing of saved pages remains supported.
+
 **Gridley** — <https://gridleygame.com>
 The daily AFL grid puzzle the solver was originally written for. This
 project is an unaffiliated fan tool; it does not reproduce Gridley's puzzles

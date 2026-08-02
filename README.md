@@ -42,6 +42,7 @@ The application reads the generated database locally. Database files and downloa
 | Club captaincy | Optional local import |
 | Rising Star nominations | Optional local import |
 | Family-draft relationships | Optional local import |
+| Club metadata and records | Optional local import |
 | NBA | Planned |
 
 Exact season coverage and row counts depend on the version of the upstream cached dataset used for the local build. The application displays live database counts in its **Database status** panel rather than relying on hard-coded numbers.
@@ -52,6 +53,7 @@ The Streamlit application includes the following pages:
 
 - **Home** — project overview and database summary.
 - **Player Search** — find a player and inspect career information.
+- **Club Explorer** — browse current-club metadata, all-time players and records.
 - **Advanced Search** — combine multiple filters using a compact query language.
 - **Stats Explorer** — browse and rank player statistics.
 - **Random Discovery** — surface lesser-known players and records.
@@ -291,6 +293,23 @@ family_relation:brother postseason:true sort:obscurity
 related_to:"Gary Ablett" relative_club:Geelong
 ```
 
+### Club metadata and records
+
+The optional club source utility keeps exactly the 18 current AFL clubs and
+loads Wikipedia metadata plus AFL Tables player totals, all-time player lists
+and season/game record leaderboards from locally cached source files.
+
+```bash
+python utils/fetch_club_sources.py --report
+python utils/load_club_sources.py --db gridley.db --report --details
+python utils/test_club_sources.py
+```
+
+AFL Tables automatic requests are permission-gated. The utility can print or
+open the complete reviewed source manifest for browser-assisted saving, while
+Wikipedia is fetched through the MediaWiki API. See
+`README_CLUB_DATA_UPDATE.md` for the full workflow.
+
 ### Family-draft relationships
 
 Family-draft data is loaded and linked separately:
@@ -380,6 +399,9 @@ Selected files:
 | `rising_star.py` | Rising Star nomination constraints |
 | `historic_grids.py` | Captured-grid validation and practice support |
 | `parse_criteria.py` | Grid criterion parser |
+| `club_explorer.py` | Current-club metadata and records page |
+| `utils/fetch_club_sources.py` | Cache current-club source pages |
+| `utils/load_club_sources.py` | Parse and load club metadata and records |
 | `ACKNOWLEDGEMENTS.md` | Data-source credits and reuse notes |
 
 Database files, caches, downloaded pages, generated SQL and third-party source datasets are excluded through `.gitignore`.
