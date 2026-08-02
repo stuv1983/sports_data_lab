@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 import core
-import query_filters as Q
+import query_filters_family as Q
 
 
 def _db_revision(db):
@@ -49,6 +49,8 @@ EXAMPLES = [
     'game.disposals>=30 game.goals>=3 postseason:true',
     'season.goals>=50 debut:1980..1999 sort:score limit:50',
     'award:brownlow-medal drafted_by:Carlton',
+    'family_relation:brother postseason:true sort:obscurity',
+    'related_to:"Gary Ablett" relative_club:Geelong',
 ]
 
 
@@ -56,9 +58,9 @@ def search_page(sport, con):
     """Render the reusable, URL-addressable player search page."""
     st.markdown("# Advanced Search")
     st.caption(
-        "Combine player, team, era, captaincy, match-stat, award and draft "
-        "filters. Values are parameterised; only known fields and statistics "
-        "can become SQL."
+        "Combine player, team, era, captaincy, family, match-stat, award and "
+        "draft filters. Values are parameterised; only known fields and "
+        "statistics can become SQL."
     )
 
     initial = Q.query_from_params(_all_query_params(st.query_params))
@@ -80,11 +82,12 @@ def search_page(sport, con):
             st.code(example, language=None)
         st.write(
             "Repeat `club:` for AND. Use `club_any:` for OR. Supported stat "
-            "scopes are `game.`, `season.`, `career.` and `avg.`. URL links "
-            "may use `q=` or structured parameters such as `club=`, "
-            "`captain=1`, `captain_from=`/`captain_to=`, `games_min=` and "
-            "`game_disposals_min=`. All game-scoped conditions apply to "
-            "the same match."
+            "scopes are `game.`, `season.`, `career.` and `avg.`. Family "
+            "fields are `family:`, `family_relation:`, `related_to:` and "
+            "`relative_club:`. `family_relation:` accepts `sibling`, "
+            "`brother`, `parent_child`, `father_son`, `extended` or `spouse`. "
+            "URL links may use `q=` or structured parameters. All game-scoped "
+            "conditions apply to the same match."
         )
 
     if not query.strip():
@@ -94,7 +97,8 @@ def search_page(sport, con):
     try:
         # Optional layers may provide connection-local placeholder tables.
         for helper_name in ("ensure_captain_table",
-                            "ensure_rising_star_table"):
+                            "ensure_rising_star_table",
+                            "ensure_family_relationship_tables"):
             ensure = getattr(sport.C, helper_name, None)
             if ensure:
                 ensure(con)
