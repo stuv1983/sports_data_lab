@@ -1,18 +1,463 @@
-# Release-gate hotfix
+# Sports Data Lab
 
-This update fixes the final clean-build validation failures:
+A local-first sports database, research toolkit and puzzle-solving application.
 
-- missing optional award/draft/captain tables are reported as unavailable by
-  `historic_grids.py` instead of being executed as broken squares;
-- club captaincy is tested as a supported optional criterion;
-- the four intended `meta` rows are checked by key and uniqueness;
-- source files are read explicitly as UTF-8 on Windows.
+Sports Data Lab currently focuses on Australian Football League and historical VFL/AFL data. It combines a reproducible SQLite database build, structured player and match search, statistical exploration, data-quality checks and a Gridley-compatible grid solver in one Streamlit interface.
 
-Apply from the project root:
+The underlying query engine and application shell are designed to support additional sports. AFL is the implemented sport today; NBA support is planned but is not yet production-ready.
+
+## What it does
+
+Sports Data Lab is more than a grid solver. It provides:
+
+- a locally built historical AFL player-game database;
+- player, club, season, venue, match-stat and career-stat search;
+- an advanced text query language with bookmarkable URL parameters;
+- statistical leaderboards and random player discovery;
+- a prefilled Grid Solver with eligible-player counts;
+- historical and practice Gridley boards where supported;
+- player and match exploration through Game Lab;
+- database health, schema and optional-data status checks;
+- draft, award, captaincy, Rising Star and family-draft extensions;
+- Dark, Light and Custom appearance modes;
+- CSV export and standalone SQL output.
+
+The application reads the generated database locally. Database files and downloaded source datasets are intentionally excluded from Git.
+
+## Current scope
+
+| Area | Status |
+|---|---|
+| AFL/VFL player-game history | Supported |
+| Career and season summaries | Supported |
+| Derived matches and stable match IDs | Supported |
+| Grid Solver | Supported |
+| Player Search | Supported |
+| Advanced Search | Supported |
+| Stats Explorer | Supported |
+| Game Lab | Supported |
+| Database Health | Supported |
+| Draft and recruitment data | Optional local import |
+| Awards and All-Australian data | Optional local import |
+| Club captaincy | Optional local import |
+| Rising Star nominations | Optional local import |
+| Family-draft relationships | Optional local import |
+| NBA | Planned |
+
+Exact season coverage and row counts depend on the version of the upstream cached dataset used for the local build. The application displays live database counts in its **Database status** panel rather than relying on hard-coded numbers.
+
+## Interface
+
+The Streamlit application includes the following pages:
+
+- **Home** — project overview and database summary.
+- **Player Search** — find a player and inspect career information.
+- **Advanced Search** — combine multiple filters using a compact query language.
+- **Stats Explorer** — browse and rank player statistics.
+- **Random Discovery** — surface lesser-known players and records.
+- **Grid Solver** — build or load a 3 × 3 player grid and inspect every valid answer.
+- **Game Lab** — explore player, match and criterion combinations.
+- **Database Health** — inspect schema, row counts, link quality and optional datasets.
+
+The interface supports Dark, Light and Custom themes through `theme.py`.
+
+## Grid Solver
+
+The Grid Solver intersects one row criterion with one column criterion for each square.
+
+Each populated square shows:
+
+- the best database-ranked answer;
+- the number of eligible players;
+- a 0–5 star obscurity rating;
+- a ranked result list when opened;
+- standalone SQL for the selected square.
+
+The star rating is a local obscurity proxy based on career footprint and era. It is **not** Gridley's live crowd rarity percentage.
+
+Historical grids may be loaded in two modes:
+
+- **Authentic** — only runs grids whose six original criteria are supported.
+- **Practice** — may replace an unsupported criterion with a clearly labelled supported alternative.
+
+Unsupported or incomplete criteria are reported rather than silently guessed.
+
+## Advanced Search
+
+Advanced Search accepts human-readable filters that compile to parameterised SQLite queries.
+
+Examples:
+
+```text
+club:Hawthorn captain:true games>=100 sort:obscurity
+captain_club:Carlton captain_year:1995..2001
+club:"St Kilda" club:Brisbane played:1995..2010
+game.disposals>=30 game.goals>=3 postseason:true
+season.goals>=50 debut:1980..1999 sort:score limit:50
+award:brownlow-medal drafted_by:Carlton
+```
+
+Important behaviour:
+
+- repeating `club:` applies an **AND** condition;
+- `club_any:` applies an **OR** condition;
+- supported stat scopes include `game.`, `season.`, `career.` and `avg.`;
+- all game-scoped conditions apply to the same match;
+- structured URL parameters can reproduce and share searches;
+- values are parameterised and only recognised fields can become SQL.
+
+## Requirements
+
+- Python 3.10 or newer
+- Git
+- SQLite support included with Python
+
+Core Python packages:
+
+```bash
+python -m pip install streamlit pandas numpy pyreadr
+```
+
+Individual optional importers may report extra dependencies when run.
+
+## Clone and set up
+
+### Git Bash on Windows
+
+```bash
+git clone https://github.com/stuv1983/sports_data_lab.git
+cd sports_data_lab
+
+python -m venv .venv
+source .venv/Scripts/activate
+
+python -m pip install --upgrade pip
+python -m pip install streamlit pandas numpy pyreadr
+```
+
+### PowerShell activation
 
 ```powershell
-python .\apply_release_gate_hotfix.py .
-python -m compileall -q .
-python .\test_integration.py
-python .\test_awards_integration.py --db .\gridley.db
+.\.venv\Scripts\Activate.ps1
 ```
+
+## Build the AFL database
+
+Run the standard build from the repository root:
+
+```bash
+python build_db.py
+```
+
+The build process:
+
+1. downloads or reuses the cached `afldata.rda` dataset;
+2. normalises player-game records;
+3. derives results, opponents, finals flags and estimated birth years;
+4. creates career-level player summaries;
+5. builds season goal and team-season tables;
+6. creates SQLite indexes;
+7. derives the canonical `matches` table;
+8. links player-game rows to stable match IDs.
+
+The default legacy database path is:
+
+```text
+gridley.db
+```
+
+The repository also supports the multi-sport layout:
+
+```text
+data/afl/afl.db
+```
+
+When both layouts are possible, `data_paths.py` resolves the active database consistently.
+
+### Refresh the source cache
+
+```bash
+python build_db.py --refresh
+```
+
+### Use a different database path
+
+```bash
+python build_db.py --db my_afl.db
+```
+
+### Skip match derivation
+
+```bash
+python build_db.py --no-matches
+```
+
+Match derivation can then be run separately:
+
+```bash
+python derive_matches.py --db my_afl.db
+```
+
+## Run the application
+
+```bash
+streamlit run app.py
+```
+
+Streamlit will print the local application URL, normally:
+
+```text
+http://localhost:8501
+```
+
+## Optional data layers
+
+The base database remains usable without optional datasets. Builders and filters for an optional layer are shown only when the required tables and trusted player links are available.
+
+### Draft and recruitment
+
+Draftguru data supports draft history, recruitment source, father-son, academy, trade, free-agency and related criteria.
+
+Typical import flow:
+
+```bash
+python load_draftguru.py
+python link_draft.py
+python link_people.py
+```
+
+The precise commands available may vary as import tooling is updated. Check each script's `--help` output before running it.
+
+### Awards
+
+The optional awards layer includes supported Draftguru records such as:
+
+- All-Australian selections;
+- Brownlow Medal;
+- Coleman Medal;
+- Norm Smith Medal;
+- AFLCA and AFLPA awards;
+- club best-and-fairest awards;
+- selected state-league and under-18 medals;
+- number-one National Draft selections.
+
+Only rows linked to a database player with a trusted status are exposed to search and the solver.
+
+### Club captaincy
+
+Captaincy data is imported separately:
+
+```bash
+python load_captains.py
+python load_captains.py --report
+```
+
+Captain filters become available only after linked captaincy rows exist.
+
+### Rising Star nominations
+
+The Rising Star layer supports locally saved source pages and a permission-gated live fetch path:
+
+```bash
+python fetch_footywire_rising_star.py --html-dir SAVED_PAGES --load-db
+```
+
+After written permission for live access:
+
+```bash
+python fetch_footywire_rising_star.py --permission-confirmed --load-db
+```
+
+The importer can also be run separately:
+
+```bash
+python load_rising_star.py
+```
+
+### Family-draft relationships
+
+Family-draft data is loaded and linked separately:
+
+```bash
+python load_family_draft.py
+python load_family_draft.py --report --details
+```
+
+Relationship rows outside the senior-game dataset remain explicitly marked as out of scope rather than being forced onto an incorrect player.
+
+## Data integrity
+
+Sports Data Lab uses conservative linking rules.
+
+- Player names are not treated as globally unique identifiers.
+- Internal `player_id` values are used wherever possible.
+- Optional records are exposed only when they resolve uniquely or have been explicitly resolved.
+- Ambiguous and unmatched source rows are retained for reporting but excluded from answers.
+- Match identity is based on a stable `match_key`.
+- Existing match IDs are reused during refreshes.
+- The Streamlit application opens its database in read-only mode.
+- Missing optional tables degrade to unavailable features rather than application failures.
+- Query values are parameterised to prevent user input becoming arbitrary SQL.
+
+## Statistics and historical caveats
+
+The source dataset is not equally detailed across every era.
+
+- Goal data extends further back than most other player statistics.
+- Disposals, marks, tackles and several related statistics are generally available only from 1965 onward.
+- Pre-statistical-era rows may contain goals but leave later statistics empty.
+- Empty historical values are not automatically treated as zero.
+- Quarter-by-quarter scores and attendance are not derivable from the current player-game source and remain available for later enrichment.
+- Historical club identities and current club lineages are stored separately where required.
+
+Search results should therefore be interpreted in the context of the statistic's recorded era.
+
+## Data sources
+
+### AFL Tables
+
+AFL Tables is the original source of the historical player-game statistics.
+
+This project does **not** scrape AFL Tables directly. Its automated-client restrictions are respected.
+
+### fitzRoy and fitzRoy_data
+
+`build_db.py` downloads the community-maintained cached AFL Tables player-stat dataset published by the fitzRoy project. A single cached dataset replaces a large number of individual page requests.
+
+### Draftguru
+
+Used by optional local importers for draft, recruitment and award history.
+
+### FootyWire
+
+Used for Rising Star nomination history. Live fetching is permission-gated. Manually saved pages may be parsed locally for personal use.
+
+### Gridley
+
+Gridley inspired the original grid-solving workflow. Sports Data Lab is an unaffiliated research and puzzle-support tool. It does not reproduce Gridley's live crowd selection percentages.
+
+See [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md) for source credits, terms and reuse notes.
+
+## Repository layout
+
+Selected files:
+
+| File | Purpose |
+|---|---|
+| `app.py` | Streamlit application, navigation and Grid Solver |
+| `core.py` | Sport-agnostic schema, query engine and result ranking |
+| `sports.py` | Sport registry, schemas and vocabulary |
+| `constraints.py` | AFL-specific constraint builders |
+| `advanced_search.py` | URL-addressable advanced player search |
+| `query_filters.py` | Query parser and SQL compiler |
+| `explore.py` | Home, player search, leaderboards and discovery pages |
+| `game_lab.py` | Player and criterion exploration |
+| `health.py` | Database health and integrity page |
+| `theme.py` | Dark, Light and Custom themes |
+| `build_db.py` | Base AFL SQLite database builder |
+| `derive_matches.py` | Canonical match table and stable match IDs |
+| `repair_database.py` | Non-download database repair workflow |
+| `data_paths.py` | Legacy and multi-sport database path policy |
+| `awards.py` | Award and recruitment constraints |
+| `captains.py` | Club captaincy constraints |
+| `rising_star.py` | Rising Star nomination constraints |
+| `historic_grids.py` | Captured-grid validation and practice support |
+| `parse_criteria.py` | Grid criterion parser |
+| `ACKNOWLEDGEMENTS.md` | Data-source credits and reuse notes |
+
+Database files, caches, downloaded pages, generated SQL and third-party source datasets are excluded through `.gitignore`.
+
+## Validation and tests
+
+Compile the Python source:
+
+```bash
+python -m compileall -q .
+```
+
+Core regression tests:
+
+```bash
+python test_core_regressions.py
+python test_query_filters.py
+python test_repair_database.py
+```
+
+Integration tests:
+
+```bash
+python test_integration.py
+python test_awards_integration.py --db gridley.db
+```
+
+Optional-layer regression tests can be run after their matching files and local data are present:
+
+```bash
+python test_captains.py
+python test_footywire_rising_star.py
+python test_family_draft.py
+```
+
+Some integration tests build or modify temporary databases. Review their command-line options before pointing them at a database you need to retain.
+
+## Clean-up
+
+Generated update artefacts and legacy captain files can be reviewed with the clean-up utility.
+
+Dry run:
+
+```bash
+python clean_project.py --root .
+```
+
+Apply reviewed changes:
+
+```bash
+python clean_project.py --root . --apply
+```
+
+Database snapshots are retained unless deletion is explicitly requested.
+
+## Privacy and redistribution
+
+The repository contains code, not a prebuilt sports-data distribution.
+
+The following remain local and are ignored by Git:
+
+- SQLite databases;
+- the cached `.rda` source dataset;
+- scraped or manually saved source pages;
+- generated CSV data;
+- generated SQL;
+- local secrets and editor configuration.
+
+Build your own database from the documented sources and follow each source's terms.
+
+## Known limitations
+
+- AFL is currently the only complete sport implementation.
+- NBA support is architectural groundwork, not a finished dataset or user workflow.
+- Optional source coverage can be incomplete.
+- Name matching cannot safely resolve every historical record.
+- Some historical grids contain unsupported or partially captured criteria.
+- The obscurity rating is heuristic and is not an official rarity score.
+- Historical statistics are limited by the era in which each statistic was recorded.
+- The project does not currently provide a hosted database or hosted application.
+
+## Contributing
+
+Before submitting a change:
+
+1. keep sport-agnostic behaviour in `core.py` where practical;
+2. keep AFL-only rules in the AFL constraint and importer modules;
+3. preserve parameterised SQL;
+4. do not commit databases or third-party source data;
+5. add or update regression tests;
+6. run the relevant test suite;
+7. document new data sources and their usage restrictions.
+
+## Disclaimer
+
+Sports Data Lab is an independent, unofficial hobby and research project. It is not affiliated with the AFL, its clubs, Gridley, AFL Tables, fitzRoy, Draftguru or FootyWire.
+
+Club names, competition names and award names may be trademarks of their respective owners.
