@@ -229,9 +229,9 @@ def test_stat_words_are_iterated_longest_first():
 
 def test_total_builder_is_registered():
     import constraints
-    assert "N+ of a stat in one season" in constraints.BUILDERS
-    fn, args = constraints.BUILDERS["N+ of a stat in one season"]
-    assert args == ["stat", "n"], args
+    assert "X+ of a stat in one season" in constraints.BUILDERS
+    fn, args = constraints.BUILDERS["X+ of a stat in one season"]
+    assert args == ["stat", "x"], args
     assert fn is constraints.season_stat_total_min
 
 

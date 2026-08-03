@@ -70,6 +70,11 @@ class HistoricGrid:
 
     @property
     def key(self):
+        # A grid typed straight into the app has no Gridley number and no
+        # capture date, so it names itself by its source instead of
+        # rendering as "#0 ()".
+        if not self.number:
+            return self.date or self.source.replace("_", " ")
         return f"#{self.number} ({self.date})"
 
     @property
@@ -143,6 +148,12 @@ GRIDS = [
              "board is available; until then the nine intersections cannot "
              "be checked. The three criteria are still exercised "
              "individually by the test suite.",
+    ),
+    HistoricGrid(
+        number=1114, date="2026-08-03",
+        cols=("Port Adelaide", "10+ FINALS GAMES", "GRAND FINAL PLAYER"),
+        rows=("30+ FREES AGAINST SEASON", "KANE CORNES TEAMMATE",
+              "BROTHER PLAYED"),
     ),
 ]
 
@@ -247,7 +258,9 @@ class GridReport:
 
     def line(self):
         """'#1111   5/6 criteria supported   Club captain unavailable'"""
-        return (f"#{self.grid.number}   {self.supported_count}/{self.total} "
+        name = (f"#{self.grid.number}" if self.grid.number
+                else self.grid.key)
+        return (f"{name}   {self.supported_count}/{self.total} "
                 f"criteria supported   {self.status}")
 
 

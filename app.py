@@ -23,6 +23,7 @@ import pandas as pd
 import streamlit as st
 
 import core
+import db_pool
 import sports
 import theme
 
@@ -45,19 +46,11 @@ def db_revision(db):
     return stat.st_mtime_ns, stat.st_size
 
 
-@st.cache_resource
-def get_con(db, revision):
-    """Open one tuned read-only connection per database revision."""
-    con = sqlite3.connect(
-        f"file:{db}?mode=ro", uri=True, check_same_thread=False,
-        timeout=5.0,
-    )
-    con.execute("PRAGMA query_only = ON")
-    con.execute("PRAGMA temp_store = MEMORY")
-    con.execute("PRAGMA cache_size = -65536")
-    con.execute("PRAGMA mmap_size = 268435456")
-    con.execute("PRAGMA busy_timeout = 5000")
-    return con
+# Deliberately NOT @st.cache_resource -- a single sqlite3.Connection shared
+# across Streamlit's script-runner threads corrupts its own statement cache,
+# which showed up as InterfaceError at startup and, worse, as squares
+# silently reporting no answers. db_pool.py has the full account.
+get_con = db_pool.get_con
 
 
 try:
@@ -284,21 +277,21 @@ def _stat_label(stat):
 
 
 #: Builder name -> how its square reads on the board. The generic builders
-#: are named for what they do ("N+ of a stat in one season"), which is right
+#: are named for what they do ("X+ of a stat in one season"), which is right
 #: in a picker and useless as an axis label, so each one restates itself
 #: using the arguments actually chosen.
 _STAT_SCOPE_LABELS = {
-    "N+ of a stat in one game":
+    "X+ of a stat in one game":
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])}\nin a {V.game}",
-    "N+ of a stat in one season":
+    "X+ of a stat in one season":
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])}\nin a {V.season}",
-    "N+ of a stat in a career":
+    "X+ of a stat in a career":
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])}\ncareer",
     "Season average of a stat":
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])} avg\nin a {V.season}",
     "Career average of a stat":
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])} avg\nper {V.game}",
-    "N+ of a stat in a final":
+    "X+ of a stat in a final":
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])}\nin a {V.postseason_one}",
     "Finals average of a stat":
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])} avg\nin {V.postseason}",
@@ -356,7 +349,7 @@ def axis_widget(key, default_type, defaults=None):
             pick = st.selectbox("Award", names, index=idx, key=wk)
             args.append(C.AWARD_SLUGS[pick])
         elif a == "times":
-            label = ("How many such games" if kind == "N+ games with X+ of a stat"
+            label = ("How many such games" if kind == "X+ games with Y+ of a stat"
                      else "Times")
             args.append(st.number_input(label, min_value=1,
                                         value=int(defaults.get("times", 1)),
@@ -416,11 +409,15 @@ def axis_widget(key, default_type, defaults=None):
             else:
                 fallback = {
                     "from": 1, "to": 10, "clubs": 2,
-                    "n": 5, "n_a": 30, "n_b": 3,
+                    "x": 5, "y": 5, "x_a": 30, "x_b": 3,
                 }.get(a, 30)
                 args.append(st.number_input(
-                    a.replace("_", " "), value=int(defaults.get(a, fallback)),
-                    step=1, key=wk))
+                    a.replace("_", " ").upper(),
+                    value=int(defaults.get(a, fallback)),
+                    step=1, key=wk,
+                    help="This is the X in the builder name above. It keeps "
+                         "its last value when you change builder, so read it "
+                         "against the criterion you are answering."))
 
     label = kind
     if kind == "Played for club":
@@ -431,21 +428,21 @@ def axis_widget(key, default_type, defaults=None):
         verb = ("played at" if kind.startswith("Played")
                 else f"won a {V.postseason_one} at")
         label = f"{verb}\n{args[0]}"
-    elif kind == "N+ finals games":
+    elif kind == "X+ finals games":
         label = f"{args[0]}+ {V.postseason} {V.games}"
     elif kind == "Goal average in finals":
         label = f"{args[0]}+ {V.score} avg\nin {V.postseason}"
     elif kind == "First career game for club":
         label = f"{args[0]}\nfirst career {V.game}"
-    elif kind == "150+ / N+ career games":
+    elif kind == "150+ / X+ career games":
         label = f"{args[0]}+ {V.games} played"
-    elif kind == "N+ goals at 2+ clubs":
+    elif kind == "X+ goals at 2+ clubs":
         label = f"{args[0]}+ {V.score}\ntwo diff {V.clubs}"
-    elif kind == "Fewer than N career games":
+    elif kind == "Fewer than X career games":
         label = f"under {args[0]} {V.games}"
     elif kind == "Two stats in the same game":
         label = f"{args[1]}+ {args[0]} &\n{args[3]}+ {args[2]}"
-    elif kind == "N+ games with X+ of a stat":
+    elif kind == "X+ games with Y+ of a stat":
         label = f"{args[2]}+ {V.games} with\n{args[1]}+ {_stat_label(args[0])}"
     elif kind in _STAT_SCOPE_LABELS:
         # Without these the board header read "N+ OF A STAT IN ONE SEASON"
@@ -527,14 +524,14 @@ st.sidebar.markdown("### Columns")
 cols_def = []
 col_defaults = [("Played for club", {"club": "St Kilda"}),
                 ("Played for club", {"club": "North Melbourne"}),
-                ("150+ / N+ career games", {"games": 150})]
+                ("150+ / X+ career games", {"games": 150})]
 for i, (dt, dv) in enumerate(col_defaults):
     with st.sidebar.expander(f"Column {i+1}", expanded=False):
         cols_def.append(axis_widget(SPORT.k("c", i), dt, dv))
 
 st.sidebar.markdown("### Rows")
 rows_def = []
-row_defaults = [("N+ goals at 2+ clubs", {"goals": 30, "clubs": 2}),
+row_defaults = [("X+ goals at 2+ clubs", {"goals": 30, "clubs": 2}),
                 ("Teammate of…", {"player": "Mason Wood"}),
                 ("No finals wins (played finals)", {})]
 for i, (dt, dv) in enumerate(row_defaults):
@@ -567,8 +564,65 @@ LIBRARY = grid_library(
     SPORT.key, SPORT.db, DB_REVISION) if SPORT.key == "afl" else []
 LIB_BY_NUMBER = {r.grid.number: r for r in LIBRARY}
 
+
+def show_report(picked, mode):
+    """Sidebar verdict for an analysed grid, and load it onto the board.
+
+    Shared by every source that produces a GridReport -- the captured
+    library, the random picker and the pasted criteria -- so all of them
+    apply the same Authentic/Practice rules and print the same criterion
+    report.
+    """
+    g = picked.grid
+    st.sidebar.markdown(f"**{g.key}** · source `{g.source}`")
+    st.sidebar.caption(picked.line())
+
+    if not g.complete:
+        st.sidebar.warning(
+            f"Partial capture — {len(g.partial_criteria)} of six "
+            "criteria were recorded, so this board cannot be drawn. "
+            "The criteria themselves still parse; see the report below.")
+        st.session_state.pop("loaded", None)
+    elif picked.unsupported and mode == "Authentic":
+        names = ", ".join(f"“{c.text}”" for c in picked.unsupported)
+        st.sidebar.error(
+            f"Not playable in Authentic mode: {names} "
+            f"({'; '.join(c.reason for c in picked.unsupported)}). "
+            "Switch to Practice to play a substituted board.")
+        st.session_state.pop("loaded", None)
+    else:
+        if picked.unsupported:      # Practice mode
+            cache = st.session_state.setdefault(SPORT.k("practice"), {})
+            prows, pcols, swaps = HG.practice_board(con, picked, cache)
+            for original, replacement in swaps:
+                st.sidebar.warning(
+                    f"Original: {original} — replaced for Practice Mode "
+                    f"by “{replacement}”.")
+        else:
+            prows, pcols = picked.rows, picked.cols
+        st.session_state.loaded = {"rows": _axes_from(prows),
+                                   "cols": _axes_from(pcols)}
+
+    with st.sidebar.expander("Criterion report", expanded=False):
+        for c in picked.all_criteria:
+            if c.supported:
+                n = f"{c.eligible:,} eligible" if c.eligible is not None \
+                    else "count unavailable"
+                st.markdown(f"✅ **{c.axis}** — {c.text} → {c.label} "
+                            f"({n})")
+            else:
+                st.markdown(f"⛔ **{c.axis}** — {c.text}: {c.reason}")
+            for w in c.warnings:
+                st.caption(f"⚠ {w}")
+        if picked.square_errors:
+            for e in picked.square_errors:
+                st.error(e)
+        elif picked.squares_ok:
+            st.caption("All nine intersections execute.")
+
+
 st.sidebar.markdown("### Grid source")
-SOURCES = ["Build my own", "Today's grid", "Past grid",
+SOURCES = ["Build my own", "Paste criteria", "Today's grid", "Past grid",
            "Random supported grid"]
 source = st.sidebar.radio("Source", SOURCES, key=SPORT.k("gridsource"),
                           label_visibility="collapsed")
@@ -650,55 +704,47 @@ elif source in ("Past grid", "Random supported grid") and LIBRARY:
         picked = LIB_BY_NUMBER[n]
 
     if picked is not None:
-        g = picked.grid
-        st.sidebar.markdown(f"**{g.key}** · source `{g.source}`")
-        st.sidebar.caption(picked.line())
-
-        if not g.complete:
-            st.sidebar.warning(
-                f"Partial capture — {len(g.partial_criteria)} of six "
-                "criteria were recorded, so this board cannot be drawn. "
-                "The criteria themselves still parse; see the report below.")
-            st.session_state.pop("loaded", None)
-        elif picked.unsupported and mode == "Authentic":
-            names = ", ".join(f"“{c.text}”" for c in picked.unsupported)
-            st.sidebar.error(
-                f"Not playable in Authentic mode: {names} "
-                f"({'; '.join(c.reason for c in picked.unsupported)}). "
-                "Switch to Practice to play a substituted board.")
-            st.session_state.pop("loaded", None)
-        else:
-            if picked.unsupported:      # Practice mode
-                cache = st.session_state.setdefault(SPORT.k("practice"), {})
-                prows, pcols, swaps = HG.practice_board(con, picked, cache)
-                for original, replacement in swaps:
-                    st.sidebar.warning(
-                        f"Original: {original} — replaced for Practice Mode "
-                        f"by “{replacement}”.")
-            else:
-                prows, pcols = picked.rows, picked.cols
-            st.session_state.loaded = {"rows": _axes_from(prows),
-                                       "cols": _axes_from(pcols)}
-
-        with st.sidebar.expander("Criterion report", expanded=False):
-            for c in picked.all_criteria:
-                if c.supported:
-                    n = f"{c.eligible:,} eligible" if c.eligible is not None \
-                        else "count unavailable"
-                    st.markdown(f"✅ **{c.axis}** — {c.text} → {c.label} "
-                                f"({n})")
-                else:
-                    st.markdown(f"⛔ **{c.axis}** — {c.text}: {c.reason}")
-                for w in c.warnings:
-                    st.caption(f"⚠ {w}")
-            if picked.square_errors:
-                for e in picked.square_errors:
-                    st.error(e)
-            elif picked.squares_ok:
-                st.caption("All nine intersections execute.")
+        show_report(picked, mode)
 
 elif source in ("Past grid", "Random supported grid"):
     st.sidebar.info("The captured grid library is AFL-only for now.")
+
+elif source == "Paste criteria" and SPORT.key != "afl":
+    # parse_criteria.py compiles against the AFL constraint set, so offering
+    # it for another sport would answer AFL questions from an NBA database.
+    st.sidebar.info("Criterion parsing is AFL-only for now.")
+
+elif source == "Paste criteria":
+    # The failure this exists to prevent: hand-picking an axis builder that
+    # is one word away from the question actually asked. "50+ GAMES TWO
+    # DIFF CLUBS" and "50+ GOALS TWO DIFF CLUBS" are different squares with
+    # different answers, and choosing between them from a dropdown is a
+    # guess made once and never re-checked. Typing Gridley's own wording
+    # hands that decision to parse_criteria.py, which reads the words.
+    with st.sidebar.expander("Type the six criteria", expanded=True):
+        st.caption(
+            "Copy each axis exactly as the board words it — "
+            "“50+ GAMES TWO DIFF CLUBS”, “PLAYED IN 2010s”, "
+            "“CARLTON FIRST CAREER GAME”. Club-logo axes take the club "
+            "name. Anything the parser cannot read is named below rather "
+            "than answered as something else.")
+        pasted_cols = [
+            st.text_input(f"Column {i + 1}", key=SPORT.k("pastec", i))
+            for i in range(3)]
+        pasted_rows = [
+            st.text_input(f"Row {i + 1}", key=SPORT.k("paster", i))
+            for i in range(3)]
+
+    typed_cols = [t.strip() for t in pasted_cols]
+    typed_rows = [t.strip() for t in pasted_rows]
+    if all(typed_cols) and all(typed_rows):
+        pasted_grid = HG.HistoricGrid(
+            number=0, date="pasted grid", source="pasted",
+            cols=tuple(typed_cols), rows=tuple(typed_rows))
+        show_report(HG.analyse(pasted_grid, con, SPORT), mode)
+    else:
+        st.sidebar.info("Enter all six criteria to draw the board.")
+        st.session_state.pop("loaded", None)
 
 if "loaded" in st.session_state and source != "Build my own":
     rows_def = st.session_state.loaded["rows"]
@@ -749,13 +795,37 @@ def _square(sport_key, db, revision, frags, params, order):
 
 @st.cache_data(show_spinner=False, max_entries=256)
 def _solve(sport_key, db, revision, frags, params, order, limit):
-    """Cache the expanded result list for an opened square."""
+    """Cache the expanded result list for an opened square.
+
+    player_id is selected ahead of the display columns and stripped before
+    the table is drawn. Clicking a row has to open that exact player, and
+    460 names in this database belong to more than one person -- resolving
+    the click by name would show the wrong career for any of them.
+    """
     schema = sports.get(sport_key).schema
+    cols = [(f"p.{schema.player_id}", "__pid")] + list(schema.solve_columns())
     rows = core.solve(
         get_con(db, revision), _rebuild(frags, params), schema,
-        limit=limit, order=order,
+        limit=limit, order=order, columns=cols,
     )
     return tuple(rows)
+
+
+@st.dialog("Player", width="large")
+def show_player_dialog(pid):
+    """The selected answer's full career, over the board rather than away
+    from it.
+
+    A grid solver's question is "who is this, and does the career actually
+    fit the square?", asked about one row of a list the board just
+    produced. Sending that to the Player Search page loses the board, the
+    open square and the scroll position, and makes the solver re-find their
+    place afterwards. The profile body is the same one Player Search
+    renders -- explore.render_player_profile -- so the two cannot drift.
+    """
+    import explore
+    explore.render_player_profile(SPORT, con, pid, key_prefix="griddlg",
+                                  heading_level="###")
 
 
 def constraints_for(r, c):
@@ -806,10 +876,19 @@ for r in range(3):
                     f"<div class='square-meta'>0 eligible</div></div>")
             action = "no answers"
         else:
+            # Absolute stars here, within-square stars in the results table
+            # below. The tile shows one answer -- the square's most obscure
+            # one -- so rescaling against that square's own spread rated it
+            # 5/5 by construction, every square, always: the best answer's
+            # obscurity IS the square's maximum, so (v-lo)/(hi-lo) is 1
+            # whatever the answers look like. Nine identical ratings told a
+            # solver nothing about which square to attack first. On the
+            # absolute scale the tiles differ, and comparing squares is the
+            # only question a board-level rating can answer.
             face = (
                 f"<div class='square{' is-open' if open_here else ''}'>"
                 f"<div class='square-name'>{sq.best_name}</div>"
-                f"<div>{core.stars_html(sq.obscurity, lo=sq.obscurity_min, hi=sq.obscurity_max)}</div>"
+                f"<div>{core.stars_html(sq.obscurity)}</div>"
                 f"<div class='square-meta'>{sq.eligible:,} eligible</div>"
                 f"</div>")
             action = "open" if not open_here else "showing"
@@ -843,12 +922,14 @@ if st.session_state.cell:
     if not rows:
         st.info(SPORT.empty_hint)
     else:
-        headers = [h for _, h in SCHEMA.solve_columns()]
+        headers = ["__pid"] + [h for _, h in SCHEMA.solve_columns()]
         df = pd.DataFrame(rows, columns=headers)
         if "Clubs" in df:
             df["Clubs"] = df["Clubs"].str.replace("|", ", ", regex=False)
+        pids = df["__pid"].tolist()
+        df = df.drop(columns=["__pid"])
 
-        best = rows[0]
+        best = rows[0][1:]          # drop the id the table does not show
         best_name, best_obsc = best[0], best[-1]
         selected_square = square_for(r, c)
         total = selected_square.eligible if selected_square else len(rows)
@@ -885,7 +966,16 @@ if st.session_state.cell:
             unsafe_allow_html=True)
 
         st.markdown("")
-        st.dataframe(df, hide_index=True, width="stretch")
+        st.caption("Select a row to see that player's full career without "
+                   "leaving the board.")
+        table = st.dataframe(
+            df, hide_index=True, width="stretch",
+            on_select="rerun", selection_mode="single-row",
+            key=SPORT.k("answers", r, c))
+
+        picked_rows = table.selection.rows if table and table.selection else []
+        if picked_rows:
+            show_player_dialog(pids[picked_rows[0]])
 
         with st.expander("SQL for this square"):
             st.code(C.to_standalone_sql(cs, limit), language="sql")

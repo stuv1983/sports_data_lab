@@ -237,13 +237,27 @@ def player_page(sport, con, player_picker):
 
 
 def _player_profile(sport, con, player_picker):
-    V, sc = sport.vocab, sport.schema
     selected = player_picker(sport.k("explore_player"),
                              label="Search by name")
     if selected is None:
         return
     pid, _ = selected
+    render_player_profile(sport, con, pid, key_prefix="explore")
 
+
+def render_player_profile(sport, con, pid, key_prefix="explore",
+                          heading_level="##"):
+    """One player's career, rendered wherever it is asked for.
+
+    Split out of the Player Search page so the Grid Solver can show the
+    same profile in a dialog without navigating away from the board, and
+    without a second copy of these queries drifting from this one.
+
+    `key_prefix` namespaces the widgets inside: two callers on one page
+    each need their own "ranked by" selectbox. `heading_level` lets a
+    dialog, which already has a title bar, drop to a smaller heading.
+    """
+    V, sc = sport.vocab, sport.schema
     revision = _db_revision(sport.db)
     profile_sql = (
         f"SELECT {sc.player}, {sc.debut_season}, {sc.final_season}, "
@@ -255,7 +269,7 @@ def _player_profile(sport, con, player_picker):
     if not p:
         return
 
-    st.markdown(f"## {p[0]}")
+    st.markdown(f"{heading_level} {p[0]}")
     st.caption(f"{p[1]}–{p[2]} · {p[6].replace('|', ', ')}")
 
     # Show trusted captain appointments on the player profile.
@@ -313,7 +327,7 @@ def _player_profile(sport, con, player_picker):
 
     st.markdown(f"### Biggest {V.games}")
     metric = st.selectbox("Ranked by", list(sc.stats),
-                          key=sport.k("explore_best"))
+                          key=sport.k(key_prefix, "best", pid))
     warning = sport.stat_era_warning(metric)
     if warning:
         st.caption(f"⚠ {warning}")

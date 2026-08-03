@@ -220,10 +220,10 @@ def test_existing_wording_still_routes_the_same_way():
 # --------------------------------------------------------- registration
 
 def test_every_scope_is_in_the_manual_builder():
-    for name in ("N+ of a stat in one game", "N+ of a stat in one season",
-                 "N+ of a stat in a career", "Season average of a stat",
-                 "Career average of a stat", "N+ games with X+ of a stat",
-                 "N+ of a stat in a final", "Finals average of a stat"):
+    for name in ("X+ of a stat in one game", "X+ of a stat in one season",
+                 "X+ of a stat in a career", "Season average of a stat",
+                 "Career average of a stat", "X+ games with Y+ of a stat",
+                 "X+ of a stat in a final", "Finals average of a stat"):
         assert name in C.BUILDERS, name
 
 
@@ -237,7 +237,7 @@ def test_every_builder_argument_is_renderable_by_the_ui():
     handled = {"club", "venue", "player_id", "kind", "source", "award",
                "times", "avg", "player", "stat", "stat_a", "stat_b",
                "min_games"}
-    numeric = {"n", "n_a", "n_b", "games", "goals", "clubs", "from", "to",
+    numeric = {"x", "y", "x_a", "x_b", "games", "goals", "clubs", "from", "to",
                "season", "times", "points", "people"}
     for name, (_fn, argnames) in C.BUILDERS.items():
         for arg in argnames:
@@ -262,8 +262,8 @@ def test_live_every_stat_builder_executes_for_every_stat():
     con = live()
     if con is None:
         pytest.skip("no built database")
-    sample = {"n": 5, "avg": 1.0, "min_games": 10, "times": 2,
-              "n_a": 5, "n_b": 1}
+    sample = {"x": 5, "y": 5, "avg": 1.0, "min_games": 10, "times": 2,
+              "x_a": 5, "x_b": 1}
     bad = []
     for name, (fn, argnames) in C.BUILDERS.items():
         if not any(a.startswith("stat") for a in argnames):

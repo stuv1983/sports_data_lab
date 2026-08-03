@@ -190,7 +190,7 @@ AWARD_BUILDERS = {
     "All-Australian between years": (all_australian_between, ["from", "to"]),
     "All-Australian squad":         (all_australian_squad, []),
     "Won an award…":                (won_award, ["award"]),
-    "Won an award N+ times":        (won_award_times, ["award", "times"]),
+    "Won an award X+ times":        (won_award_times, ["award", "times"]),
     "Brownlow Medallist":           (brownlow_medallist, []),
     "Coleman Medallist":            (coleman_medallist, []),
     "Norm Smith Medallist":         (norm_smith_medallist, []),

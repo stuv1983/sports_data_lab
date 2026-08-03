@@ -307,6 +307,23 @@ def build(db_path, refresh=False, skip_matches=False):
         repair_database.run(db_path)
 
 
+#: Obscurity weights, and the whole of the tuning surface. They are
+#: judgement, not a fit: the only ground truth available offline is a
+#: handful of rarity percentages read off finished puzzles, which is far
+#: too few to fit six coefficients against without inventing precision.
+#: Career games stays the single strongest fame proxy; career span is the
+#: term that separates "a whole career inside one season" from the same
+#: game count spread over a decade.
+OBSCURITY_WEIGHTS = {
+    "games": 0.30,
+    "span": 0.18,
+    "era": 0.15,
+    "goals": 0.14,
+    "finals": 0.13,
+    "brownlow": 0.10,
+}
+
+
 def obscurity_score(p):
     """
     Heuristic 0-100 proxy for how unlikely a player is to be picked.
@@ -314,24 +331,47 @@ def obscurity_score(p):
 
     This is NOT Gridley's real pick data (which is crowd-sourced and not
     public). It is a fame proxy built from career footprint.
+
+    TIES TAKE THE GROUP'S BEST RANK
+    -------------------------------
+    `method="min"` is the whole reason this scale reaches 100. With pandas'
+    default `method="average"`, every member of a tied group takes the
+    group's *midpoint* rank -- and these inputs are mostly ties: 82% of
+    players never polled a Brownlow vote, 65% never played a final, 26%
+    never kicked a goal. Averaging meant "never polled a vote" scored 58.8
+    out of 100 rather than 100, so the most anonymous career possible
+    topped out at 84.9 and the top sixth of the scale was unreachable.
+    Having none of a thing puts a player in the most anonymous tier for
+    that term; how many others share the tier is not evidence about them.
+
+    CAREER SPAN
+    -----------
+    Seasons between debut and final game, which nothing else here captures.
+    17 games all inside 1899 is a far more obscure career than 17 games
+    strung across a decade, and only this term can tell them apart.
     """
     import numpy as np
 
     def pct_rank_low_is_obscure(s):
-        # invert: small values -> high score
-        return (1 - s.rank(pct=True)) * 100
+        # Invert so small values score high, and give a tied group its best
+        # rank rather than the middle of the tie. See the docstring.
+        return (1 - s.rank(pct=True, method="min")) * 100
 
-    games = pct_rank_low_is_obscure(p["career_games"].fillna(0))
-    goals = pct_rank_low_is_obscure(p["career_goals"].fillna(0))
-    brown = pct_rank_low_is_obscure(p["career_brownlow"].fillna(0))
-    finals = pct_rank_low_is_obscure(p["finals_played"].fillna(0))
+    span = (p["final_season"].fillna(p["debut_season"])
+            - p["debut_season"] + 1).clip(lower=1)
 
-    # Recency: modern players are far more familiar to today's solvers.
-    # Peak obscurity sits in the pre-1990 era.
-    era = np.clip((2000 - p["final_season"]) / 80 * 100, 0, 100)
+    terms = {
+        "games": pct_rank_low_is_obscure(p["career_games"].fillna(0)),
+        "span": pct_rank_low_is_obscure(span),
+        "goals": pct_rank_low_is_obscure(p["career_goals"].fillna(0)),
+        "brownlow": pct_rank_low_is_obscure(p["career_brownlow"].fillna(0)),
+        "finals": pct_rank_low_is_obscure(p["finals_played"].fillna(0)),
+        # Recency: modern players are far more familiar to today's solvers.
+        # Peak obscurity sits in the pre-1990 era.
+        "era": np.clip((2000 - p["final_season"]) / 80 * 100, 0, 100),
+    }
 
-    score = (0.40 * games + 0.20 * brown + 0.15 * goals
-             + 0.10 * finals + 0.15 * era)
+    score = sum(OBSCURITY_WEIGHTS[name] * value for name, value in terms.items())
     return score.round(1)
 
 # ---------------------------------------------------------------- layers

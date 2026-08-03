@@ -129,20 +129,20 @@ def crowd_min_in_final(people):
 
 
 MATCH_BUILDERS = {
-    "Played in a win by N+ points":   (won_by_min, ["points"]),
-    "Played in a loss by N+ points":  (lost_by_min, ["points"]),
-    "Played in a win by N or fewer":  (won_by_max, ["points"]),
-    "Team scored N+ points":          (team_scored_min, ["points"]),
+    "Played in a win by X+ points":   (won_by_min, ["points"]),
+    "Played in a loss by X+ points":  (lost_by_min, ["points"]),
+    "Played in a win by X or fewer":  (won_by_max, ["points"]),
+    "Team scored X+ points":          (team_scored_min, ["points"]),
     "Played in a drawn match":        (played_in_a_draw, []),
-    "Played before a crowd of N+":    (crowd_min, ["people"]),
-    "Played before a crowd of N or fewer": (crowd_max, ["people"]),
-    "Played before a crowd of N+ in a final": (crowd_min_in_final, ["people"]),
+    "Played before a crowd of X+":    (crowd_min, ["people"]),
+    "Played before a crowd of X or fewer": (crowd_max, ["people"]),
+    "Played before a crowd of X+ in a final": (crowd_min_in_final, ["people"]),
 }
 
 #: Builders that need the optional all-games layer, so the UI can say why
 #: they are unavailable rather than letting them fail on execution.
 CROWD_BUILDER_NAMES = {
-    "Played before a crowd of N+",
-    "Played before a crowd of N or fewer",
-    "Played before a crowd of N+ in a final",
+    "Played before a crowd of X+",
+    "Played before a crowd of X or fewer",
+    "Played before a crowd of X+ in a final",
 }
