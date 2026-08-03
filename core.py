@@ -305,6 +305,82 @@ class Generic:
                       HAVING SUM({stat}) >= ?
                     )""", [n])
 
+    # -- career totals and averages for any stat -------------------
+    #: Minimum career games before a career average is treated as real.
+    #: Higher than the season floor: a career average over three games is
+    #: not a career average in any sense the question means.
+    CAREER_AVG_MIN_GAMES = 20
+
+    def career_stat_total_min(self, stat, n):
+        """
+        Accumulated `n` or more of `stat` across a whole career.
+
+        Only `career_goals` and `career_games` were ever pre-aggregated on
+        the players table, so every other statistic had no career question
+        at all -- '500+ career marks' could not be asked. This sums the
+        game rows instead, which works for any stat without a rebuild.
+
+        NULL games are excluded rather than counted as zero, so a career
+        spanning the start of a stat's recording era counts only the part
+        that was actually recorded.
+        """
+        self._check(stat)
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {stat} IS NOT NULL
+                    GROUP BY {s.player_id} HAVING SUM({stat}) >= ?""", [n])
+
+    def career_stat_average_min(self, stat, avg, min_games=None):
+        """
+        Averaged `avg` or more of `stat` per game across a career.
+
+        The games floor is over games where the stat was recorded, not over
+        the whole career: a player who straddles 1965 is judged on the part
+        of their career the source can actually speak to.
+        """
+        self._check(stat)
+        s = self.s
+        floor = (self.CAREER_AVG_MIN_GAMES if min_games is None
+                 else int(min_games))
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {stat} IS NOT NULL
+                    GROUP BY {s.player_id}
+                    HAVING COUNT(*) >= ? AND AVG({stat}) >= ?""",
+                [floor, avg])
+
+    def games_with_stat_min(self, stat, n, times=1):
+        """
+        Reached `n` of `stat` in at least `times` separate games.
+
+        '10+ games with 30+ disposals' is a different question from either
+        a single game or a career total, and is the one a lot of squares
+        actually ask: not a one-off, and not an aggregate either.
+        """
+        self._check(stat)
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {stat} >= ?
+                    GROUP BY {s.player_id} HAVING COUNT(*) >= ?""",
+                [n, times])
+
+    def stat_in_a_postseason_game(self, stat, n):
+        """Reached `n` of `stat` in a single finals game."""
+        self._check(stat)
+        s = self.s
+        return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
+                    WHERE {s.is_final} = 1 AND {stat} >= ?""", [n])
+
+    def postseason_stat_average_min(self, stat, avg, min_games=None):
+        """Averaged `avg` or more of `stat` across finals."""
+        self._check(stat)
+        s = self.s
+        floor = 3 if min_games is None else int(min_games)
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {s.is_final} = 1 AND {stat} IS NOT NULL
+                    GROUP BY {s.player_id}
+                    HAVING COUNT(*) >= ? AND AVG({stat}) >= ?""",
+                [floor, avg])
+
     def played_in_season_range(self, lo, hi):
         s = self.s
         return (f"SELECT DISTINCT {s.player_id} FROM {s.games} "

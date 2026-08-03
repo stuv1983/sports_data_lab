@@ -53,6 +53,12 @@ stat_in_a_game = _G.stat_in_a_game
 two_stats_same_game = _G.two_stats_same_game
 season_stat_average_min = _G.season_stat_average_min
 season_stat_total_min = _G.season_stat_total_min
+career_stat_total_min = _G.career_stat_total_min
+career_stat_average_min = _G.career_stat_average_min
+games_with_stat_min = _G.games_with_stat_min
+stat_in_a_final = _G.stat_in_a_postseason_game
+finals_stat_average_min = _G.postseason_stat_average_min
+CAREER_AVG_MIN_GAMES = _G.CAREER_AVG_MIN_GAMES
 
 #: Exposed so the UI and the tests can state the threshold rather than
 #: leaving it buried in a default argument.
@@ -187,9 +193,19 @@ BUILDERS = {
     "Fewer than N career games":  (career_games_max, ["games"]),
     "N+ career goals":            (career_goals_min, ["goals"]),
     "N or fewer career goals":    (career_goals_max, ["goals"]),
-    "Season average of a stat":   (season_stat_average_min, ["stat", "avg"]),
-    "N+ of a stat in one season": (season_stat_total_min, ["stat", "n"]),
+    # Every statistic, at every scope a square can ask about. Before this
+    # only goals had a career question, so "500+ career marks" could not
+    # be expressed at all.
     "N+ of a stat in one game":   (stat_in_a_game, ["stat", "n"]),
+    "N+ of a stat in one season": (season_stat_total_min, ["stat", "n"]),
+    "N+ of a stat in a career":   (career_stat_total_min, ["stat", "n"]),
+    "Season average of a stat":   (season_stat_average_min, ["stat", "avg"]),
+    "Career average of a stat":   (career_stat_average_min,
+                                   ["stat", "avg", "min_games"]),
+    "N+ games with X+ of a stat": (games_with_stat_min,
+                                   ["stat", "n", "times"]),
+    "N+ of a stat in a final":    (stat_in_a_final, ["stat", "n"]),
+    "Finals average of a stat":   (finals_stat_average_min, ["stat", "avg"]),
     "Two stats in the same game": (two_stats_same_game,
                                    ["stat_a", "n_a", "stat_b", "n_b"]),
     "N+ goals at 2+ clubs":       (goals_at_multiple_clubs, ["goals", "clubs"]),

@@ -278,6 +278,33 @@ st.markdown(theme.css(PALETTE), unsafe_allow_html=True)
 
 
 # ------------------------------------------------------- axis definition
+def _stat_label(stat):
+    """'frees_against' -> 'frees against', for a board header."""
+    return str(stat).replace("_", " ")
+
+
+#: Builder name -> how its square reads on the board. The generic builders
+#: are named for what they do ("N+ of a stat in one season"), which is right
+#: in a picker and useless as an axis label, so each one restates itself
+#: using the arguments actually chosen.
+_STAT_SCOPE_LABELS = {
+    "N+ of a stat in one game":
+        lambda a, V: f"{a[1]}+ {_stat_label(a[0])}\nin a {V.game}",
+    "N+ of a stat in one season":
+        lambda a, V: f"{a[1]}+ {_stat_label(a[0])}\nin a {V.season}",
+    "N+ of a stat in a career":
+        lambda a, V: f"{a[1]}+ {_stat_label(a[0])}\ncareer",
+    "Season average of a stat":
+        lambda a, V: f"{a[1]}+ {_stat_label(a[0])} avg\nin a {V.season}",
+    "Career average of a stat":
+        lambda a, V: f"{a[1]}+ {_stat_label(a[0])} avg\nper {V.game}",
+    "N+ of a stat in a final":
+        lambda a, V: f"{a[1]}+ {_stat_label(a[0])}\nin a {V.postseason_one}",
+    "Finals average of a stat":
+        lambda a, V: f"{a[1]}+ {_stat_label(a[0])} avg\nin {V.postseason}",
+}
+
+
 def axis_widget(key, default_type, defaults=None):
     """One axis of the grid. Returns (label, constraint) or (label, None)."""
     defaults = defaults or {}
@@ -329,20 +356,35 @@ def axis_widget(key, default_type, defaults=None):
             pick = st.selectbox("Award", names, index=idx, key=wk)
             args.append(C.AWARD_SLUGS[pick])
         elif a == "times":
-            args.append(st.number_input("Times", min_value=1,
+            label = ("How many such games" if kind == "N+ games with X+ of a stat"
+                     else "Times")
+            args.append(st.number_input(label, min_value=1,
                                         value=int(defaults.get("times", 1)),
                                         step=1, key=wk))
         elif a == "avg":
-            # The same argument name means two different things: a per-game
-            # average across finals, or a per-game average across a whole
-            # season. Naming it after the finals builder mislabelled the
-            # season one as "goals per final".
-            if kind == "Season average of a stat":
-                caption = f"per-{V.game} average across a {V.season}"
-            else:
-                caption = f"{V.score} per {V.postseason_one}"
+            # The same argument name means several different things
+            # depending on the builder: a per-game average across finals,
+            # across a season, or across a whole career. Naming it after
+            # the finals builder mislabelled the season one as "goals per
+            # final".
+            caption = {
+                "Season average of a stat":
+                    f"per-{V.game} average across a {V.season}",
+                "Career average of a stat":
+                    f"per-{V.game} average across a career",
+                "Finals average of a stat":
+                    f"per-{V.game} average across {V.postseason}",
+            }.get(kind, f"{V.score} per {V.postseason_one}")
             args.append(st.number_input(caption, value=1.0, step=0.5,
                                         key=wk))
+        elif a == "min_games":
+            args.append(st.number_input(
+                f"Minimum {V.games}",
+                min_value=1, step=1,
+                value=int(defaults.get("min_games", C.CAREER_AVG_MIN_GAMES)),
+                key=wk,
+                help=f"An average over a handful of {V.games} is not a "
+                     f"career average in any sense the question means."))
         elif a == "player":
             args.append(st.text_input("Player", defaults.get("player", ""),
                                       key=wk))
@@ -401,10 +443,15 @@ def axis_widget(key, default_type, defaults=None):
         label = f"{args[0]}+ {V.score}\ntwo diff {V.clubs}"
     elif kind == "Fewer than N career games":
         label = f"under {args[0]} {V.games}"
-    elif kind == "N+ of a stat in one game":
-        label = f"{args[1]}+ {args[0]}\nin a {V.game}"
     elif kind == "Two stats in the same game":
         label = f"{args[1]}+ {args[0]} &\n{args[3]}+ {args[2]}"
+    elif kind == "N+ games with X+ of a stat":
+        label = f"{args[2]}+ {V.games} with\n{args[1]}+ {_stat_label(args[0])}"
+    elif kind in _STAT_SCOPE_LABELS:
+        # Without these the board header read "N+ OF A STAT IN ONE SEASON"
+        # instead of naming the square, which is the one thing the header
+        # exists to do.
+        label = _STAT_SCOPE_LABELS[kind](args, V)
 
     if kind == "Teammate of…" and (not args or args[0] is None):
         return label, None

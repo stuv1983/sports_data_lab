@@ -355,38 +355,84 @@ def parse(text):
     if re.search(r"played (in )?a final|finals? appearance", t):
         return C.played_in_a_final(), "played in a final"
 
-    # 3d-bis. Season averages: "AVG 5+ MARKS — SEASON".
-    # Grouped per player-season, so one qualifying season is enough. The
-    # finals guard keeps "1+ GOAL AVG IN FINALS" on the finals-average
-    # builder handled above.
-    if re.search(r"\bavg\b|\baverage[ds]?\b", t) and "final" not in t:
-        m = re.search(r"([\d.]+)", t)
-        if m:
-            for word in STAT_WORDS_BY_LENGTH:
-                col = STAT_WORDS[word]
-                if word in t:
-                    n = float(m.group(1))
-                    n = int(n) if n.is_integer() else n
+    # 3d-bis. Any statistic, at any scope.
+    #
+    # One rule for the whole grid of (statistic × scope × total-or-average),
+    # because splitting it produced gaps and contradictions: season totals
+    # existed but career totals did not, so "500+ CAREER MARKS" was
+    # unanswerable while "500+ MARKS IN A SEASON" worked; and "AVG 20+
+    # DISPOSALS CAREER" fell through to the *season* average builder and
+    # confidently answered a different question from the one asked.
+    #
+    # Scope is decided first, from the words present, then total versus
+    # average. Game beats season beats career when several are named, since
+    # "in a season" in "40+ DISPOSALS IN A GAME IN A SEASON" qualifies the
+    # game. Finals is checked before all of them but after the dedicated
+    # finals-average rule above, which owns the score-specific wording.
+    # A cap ("LESS THAN 20 GOALS — CAREER", "50 OR FEWER GAMES") means the
+    # opposite of everything below, and the builders here are all floors.
+    # Falling through to the cap-aware rules further down is the only safe
+    # thing to do: answering a cap with a floor is not a gap, it is a
+    # confidently wrong answer to the question that was asked.
+    stat_word = (None if _is_max(t)
+                 else next((w for w in STAT_WORDS_BY_LENGTH if w in t), None))
+    if stat_word:
+        col = STAT_WORDS[stat_word]
+        number = re.search(r"([\d.]+)\s*\+?", t)
+        is_avg = bool(re.search(r"\bavg\b|\baverage[ds]?\b|\bper game\b", t))
+        if number:
+            raw = float(number.group(1))
+            n = int(raw) if raw.is_integer() else raw
+
+            # "10+ GAMES WITH 30+ DISPOSALS": two numbers, and the first
+            # counts games rather than the statistic.
+            repeat = re.search(
+                r"(\d+)\+?\s*(?:games?|matches)\s*(?:with|of)\s*(\d+)", t)
+            if repeat:
+                times, threshold = int(repeat.group(1)), int(repeat.group(2))
+                return (C.games_with_stat_min(col, threshold, times),
+                        f"{times}+ games with {threshold}+ {col}")
+
+            if "final" in t:
+                if is_avg:
+                    return (C.finals_stat_average_min(col, n),
+                            f"{n}+ {col} avg in finals")
+                return (C.stat_in_a_final(col, n),
+                        f"{n}+ {col} in a final")
+
+            if re.search(r"\bin a (?:game|match)\b|\bsingle (?:game|match)\b"
+                         r"|\bper game\b", t):
+                if is_avg:
+                    # "20+ PER GAME" with no season or career word is a
+                    # career rate, which is the broader reading.
+                    return (C.career_stat_average_min(col, n),
+                            f"{n}+ {col} per game "
+                            f"(min {C.CAREER_AVG_MIN_GAMES} games)")
+                return C.stat_in_a_game(col, n), f"{n}+ {col} in a game"
+
+            if re.search(r"\bseasons?\b", t) and "career" not in t:
+                if is_avg:
                     return (C.season_stat_average_min(col, n),
                             f"{n}+ {col} avg in a season "
                             f"(min {C.SEASON_AVG_MIN_GAMES} games)")
+                return (C.season_stat_total_min(col, n),
+                        f"{n}+ {col} in a season")
 
-    # 3d-ter. Season totals: "30+ FREES AGAINST — SEASON".
-    # Distinct from 3d-bis above: that rule needs an explicit avg/average
-    # word, and must therefore be tried first. A bare season qualifier with
-    # no averaging word means an accumulated total, which is what every
-    # "500+ DISPOSALS IN A SEASON" square has always meant and which the
-    # parser has never been able to express.
-    if (re.search(r"\bseason\b|\bin a season\b|\bone season\b", t)
-            and not re.search(r"\bavg\b|\baverage[ds]?\b|\bcareer\b|final", t)):
-        m = re.search(r"(\d+)", t)
-        if m:
-            for word in STAT_WORDS_BY_LENGTH:
-                col = STAT_WORDS[word]
-                if word in t:
-                    n = int(m.group(1))
-                    return (C.season_stat_total_min(col, n),
-                            f"{n}+ {col} in a season")
+            if re.search(r"\bcareers?\b|\btotal\b|\ball[- ]time\b", t):
+                if is_avg:
+                    return (C.career_stat_average_min(col, n),
+                            f"{n}+ {col} avg per game in a career "
+                            f"(min {C.CAREER_AVG_MIN_GAMES} games)")
+                return (C.career_stat_total_min(col, n),
+                        f"{n}+ {col} in a career")
+
+            # An averaging word with no scope named at all. A season is the
+            # narrower and far more common reading for a grid square, and
+            # is what this rule has always answered.
+            if is_avg:
+                return (C.season_stat_average_min(col, n),
+                        f"{n}+ {col} avg in a season "
+                        f"(min {C.SEASON_AVG_MIN_GAMES} games)")
 
     # 3e. Season and club awards derivable from the data.
     if re.search(r"leading goal ?kicker", t):
