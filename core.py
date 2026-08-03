@@ -646,12 +646,17 @@ STAR_MAX = 5
 
 #: Shown wherever a star rating appears. The stars are a property of this
 #: database, not of the puzzle: they rank how rarely-picked an answer is
-#: likely to be, derived from career length, era and club spread. Gridley's
-#: own rarity percentage comes from what real players actually guessed and
-#: is not knowable offline.
+#: likely to be. Gridley's own rarity percentage comes from what real
+#: players actually guessed and is not knowable offline.
+#:
+#: The listed terms must stay in step with OBSCURITY_WEIGHTS in build_db.
+#: This used to claim "club spread", which the formula has never included --
+#: and the direction is not even obvious, since a player at several clubs
+#: qualifies for more squares and so may be *easier* to recall.
 STAR_DISCLAIMER = ("Stars are this database's obscurity proxy, derived from "
-                   "career length, era and club spread — not the live crowd "
-                   "rarity percentage the puzzle itself reports.")
+                   "games played, career span, era, goals, finals and "
+                   "Brownlow votes — not the live crowd rarity percentage "
+                   "the puzzle itself reports.")
 
 #: The tooltip form. Shown only on hover, so it repeats the point without
 #: taking up screen space. Visible prose should use STAR_DISCLAIMER once

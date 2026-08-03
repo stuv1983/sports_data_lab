@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Apply data migrations that do not require re-downloading the AFL source.
 
-Repairs the historical ladder/wooden-spoon derivation and adds chronological
-club-path fields to ``players``. Safe to re-run. A timestamped database backup
-is recommended before any migration of a working copy.
+Removes duplicate player-game rows, repairs the historical ladder/wooden-spoon
+derivation, and adds chronological club-path fields to ``players``. Safe to
+re-run. A timestamped database backup is recommended before any migration of a
+working copy.
+
+Removing a duplicate changes career_games, so run ``recompute_obscurity.py``
+afterwards if this reports any rows dropped -- obscurity ranks on those totals.
 """
 
 from __future__ import annotations
@@ -119,6 +123,61 @@ def add_club_paths(con) -> int:
     return len(updates)
 
 
+#: Career columns that are a function of the games rows, and so have to be
+#: recomputed after any row is removed. Kept narrow on purpose: the columns
+#: here are the ones a phantom appearance actually corrupts.
+_CAREER_RECOUNT = """
+    UPDATE players SET
+        career_games   = (SELECT COUNT(*)      FROM games g WHERE g.player_id = players.player_id),
+        career_goals   = (SELECT SUM(g.goals)  FROM games g WHERE g.player_id = players.player_id),
+        finals_played  = (SELECT SUM(g.is_final) FROM games g WHERE g.player_id = players.player_id),
+        debut_season   = (SELECT MIN(g.season) FROM games g WHERE g.player_id = players.player_id),
+        final_season   = (SELECT MAX(g.season) FROM games g WHERE g.player_id = players.player_id)
+    WHERE player_id IN (SELECT player_id FROM games)
+"""
+
+
+def drop_duplicate_games(con) -> tuple[int, list]:
+    """Remove duplicate (player, date) rows and recount the careers they hit.
+
+    The build now rejects these at source (see dedupe_games), but a database
+    built before that gate still carries them, and rebuilding from scratch is
+    a multi-minute download. Returns (rows_dropped, unresolved).
+    """
+    import dedupe_games
+
+    keys = [tuple(r) for r in con.execute("""
+        SELECT player_id, date FROM games
+        GROUP BY player_id, date HAVING COUNT(*) > 1
+    """)]
+    if not keys:
+        return 0, []
+
+    affected = sorted({player_id for player_id, _ in keys})
+    marks = ",".join("?" for _ in affected)
+    columns = [r[1] for r in con.execute("PRAGMA table_info(games)")]
+    selected = ", ".join(f"g.{c}" for c in columns)
+    rows = [
+        {
+            "player_id": row[columns.index("player_id") + 1],
+            "date": row[columns.index("date") + 1],
+            "career_game_no": row[columns.index("career_game_no") + 1],
+            "ref": row[0],
+            "fields": tuple(row[1:]),
+        }
+        for row in con.execute(
+            f"SELECT g.rowid, {selected} FROM games g "
+            f"WHERE g.player_id IN ({marks})", affected)
+    ]
+
+    drop, unresolved = dedupe_games.resolve(rows)
+    if drop:
+        con.executemany("DELETE FROM games WHERE rowid = ?",
+                        [(ref,) for ref in drop])
+        con.execute(_CAREER_RECOUNT)
+    return len(drop), unresolved
+
+
 def run(db_path: str) -> None:
     path = Path(db_path)
     if not path.exists():
@@ -128,6 +187,10 @@ def run(db_path: str) -> None:
         if not table_exists(con, "games") or not table_exists(con, "players"):
             raise RuntimeError("database is missing players or games")
         con.execute("BEGIN IMMEDIATE")
+        # Before the ladders: team_seasons counts distinct appearances, so a
+        # duplicate player-game row must be gone before anything derives
+        # from it.
+        dropped, unresolved = drop_duplicate_games(con)
         ladder_rows = rebuild_team_seasons(con)
         player_rows = add_club_paths(con)
         if table_exists(con, "meta"):
@@ -142,6 +205,10 @@ def run(db_path: str) -> None:
         raise
     finally:
         con.close()
+    print(f"duplicate player-game rows removed: {dropped:,}")
+    for item in unresolved:
+        print(f"  UNRESOLVED player {item.player_id} on {item.date}: "
+              f"career_game_no candidates {item.candidates} -- {item.reason}")
     print(f"team_seasons rebuilt: {ladder_rows:,} rows")
     print(f"club paths updated: {player_rows:,} players")
 

@@ -32,7 +32,8 @@ _os.chdir(_ROOT)
 import pandas as pd
 import pytest
 
-from build_db import OBSCURITY_WEIGHTS, obscurity_score
+from build_db import (OBSCURITY_MODEL_VERSION, OBSCURITY_WEIGHTS,
+                      obscurity_components, obscurity_score)
 
 
 def frame(rows):
@@ -85,12 +86,19 @@ def test_career_span_separates_otherwise_identical_careers():
 
 
 def test_span_has_the_weight_it_claims():
-    s = obscurity_score(frame([
+    """Isolated against the stored component, not the blended score.
+
+    Span cannot be varied on its own through the score: lengthening a career
+    moves final_season, which the era term also reads. Model 1 hid that,
+    because era clipped both of these careers to the same 100. Asserting the
+    component directly says what this test means to say.
+    """
+    c = obscurity_components(frame([
         (17, 0, 0, 0, 1899, 1899),
         (17, 0, 0, 0, 1899, 1909),
     ]))
-    assert s.iloc[0] - s.iloc[1] == pytest.approx(
-        OBSCURITY_WEIGHTS["span"] * 50, abs=0.2)
+    assert (c.span_component.iloc[0] - c.span_component.iloc[1]
+            == pytest.approx(50, abs=0.2))
 
 
 def test_a_strictly_smaller_footprint_is_never_less_obscure():
@@ -115,6 +123,89 @@ def test_era_term_survives_a_missing_final_season():
         (10, 0, 0, 0, 1950, None),
     ]))
     assert s.iloc[0] == s.iloc[0]          # not NaN
+
+
+# ------------------------------------------------- model 2: missing vs zero
+
+def test_missing_brownlow_data_is_not_read_as_never_polled():
+    """Brownlow voting starts in 1931; before it, there is nothing to poll.
+
+    Two identical careers, one with a recorded zero and one with no data at
+    all. Model 1 scored them the same, crediting the pre-1931 player for
+    failing to poll in a count that did not exist.
+    """
+    # A population, because every term here is a percentile, and the two
+    # subjects must sit mid-field on the other five: if those are already
+    # maxed there is no room for the Brownlow term to show a difference.
+    rows = [(100, 50, 0, 5, 1935, 1945),        # recorded: polled no votes
+            (100, 50, None, 5, 1935, 1945)]     # no data for this player
+    rows += [(20 + i * 10, 10 + i * 5, 1 + i, i, 1930, 1940 + i % 10)
+             for i in range(40)]
+    s = obscurity_score(frame(rows))
+    assert s.iloc[1] < s.iloc[0], (s.iloc[0], s.iloc[1])
+
+
+def test_a_dropped_term_renormalises_rather_than_shrinking_the_score():
+    """The remaining five weights must still sum to the full scale.
+
+    Otherwise every player with a data gap is quietly capped below 100 and
+    the missing term reads as "not obscure" instead of "not known".
+    """
+    rows = [(1, 0, None, 0, 1900, 1900)]
+    rows += [(300 + i, 400, 100, 30, 1990, 2010) for i in range(40)]
+    c = obscurity_components(frame(rows))
+    assert c.obscurity_confidence.iloc[0] == pytest.approx(
+        1.0 - OBSCURITY_WEIGHTS["brownlow"])
+    assert c.brownlow_component.iloc[0] != c.brownlow_component.iloc[0]  # NaN
+    # Still able to reach the top of the scale on the terms it does have.
+    assert c.obscurity.iloc[0] > 95
+
+
+def test_confidence_is_one_when_every_term_is_available():
+    c = obscurity_components(frame([(100, 50, 3, 5, 1990, 2000)]))
+    assert c.obscurity_confidence.iloc[0] == pytest.approx(1.0)
+
+
+# ------------------------------------------------------- model 2: era shape
+
+def test_the_era_term_separates_the_last_twenty_five_years():
+    """Model 1 clipped every final season from 2000 on to a flat zero.
+
+    A career that ended in 2001 and one still running in 2026 were equally
+    "contemporary", which threw away the recency signal across a quarter of
+    the league's history.
+    """
+    c = obscurity_components(frame([
+        (100, 50, 3, 5, 1995, 2001),
+        (100, 50, 3, 5, 2010, 2015),
+        (100, 50, 3, 5, 2020, 2026),
+    ]))
+    era = c.era_component.tolist()
+    assert era[0] > era[1] > era[2], era
+
+
+def test_era_still_ranks_older_careers_as_more_obscure():
+    c = obscurity_components(frame([
+        (50, 10, 0, 0, 1900, 1905),
+        (50, 10, 0, 0, 1960, 1965),
+        (50, 10, 0, 0, 2015, 2020),
+    ]))
+    era = c.era_component.tolist()
+    assert era[0] > era[1] > era[2], era
+
+
+# --------------------------------------------------------- model provenance
+
+def test_components_are_stored_for_every_weight():
+    """A score you cannot break down is a score you cannot audit or retune."""
+    c = obscurity_components(frame([(10, 2, 1, 0, 1950, 1955)]))
+    for name in OBSCURITY_WEIGHTS:
+        assert f"{name}_component" in c.columns
+
+
+def test_the_model_version_is_recorded():
+    c = obscurity_components(frame([(10, 2, 1, 0, 1950, 1955)]))
+    assert (c.obscurity_model == OBSCURITY_MODEL_VERSION).all()
 
 
 if __name__ == "__main__":

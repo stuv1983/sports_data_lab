@@ -22,7 +22,7 @@ import sys
 
 import pandas as pd
 
-from build_db import obscurity_score
+from build_db import obscurity_components
 from data_paths import default_db
 
 #: Everything obscurity_score reads. Selected explicitly so a formula that
@@ -48,7 +48,8 @@ def recompute(db, dry_run=False, verbose=True):
         if players.empty:
             raise SystemExit("players table is empty -- run build_db.py first.")
 
-        players["new_obscurity"] = obscurity_score(players)
+        components = obscurity_components(players)
+        players["new_obscurity"] = components["obscurity"]
         delta = (players.new_obscurity - players.obscurity.fillna(0)).abs()
         changed = int((delta > 0.05).sum())
 
@@ -67,10 +68,23 @@ def recompute(db, dry_run=False, verbose=True):
                 print("\n--dry-run: nothing written.")
             return len(players), changed, float(delta.max())
 
+        # A database built by an older version has the score column but not
+        # the component columns; add them rather than making the user rebuild.
+        have = {r[1] for r in con.execute("PRAGMA table_info(players)")}
+        columns = [c for c in components.columns if c != "obscurity"]
+        for column in columns:
+            if column not in have:
+                kind = "INTEGER" if column == "obscurity_model" else "REAL"
+                con.execute(f"ALTER TABLE players ADD COLUMN {column} {kind}")
+
+        assignments = ", ".join(f"{c} = ?" for c in ["obscurity", *columns])
         con.executemany(
-            "UPDATE players SET obscurity = ? WHERE player_id = ?",
-            [(float(s), int(pid)) for pid, s
-             in zip(players.player_id, players.new_obscurity)])
+            f"UPDATE players SET {assignments} WHERE player_id = ?",
+            [(float(row.obscurity),
+              *(float(getattr(row, c)) for c in columns),
+              int(pid))
+             for pid, row in zip(players.player_id,
+                                 components.itertuples(index=False))])
         con.commit()
         if verbose:
             print("\nWritten. Restart the app to pick up the new scores "

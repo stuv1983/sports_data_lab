@@ -16,6 +16,7 @@ Usage:
     python build_db.py --refresh        # re-download even if cached
     python build_db.py --db my.db
     python build_db.py --no-matches     # skip the derive_matches.py step
+    python build_db.py --allow-duplicates   # build despite unresolved dupes
 """
 
 import argparse
@@ -96,7 +97,77 @@ def load_frame(path):
     return pyreadr.read_r(path)["afldata"]
 
 
-def build(db_path, refresh=False, skip_matches=False):
+def _row_signature(frame, index):
+    """Every column of one row, as a comparable tuple.
+
+    Used to tell an exact duplicate (the same row recorded twice, safe to
+    collapse) from a conflicting one (two different rows sharing a key,
+    which needs sequence evidence to settle).
+    """
+    return tuple(frame.loc[index].tolist())
+
+
+def _deduplicate_games(out, strict=True):
+    """Drop duplicate (player, date) rows. Returns (frame, unresolved).
+
+    Resolution is delegated to dedupe_games, which uses career_game_no
+    continuity; this function only handles the DataFrame plumbing and the
+    build-level policy on what to do with what it could not settle.
+    """
+    import pandas as pd
+
+    import dedupe_games
+
+    duplicated = out.duplicated(subset=["player_id", "date"], keep=False)
+    if not duplicated.any():
+        return out, []
+
+    affected = out.loc[duplicated]
+    print(f"{len(affected):,} rows share a (player, date) key with another -- "
+          f"resolving before career totals are taken")
+
+    # Only the affected players need the full row treatment; building a
+    # signature for all 693k rows to inspect a handful would be wasteful.
+    subset = out.loc[out["player_id"].isin(affected["player_id"].unique())]
+    rows = [
+        {
+            "player_id": player_id,
+            "date": date,
+            # NaN means the source never numbered this appearance, which is
+            # no evidence at all -- pass it through as None so the resolver
+            # declines rather than comparing against NaN.
+            "career_game_no": (None if pd.isna(career_game_no)
+                               else career_game_no),
+            "ref": index,
+            "fields": _row_signature(subset, index),
+        }
+        for index, player_id, date, career_game_no in zip(
+            subset.index, subset["player_id"], subset["date"],
+            subset["career_game_no"])
+    ]
+
+    drop, unresolved = dedupe_games.resolve(rows)
+    if drop:
+        print(f"  resolved {len(drop):,} duplicate row(s) by career sequence")
+        out = out.drop(index=drop)
+
+    if unresolved:
+        print(f"  {len(unresolved):,} duplicate key(s) could NOT be resolved:")
+        for item in unresolved:
+            print(f"    player {item.player_id} on {item.date}: "
+                  f"career_game_no candidates {item.candidates} "
+                  f"-- {item.reason}")
+        if strict:
+            sys.exit(
+                "Unresolved duplicate player-game rows: career totals built "
+                "from this source would be wrong. Re-run with "
+                "--allow-duplicates to build anyway (career_games will be "
+                "inflated for the players listed above).")
+
+    return out, unresolved
+
+
+def build(db_path, refresh=False, skip_matches=False, strict=True):
     import pandas as pd
 
     df = load_frame(download(refresh))
@@ -171,6 +242,12 @@ def build(db_path, refresh=False, skip_matches=False):
 
     out = out.dropna(subset=["player_id"])
 
+    # Duplicate player-game rows have to go before the groupby below, because
+    # career_games is a row count: one stray row is one phantom appearance,
+    # and every derived figure inherits it. See dedupe_games for why they
+    # cannot simply be dropped on sight.
+    out, unresolved = _deduplicate_games(out, strict=strict)
+
     print("Aggregating career records ...")
     g = out.groupby("player_id")
     players = pd.DataFrame({
@@ -192,7 +269,10 @@ def build(db_path, refresh=False, skip_matches=False):
         "n_clubs": g["club_now"].nunique(),
     }).reset_index()
 
-    players["obscurity"] = obscurity_score(players)
+    # The components go in alongside the score so the UI can explain a
+    # rating and a formula change can be diffed against the stored one.
+    for column, values in obscurity_components(players).items():
+        players[column] = values
 
     from names import normalise_name
     players["name_key"] = players["player"].map(normalise_name)
@@ -323,14 +403,35 @@ OBSCURITY_WEIGHTS = {
     "brownlow": 0.10,
 }
 
+#: Bumped whenever the formula changes, and stored alongside every score so
+#: a database can say which model produced it. Scores from different
+#: versions are not comparable.
+#:
+#: 1: original. Missing Brownlow data counted as zero votes; the era term
+#:    was clipped flat at 0 for every final season from 2000 on.
+#: 2: missing Brownlow data drops the term and renormalises instead of
+#:    being read as "never polled"; era ranks final seasons rather than
+#:    clipping, so the last 25 years separate again.
+OBSCURITY_MODEL_VERSION = 2
 
-def obscurity_score(p):
+#: Terms that can be unavailable rather than zero. Everything else is
+#: derived from the games rows and is therefore always known.
+OBSCURITY_OPTIONAL_TERMS = ("brownlow",)
+
+
+def obscurity_components(p):
     """
-    Heuristic 0-100 proxy for how unlikely a player is to be picked.
-    Higher = more obscure = lower expected Gridley rarity percentage.
+    Per-term obscurity contributions, the blended score, and its confidence.
 
-    This is NOT Gridley's real pick data (which is crowd-sourced and not
-    public). It is a fame proxy built from career footprint.
+    Returns a DataFrame with one `<term>_component` column per weight, plus
+    `obscurity`, `obscurity_confidence` and `obscurity_model`. Storing the
+    parts rather than only the total is what makes a score auditable: it can
+    be explained in the UI, retuned, and compared against an older version.
+
+    Heuristic 0-100 proxy for how unlikely a player is to be picked, where
+    higher = more obscure. This is NOT Gridley's real pick data (which is
+    crowd-sourced and not public). It is a fame proxy built from career
+    footprint, and should never be presented as measured rarity.
 
     TIES TAKE THE GROUP'S BEST RANK
     -------------------------------
@@ -349,8 +450,27 @@ def obscurity_score(p):
     Seasons between debut and final game, which nothing else here captures.
     17 games all inside 1899 is a far more obscure career than 17 games
     strung across a decade, and only this term can tell them apart.
+
+    MISSING IS NOT ZERO
+    -------------------
+    "Polled no Brownlow votes" and "no Brownlow data exists" are different
+    facts, and the first version of this formula read both as the maximum
+    obscurity contribution. Brownlow voting starts in 1931, so every one of
+    the 3,414 players who finished before it began was being credited for
+    failing to poll in a count that did not exist. Those players now drop
+    the term and have the remaining five weights renormalised to 1.0, and
+    carry a confidence below 1 recording that a term was unavailable.
+
+    ERA
+    ---
+    Ranked, not clipped. The old term was `(2000 - final_season)` scaled and
+    clipped at zero, which made every player who finished from 2000 onwards
+    equally contemporary -- one 2001 season and a career still running in
+    2026 scored the same. Ranking final seasons keeps the ordering (older
+    is more obscure) while restoring separation across the last 25 years,
+    and drops two arbitrary constants.
     """
-    import numpy as np
+    import pandas as pd
 
     def pct_rank_low_is_obscure(s):
         # Invert so small values score high, and give a tied group its best
@@ -364,15 +484,39 @@ def obscurity_score(p):
         "games": pct_rank_low_is_obscure(p["career_games"].fillna(0)),
         "span": pct_rank_low_is_obscure(span),
         "goals": pct_rank_low_is_obscure(p["career_goals"].fillna(0)),
-        "brownlow": pct_rank_low_is_obscure(p["career_brownlow"].fillna(0)),
         "finals": pct_rank_low_is_obscure(p["finals_played"].fillna(0)),
         # Recency: modern players are far more familiar to today's solvers.
-        # Peak obscurity sits in the pre-1990 era.
-        "era": np.clip((2000 - p["final_season"]) / 80 * 100, 0, 100),
+        "era": pct_rank_low_is_obscure(p["final_season"]),
+        # Left NaN where the source has nothing to say, and dropped from
+        # the blend below rather than read as "never polled".
+        "brownlow": pct_rank_low_is_obscure(p["career_brownlow"]).where(
+            p["career_brownlow"].notna()),
     }
 
-    score = sum(OBSCURITY_WEIGHTS[name] * value for name, value in terms.items())
-    return score.round(1)
+    # Renormalise over the terms each player actually has. A player missing
+    # the Brownlow term is scored on the other five at 1/0.90 their weight,
+    # which is the same as saying the missing term would have looked like
+    # their average -- the only neutral assumption available.
+    available = sum(
+        pd.Series(OBSCURITY_WEIGHTS[name], index=p.index).where(
+            terms[name].notna(), 0.0)
+        for name in terms
+    )
+    weighted = sum(OBSCURITY_WEIGHTS[name] * terms[name].fillna(0.0)
+                   for name in terms)
+
+    out = pd.DataFrame(
+        {f"{name}_component": value.round(1) for name, value in terms.items()},
+        index=p.index)
+    out["obscurity"] = (weighted / available).round(1)
+    out["obscurity_confidence"] = available.round(3)
+    out["obscurity_model"] = OBSCURITY_MODEL_VERSION
+    return out
+
+
+def obscurity_score(p):
+    """The blended 0-100 score alone. See `obscurity_components`."""
+    return obscurity_components(p)["obscurity"]
 
 # ---------------------------------------------------------------- layers
 
@@ -467,8 +611,11 @@ if __name__ == "__main__":
                     help="skip the derive_matches.py step")
     ap.add_argument("--core-only", action="store_true",
                     help="skip every optional import layer")
+    ap.add_argument("--allow-duplicates", action="store_true",
+                    help="build even when duplicate player-game rows cannot "
+                         "be resolved (career totals will be inflated)")
     a = ap.parse_args()
-    build(a.db, a.refresh, a.no_matches)
+    build(a.db, a.refresh, a.no_matches, strict=not a.allow_duplicates)
     if not a.core_only:
         print()
         print(f"Refreshing optional layers -> {a.db}")
