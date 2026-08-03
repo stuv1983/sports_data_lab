@@ -49,7 +49,22 @@ STAT_WORDS = {
     "rebound": "rebounds", "contested possession": "contested",
     "one percenter": "one_percenters", "bounce": "bounces",
     "goal assist": "goal_assists", "brownlow vote": "brownlow",
+    "frees against": "frees_against", "free kicks against": "frees_against",
+    "frees for": "frees_for", "free kicks for": "frees_for",
+    "clanger": "clangers", "uncontested possession": "uncontested",
+    # In AFL_STATS since the beginning but never given a criterion word, so
+    # "5+ CONTESTED MARKS" matched the shorter "mark" key and silently
+    # answered a question about total marks instead.
+    "contested mark": "contested_marks",
+    "mark inside 50": "marks_i50", "marks inside 50": "marks_i50",
 }
+
+# STAT_WORDS is matched by substring, and several keys are prefixes of
+# others ("mark"/"contested mark", "frees for"/"frees against" once the
+# leading word is shared). Iterating the dict in insertion order lets the
+# shorter key win, which silently resolves "CONTESTED MARKS" to `marks`.
+# Every substring loop below iterates this instead, longest key first.
+STAT_WORDS_BY_LENGTH = sorted(STAT_WORDS, key=len, reverse=True)
 
 # Criteria the database genuinely cannot express.
 UNSUPPORTED = {
@@ -347,13 +362,31 @@ def parse(text):
     if re.search(r"\bavg\b|\baverage[ds]?\b", t) and "final" not in t:
         m = re.search(r"([\d.]+)", t)
         if m:
-            for word, col in STAT_WORDS.items():
+            for word in STAT_WORDS_BY_LENGTH:
+                col = STAT_WORDS[word]
                 if word in t:
                     n = float(m.group(1))
                     n = int(n) if n.is_integer() else n
                     return (C.season_stat_average_min(col, n),
                             f"{n}+ {col} avg in a season "
                             f"(min {C.SEASON_AVG_MIN_GAMES} games)")
+
+    # 3d-ter. Season totals: "30+ FREES AGAINST — SEASON".
+    # Distinct from 3d-bis above: that rule needs an explicit avg/average
+    # word, and must therefore be tried first. A bare season qualifier with
+    # no averaging word means an accumulated total, which is what every
+    # "500+ DISPOSALS IN A SEASON" square has always meant and which the
+    # parser has never been able to express.
+    if (re.search(r"\bseason\b|\bin a season\b|\bone season\b", t)
+            and not re.search(r"\bavg\b|\baverage[ds]?\b|\bcareer\b|final", t)):
+        m = re.search(r"(\d+)", t)
+        if m:
+            for word in STAT_WORDS_BY_LENGTH:
+                col = STAT_WORDS[word]
+                if word in t:
+                    n = int(m.group(1))
+                    return (C.season_stat_total_min(col, n),
+                            f"{n}+ {col} in a season")
 
     # 3e. Season and club awards derivable from the data.
     if re.search(r"leading goal ?kicker", t):
@@ -363,12 +396,47 @@ def parse(text):
     if re.search(r"multi[- ]club", t):
         return C.multi_club_player(), "multi-club player"
 
+    # 3e-bis. Match context: the size of the win, the size of the crowd.
+    # Placed before the two-stat and single-game stat rules because "100+
+    # POINT WIN" and "50,000+ CROWD" both carry a number and a noun that
+    # those rules would otherwise try to read as a statistic.
+    m = re.search(r"(\d[\d,]*)\+?\s*(?:people|fans|crowd|attendance|spectators)"
+                  r"|crowd of (\d[\d,]*)", t)
+    if m and re.search(r"crowd|attendance|people|fans|spectators", t):
+        people = int((m.group(1) or m.group(2)).replace(",", ""))
+        if _is_max(t):
+            bound = _max_bound(t, people)
+            return (C.crowd_max(bound), f"crowd of {bound:,} or fewer")
+        if "final" in t:
+            return (C.crowd_min_in_final(people),
+                    f"crowd of {people:,}+ at a final")
+        return C.crowd_min(people), f"crowd of {people:,}+"
+
+    m = re.search(r"(\d+)\+?\s*point (?:win|victory)"
+                  r"|(?:win|won|winning).{0,10}by (\d+)", t)
+    if m and not re.search(r"\bloss|\blost|\bdefeat", t):
+        points = int(m.group(1) or m.group(2))
+        if _is_max(t):
+            bound = _max_bound(t, points)
+            return (C.won_by_max(bound), f"won by {bound} points or fewer")
+        return C.won_by_min(points), f"won by {points}+ points"
+
+    m = re.search(r"(\d+)\+?\s*point (loss|defeat)|(?:lost|lose).{0,10}by (\d+)",
+                  t)
+    if m:
+        points = int(m.group(1) or m.group(3))
+        return C.lost_by_min(points), f"lost by {points}+ points"
+
+    if re.search(r"\bdrawn? (match|game)\b|\btied game\b|played in a draw", t):
+        return C.played_in_a_draw(), "played in a drawn match"
+
     # 3f. Two stats in the same game: "30+ DISPOSALS & 3+ GOALS GAME"
     if "&" in t or " and " in t:
         pairs = re.findall(r"(\d+)\+?\s*([a-z ]+?)(?=\s*(?:&| and |$))", t)
         found = []
         for n, word in pairs:
-            for w, col in STAT_WORDS.items():
+            for w in STAT_WORDS_BY_LENGTH:
+                col = STAT_WORDS[w]
                 if w in word:
                     found.append((col, int(n)))
                     break
@@ -426,7 +494,8 @@ def parse(text):
     # 8. A stat threshold in a single game.
     if re.search(r"in a (game|match)|single game|\bgame\b|\bmatch\b", t):
         n = _num(t)
-        for word, col in STAT_WORDS.items():
+        for word in STAT_WORDS_BY_LENGTH:
+            col = STAT_WORDS[word]
             if word in t and n:
                 return C.stat_in_a_game(col, n), f"{n}+ {col} in a game"
 

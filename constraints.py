@@ -52,6 +52,7 @@ career_goals_between = _G.career_score_between
 stat_in_a_game = _G.stat_in_a_game
 two_stats_same_game = _G.two_stats_same_game
 season_stat_average_min = _G.season_stat_average_min
+season_stat_total_min = _G.season_stat_total_min
 
 #: Exposed so the UI and the tests can state the threshold rather than
 #: leaving it buried in a default argument.
@@ -187,6 +188,7 @@ BUILDERS = {
     "N+ career goals":            (career_goals_min, ["goals"]),
     "N or fewer career goals":    (career_goals_max, ["goals"]),
     "Season average of a stat":   (season_stat_average_min, ["stat", "avg"]),
+    "N+ of a stat in one season": (season_stat_total_min, ["stat", "n"]),
     "N+ of a stat in one game":   (stat_in_a_game, ["stat", "n"]),
     "Two stats in the same game": (two_stats_same_game,
                                    ["stat_a", "n_a", "stat_b", "n_b"]),
@@ -352,3 +354,25 @@ from family_relationships import (  # noqa: E402
 
 BUILDERS.update(FAMILY_RELATIONSHIP_BUILDERS)
 FAMILY_RELATIONSHIP_BUILDER_NAMES = set(FAMILY_RELATIONSHIP_BUILDERS)
+
+
+# Match-context constraints: margin, team score and crowd. The margin and
+# result builders read `games` and always work; only the crowd builders
+# need the optional all-games layer.
+from match_constraints import (  # noqa: E402
+    MATCH_BUILDERS,
+    CROWD_BUILDER_NAMES,
+    match_history_available,
+    match_history_count,
+    won_by_min,
+    lost_by_min,
+    won_by_max,
+    played_in_a_draw,
+    team_scored_min,
+    crowd_min,
+    crowd_max,
+    crowd_min_in_final,
+)
+
+BUILDERS.update(MATCH_BUILDERS)
+MATCH_BUILDER_NAMES = set(MATCH_BUILDERS)

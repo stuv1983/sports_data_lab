@@ -7,6 +7,9 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
+import club_fields as CF
+import club_history as CH
+
 REQUIRED_TABLES = {
     "clubs", "club_source_snapshots", "club_wikipedia_fields",
     "club_player_totals", "club_player_register", "club_player_records",
@@ -44,6 +47,163 @@ def _first(fields: dict[str, str], *keys: str) -> str:
         if value:
             return value
     return "—"
+
+
+def _headline(col, fields: dict[str, str], group: str, label: str) -> None:
+    """One metric tile, with whatever was factored out shown beneath it.
+
+    The raw infobox values are long enough that a tile truncates them --
+    'Founded' rendered as '1885 ; 141 year…' and 'Home ground' as 'AFL:
+    Melbourn…'. club_fields reduces each to a headline and returns the
+    remainder, which goes in a caption instead of being lost.
+    """
+    value = CF.headline(fields, group)
+    col.metric(label, value.primary or "—",
+               help=value.raw or None)
+    if value.qualifier:
+        col.caption(value.qualifier)
+    elif value.extras:
+        col.caption(value.detail)
+
+
+def _record_line(rec) -> str:
+    pct = f"{rec.percentage:.1f}%" if rec.percentage is not None else "—"
+    return (f"{rec.played} played · {rec.wins}-{rec.draws}-{rec.losses} "
+            f"(W-D-L) · {pct}")
+
+
+def _past_games_tab(con, club_id: str, club_name: str) -> None:
+    """Searchable past results for one club, over the all-games rows.
+
+    The source carries one row per club per match back to 1897, so every
+    figure here is from this club's point of view: `result` and `margin`
+    are theirs, and the opponent comes from the other row of the same game
+    rather than from any name matching.
+    """
+    if not CH.club_history_available(con):
+        st.info(
+            "Past game data is not loaded. Run "
+            "`python utils/fetch_club_sources.py`, then "
+            "`python utils/load_club_all_games.py`."
+        )
+        return
+
+    seasons = CH.seasons_available(con)
+    if not seasons:
+        st.info("No matches recorded for this club.")
+        return
+
+    splits = {s.split: s for s in CH.home_away_splits(con, club_id)}
+    cols = st.columns(4)
+    all_time = CH.season_records(con, club_id, scope="all")
+    played = sum(r.played for r in all_time)
+    wins = sum(r.wins for r in all_time)
+    draws = sum(r.draws for r in all_time)
+    losses = sum(r.losses for r in all_time)
+    cols[0].metric("Matches", f"{played:,}")
+    cols[1].metric("Record", f"{wins}-{draws}-{losses}", help="W-D-L, all time")
+    for i, name in enumerate(("home", "away"), start=2):
+        rec = splits.get(name)
+        cols[i].metric(
+            name.title(),
+            f"{rec.wins}-{rec.draws}-{rec.losses}" if rec else "—",
+            help=f"{rec.played} matches" if rec else None)
+
+    excluded = CH.excluded(con)
+    if excluded:
+        st.caption(
+            "Excluded as not cleanly linked: "
+            + ", ".join(f"{n:,} {status}" for status, n in excluded.items()))
+
+    st.markdown("#### Search past results")
+    f1, f2, f3 = st.columns(3)
+    club_ids = CH.clubs_with_history(con)
+    opponent = f1.selectbox(
+        "Opponent", ["Any", *[c for c in club_ids if c != club_id]],
+        format_func=lambda c: c if c == "Any" else c.replace("_", " ").title(),
+        key=f"pg_opp_{club_id}")
+    lo, hi = f2.select_slider(
+        "Seasons", options=sorted(seasons),
+        value=(min(seasons), max(seasons)), key=f"pg_seasons_{club_id}")
+    result = f3.selectbox(
+        "Result", ["Any", "W", "D", "L"],
+        format_func=lambda r: {"Any": "Any", "W": "Wins", "D": "Draws",
+                               "L": "Losses"}[r],
+        key=f"pg_result_{club_id}")
+
+    g1, g2, g3 = st.columns(3)
+    scope = g1.selectbox(
+        "Match type", ["all", "home_and_away", "finals"],
+        format_func=lambda s: {"all": "All matches",
+                               "home_and_away": "Home and away",
+                               "finals": "Finals"}[s],
+        key=f"pg_scope_{club_id}")
+    venue = g2.selectbox(
+        "Venue", ["Any", *CH.venues_available(con)], key=f"pg_venue_{club_id}")
+    order = g3.selectbox(
+        "Sort by", ["date_desc", "date_asc", "margin_desc", "margin_asc",
+                    "crowd_desc"],
+        format_func=lambda o: {"date_desc": "Most recent",
+                               "date_asc": "Oldest",
+                               "margin_desc": "Biggest win",
+                               "margin_asc": "Biggest loss",
+                               "crowd_desc": "Biggest crowd"}[o],
+        key=f"pg_order_{club_id}")
+
+    matches = CH.search_matches(
+        con, club_id=club_id,
+        opponent_id=None if opponent == "Any" else opponent,
+        season_from=lo, season_to=hi,
+        venue=None if venue == "Any" else venue,
+        result=None if result == "Any" else result,
+        scope=scope, order=order, limit=2000)
+
+    if not matches:
+        st.info("No matches for those filters.")
+        return
+
+    won = sum(m.result == "W" for m in matches)
+    drew = sum(m.result == "D" for m in matches)
+    st.caption(
+        f"{len(matches):,} matches · {won}-{drew}-{len(matches) - won - drew} "
+        f"(W-D-L)"
+        + ("  ·  showing the first 2,000" if len(matches) == 2000 else ""))
+
+    table = pd.DataFrame([{
+        "Season": m.season, "Round": m.round, "Date": m.match_date,
+        "Opponent": m.opponent_id.replace("_", " ").title(),
+        "H/A": m.where.title(), "Result": m.result, "Score": m.score,
+        "Margin": m.margin, "Venue": m.venue, "Crowd": m.attendance,
+    } for m in matches])
+    st.dataframe(table, hide_index=True, width="stretch",
+                 column_config={
+                     "Crowd": st.column_config.NumberColumn(format="%d"),
+                     "Margin": st.column_config.NumberColumn(format="%+d"),
+                 })
+    st.download_button(
+        "Download results CSV", table.to_csv(index=False),
+        file_name=f"{club_id}_past_games.csv", mime="text/csv",
+        key=f"pg_dl_{club_id}")
+
+    with st.expander("Season-by-season record"):
+        by_season = CH.season_records(con, club_id, scope="home_and_away")
+        st.dataframe(pd.DataFrame([{
+            "Season": r.season, "P": r.played, "W": r.wins, "D": r.draws,
+            "L": r.losses, "For": r.points_for, "Against": r.points_against,
+            "%": round(r.percentage, 1) if r.percentage is not None else None,
+            "Pts": r.premiership_points,
+        } for r in by_season]), hide_index=True, width="stretch")
+
+    with st.expander("Longest streaks"):
+        for kind in ("winning", "losing", "unbeaten"):
+            runs = CH.streaks(con, club_id, kind=kind, limit=3)
+            if not runs:
+                continue
+            best = ", ".join(
+                f"{r.length} ({r.from_season}"
+                + (f"–{r.to_season}" if r.spans_seasons else "") + ")"
+                for r in runs)
+            st.write(f"**{kind.title()}:** {best}")
 
 
 def _source_status(con, club_id: str) -> pd.DataFrame:
@@ -88,38 +248,56 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
 
     st.markdown(f"## {club['name']}")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Nickname", _first(fields, "nickname", "nicknames"))
-    c2.metric("Founded", _first(fields, "founded", "established"))
-    c3.metric("Home ground", _first(fields, "ground", "grounds"))
-    c4.metric("Premierships", _first(fields, "premierships"))
+    _headline(c1, fields, "nickname", "Nickname")
+    _headline(c2, fields, "founded", "Founded")
+    _headline(c3, fields, "ground", "Home ground")
+    _headline(c4, fields, "premierships", "Premierships")
 
     tabs = st.tabs([
-        "Overview", "Player totals", "All-time players", "Records", "Sources"
+        "Overview", "Past games", "Player totals", "All-time players",
+        "Records", "Sources"
     ])
 
     with tabs[0]:
+        # The preferred list named 'nickname', which fourteen of the
+        # eighteen clubs do not use as a key -- their nickname is under
+        # 'nickname_s'. Pull whichever spelling each club actually has.
         preferred = [
-            "full_name", "nickname", "founded", "colours", "competition",
-            "chairperson", "ceo", "coach", "captain_s", "ground",
-            "training_ground", "premierships",
+            "full_name", *CF.NICKNAME_KEYS, "founded", "colours",
+            "competition", "chairperson", "ceo", "coach", "captain_s",
+            "ground", "grounds", "training_ground", "premierships",
         ]
+        seen = set()
         rows = []
         for key in preferred:
-            if fields.get(key):
+            value = fields.get(key)
+            if value and key not in seen:
+                seen.add(key)
                 rows.append({"Field": key.replace("_", " ").title(),
-                             "Value": fields[key]})
+                             "Value": CF.strip_footnotes(value)})
         if rows:
-            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-        elif fields:
-            st.dataframe(
-                pd.DataFrame([{"Field": k.replace("_", " ").title(), "Value": v}
-                              for k, v in sorted(fields.items())]),
-                hide_index=True, width="stretch",
-            )
-        else:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch",
+                         column_config={
+                             "Field": st.column_config.TextColumn(width="small"),
+                             "Value": st.column_config.TextColumn(width="large"),
+                         })
+        elif not fields:
             st.info("Wikipedia metadata has not been loaded for this club.")
 
+        others = {k: v for k, v in sorted(fields.items()) if k not in seen}
+        if others:
+            with st.expander(f"All {len(fields)} scraped fields"):
+                st.dataframe(
+                    pd.DataFrame([
+                        {"Field": k.replace("_", " ").title(),
+                         "Value": CF.strip_footnotes(v)}
+                        for k, v in others.items()]),
+                    hide_index=True, width="stretch")
+
     with tabs[1]:
+        _past_games_tab(con, club_id, club["name"])
+
+    with tabs[2]:
         totals = _read(con, """
             SELECT player_name AS Player, games AS Games, goals AS Goals,
                    disposals AS Disposals, kicks AS Kicks, marks AS Marks,
@@ -139,7 +317,7 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
                 file_name=f"{club_id}_player_totals.csv", mime="text/csv",
             )
 
-    with tabs[2]:
+    with tabs[3]:
         register = _read(con, """
             SELECT cap_number AS Cap, jumper_number AS "Jumper #",
                    player_name AS Player, dob AS DOB, height_cm AS "Height cm",
@@ -161,7 +339,7 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
                 file_name=f"{club_id}_all_time_players.csv", mime="text/csv",
             )
 
-    with tabs[3]:
+    with tabs[4]:
         options = con.execute(
             "SELECT DISTINCT scope, stat FROM club_player_records "
             "WHERE club_id=? ORDER BY scope, stat", (club_id,)
@@ -187,7 +365,7 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
             """, (club_id, scope, stat))
             st.dataframe(records, hide_index=True, width="stretch")
 
-    with tabs[4]:
+    with tabs[5]:
         sources = _source_status(con, club_id)
         if sources.empty:
             st.info("No source snapshots have been loaded for this club.")

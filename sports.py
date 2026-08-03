@@ -296,7 +296,14 @@ class Sport:
 AFL_STATS = ["disposals", "kicks", "handballs", "marks", "goals", "behinds",
              "tackles", "hitouts", "inside50s", "clearances", "rebounds",
              "contested", "contested_marks", "marks_i50", "one_percenters",
-             "bounces", "goal_assists", "brownlow"]
+             "bounces", "goal_assists", "brownlow",
+             # Loaded by build_db.py's HEADER_MAP since the beginning but
+             # never listed here, so core._check() rejected them and three
+             # layers above could not reach data already in `games`.
+             # Confirmed populated by the step 0.2 era audit:
+             # frees_for/frees_against from 1965, clangers from 1998,
+             # uncontested from 1999.
+             "frees_for", "frees_against", "clangers", "uncontested"]
 
 AFL_CLUBS = ["Adelaide", "Brisbane Bears", "Brisbane Lions", "Carlton",
              "Collingwood", "Essendon", "Fitzroy", "Fremantle", "Geelong",
@@ -357,12 +364,24 @@ AFL = Sport(
     empty_hint=("Nothing satisfies both. Note that disposals, marks and "
                 "tackles are not recorded before 1965 — no earlier player "
                 "can have them."),
-    stat_eras={"disposals": 1965, "kicks": 1897, "handballs": 1965,
-               "marks": 1965, "tackles": 1987, "hitouts": 1987,
+    # Measured, not assumed: every value below is the first season the
+    # column carries a non-null, non-zero value in the built database, as
+    # reported by health.stat_era_starts. The previous hand-written values
+    # were wrong for eight of the fifteen stats -- kicks was listed as 1897
+    # (only goals go back that far), hitouts as 1987, goal_assists as 1998
+    # and brownlow as 1902 -- so the era caption was asserting coverage the
+    # data does not have. Re-measure with health.stat_era_starts after any
+    # rebuild rather than editing these by hand.
+    stat_eras={"goals": 1897, "brownlow": 1931,
+               "disposals": 1965, "kicks": 1965, "handballs": 1965,
+               "marks": 1965, "frees_for": 1965, "frees_against": 1965,
+               "behinds": 1965, "hitouts": 1966, "tackles": 1987,
                "inside50s": 1998, "clearances": 1998, "rebounds": 1998,
-               "contested": 1998, "contested_marks": 1998,
-               "marks_i50": 1998, "one_percenters": 1998,
-               "goal_assists": 1998, "brownlow": 1902},
+               "clangers": 1998,
+               "contested": 1999, "contested_marks": 1999,
+               "marks_i50": 1999, "one_percenters": 1999,
+               "uncontested": 1999, "bounces": 1999,
+               "goal_assists": 2003},
     optional_layers={"Draft data": "draft_available",
                      "Award data": "awards_available",
                      "Captain data": "captain_available",

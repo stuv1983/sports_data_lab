@@ -252,6 +252,29 @@ class Generic:
                       HAVING COUNT(*) >= ? AND AVG({stat}) >= ?
                     )""", [floor, avg])
 
+    def season_stat_total_min(self, stat, n):
+        """
+        Accumulated `n` or more of `stat` within a single season.
+
+        Grouped by (player, season), so one qualifying season is enough.
+        No minimum-games floor, unlike season_stat_average_min: a total is
+        not distorted by a short season. A player who reached the threshold
+        reached it, however many games it took.
+
+        Games where the stat is NULL are excluded rather than counted as
+        zero. Before a stat was recorded the column is empty, and summing
+        those as zeroes yields a real-looking season total of 0 that
+        positively asserts something the source never said.
+        """
+        self._check(stat)
+        s = self.s
+        return (f"""SELECT DISTINCT {s.player_id} FROM (
+                      SELECT {s.player_id} FROM {s.games}
+                      WHERE {stat} IS NOT NULL
+                      GROUP BY {s.player_id}, {s.season}
+                      HAVING SUM({stat}) >= ?
+                    )""", [n])
+
     def played_in_season_range(self, lo, hi):
         s = self.s
         return (f"SELECT DISTINCT {s.player_id} FROM {s.games} "

@@ -1,0 +1,26 @@
+# Streamlit's own theme, which controls the widget chrome that CSS cannot
+# reach: selectbox and slider internals, the dataframe grid, expander
+# headers, and the focus rings on all of them.
+#
+# Without this file Streamlit defaults to its LIGHT base while theme.py
+# paints the app background dark through injected CSS. The two disagree,
+# and the result is a white selectbox with pale grey text sitting on a
+# navy page -- the Club Explorer's Club picker and every filter control
+# rendered effectively unreadable.
+#
+# Setting the base to dark makes the widget chrome agree with the default
+# palette. theme.py still owns the palette itself and can restyle on top;
+# this only fixes the starting point so a control is legible before any
+# CSS lands, and stays legible for widget internals CSS does not target.
+#
+# Values mirror the AFL palette in theme.py (its `default_mode`). Change
+# them together, or the widgets drift away from the page again.
+[theme]
+base = "dark"
+primaryColor = "#E31837"          # accent
+backgroundColor = "#071B2B"       # board
+secondaryBackgroundColor = "#0C2A42"  # panel
+textColor = "#F7F9FC"             # chalk
+
+[browser]
+gatherUsageStats = false

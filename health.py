@@ -176,6 +176,10 @@ def stat_era_starts(con: sqlite3.Connection, stats: list[str] | None = None) -> 
         "disposals", "kicks", "handballs", "marks", "tackles", "hitouts",
         "inside50s", "clearances", "rebounds", "contested", "contested_marks",
         "marks_i50", "one_percenters", "goal_assists", "brownlow", "goals",
+        "behinds", "bounces",
+        # Loaded by build_db.py but absent from this list, so the health
+        # report never showed whether they were populated at all.
+        "frees_for", "frees_against", "clangers", "uncontested",
     ) if s in cols]
     out = []
     for stat in candidates:

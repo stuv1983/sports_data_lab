@@ -174,6 +174,61 @@ h1 {{ font-weight: 700 !important; font-size: 2.1rem !important; }}
 
 body, p, div, label, span {{ color: var(--chalk); }}
 
+/* Form controls.
+   `body, div, span` above sets the text colour of everything, including
+   the inside of a selectbox -- but the selectbox's own background comes
+   from Streamlit's base theme, not from this stylesheet. When the two
+   disagree the control renders chalk-on-white and is effectively
+   invisible: the Club Explorer's club picker and every filter below it.
+   .streamlit/config.toml fixes the default; these rules keep the controls
+   bound to the live palette, so Light and Custom modes stay legible too.
+   Targeting BaseWeb's containers rather than Streamlit's own class names,
+   because the latter change between releases. */
+div[data-baseweb="select"] > div,
+div[data-baseweb="input"] > div,
+div[data-baseweb="textarea"] > div,
+div[data-baseweb="popover"] div[role="listbox"] {{
+  background: var(--panel) !important;
+  border-color: var(--line) !important;
+  color: var(--chalk) !important;
+}}
+div[data-baseweb="select"] *,
+div[data-baseweb="input"] input,
+div[data-baseweb="textarea"] textarea {{
+  color: var(--chalk) !important;
+  -webkit-text-fill-color: var(--chalk) !important;
+}}
+div[data-baseweb="popover"] li[role="option"]:hover,
+div[data-baseweb="popover"] li[aria-selected="true"] {{
+  background: var(--hover) !important;
+}}
+div[data-baseweb="select"] svg {{ fill: var(--muted) !important; }}
+
+/* Download and form buttons outside the grid, which the square-specific
+   rule further down does not reach. */
+.stDownloadButton > button,
+div[data-testid="stForm"] .stButton > button {{
+  background: var(--panel) !important;
+  border: 1px solid var(--line) !important;
+  color: var(--chalk) !important;
+}}
+.stDownloadButton > button:hover,
+div[data-testid="stForm"] .stButton > button:hover {{
+  border-color: var(--amber) !important;
+}}
+
+/* Tabs and expanders: the label inherits --chalk, but the surface behind
+   it does not, so an expander header reads as a white bar on a dark page. */
+div[data-testid="stExpander"] details {{
+  background: var(--panel);
+  border: 1px solid var(--line);
+}}
+div[data-testid="stExpander"] summary {{ color: var(--chalk) !important; }}
+button[data-baseweb="tab"] {{ color: var(--muted) !important; }}
+button[data-baseweb="tab"][aria-selected="true"] {{
+  color: var(--chalk) !important;
+}}
+
 /* Square face: a Gridley-style gradient tile. The hue carries meaning --
    indigo for a rare best answer, magenta for a common one -- so the board
    reads at a glance without anyone parsing the star row. */
