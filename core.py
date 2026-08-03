@@ -72,6 +72,23 @@ class Schema:
     clubs: Sequence[str] = ()
     venue_aliases: dict = field(default_factory=dict)
 
+    #: Current club name -> every identity that counts as that club.
+    #:
+    #: A club square asks "played for this club", and for a club formed by
+    #: a merger or a relocation that includes the predecessors. Where the
+    #: build already normalises the predecessor into the current name via
+    #: club_now the entry is a no-op and exists only so the rule is stated
+    #: in one place rather than being an emergent property of the loader.
+    #:
+    #: Expansion is one-directional: asking for the current club includes
+    #: its predecessors, but asking for a predecessor by name returns only
+    #: that club. A Fitzroy square is about Fitzroy.
+    club_lineage: dict = field(default_factory=dict)
+
+    def club_identities(self, club) -> list:
+        """Every identity a club-name constraint should match."""
+        return list(self.club_lineage.get(club, [club]))
+
     #: Optional exact override for the columns solve() returns, as a
     #: sequence of (sql_expression, header). Set this when callers already
     #: depend on a specific column order -- the AFL build does.
@@ -125,17 +142,30 @@ class Generic:
 
     # -- membership ------------------------------------------------
     def played_for(self, club):
+        """Played at least one game for this club, predecessors included.
+
+        Brisbane Lions were formed from Fitzroy and the Brisbane Bears, and
+        a Lions square counts all three -- which is what the puzzle's own
+        wording says. Matching `club_now` alone returned 249 players and
+        silently dropped 1,300.
+        """
         s = self.s
+        names = self.s.club_identities(club)
+        marks = ",".join("?" for _ in names)
         return (f"SELECT DISTINCT {s.player_id} FROM {s.games} "
-                f"WHERE {s.club_now} = ? OR {s.club_hist} = ?", [club, club])
+                f"WHERE {s.club_now} IN ({marks}) "
+                f"OR {s.club_hist} IN ({marks})", [*names, *names])
 
     def debut_club(self, club):
         """First career game was for this club."""
         s = self.s
+        names = self.s.club_identities(club)
+        marks = ",".join("?" for _ in names)
         return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
                     WHERE {s.career_game_no} = 1
-                      AND ({s.club_now} = ? OR {s.club_hist} = ?)""",
-                [club, club])
+                      AND ({s.club_now} IN ({marks})
+                           OR {s.club_hist} IN ({marks}))""",
+                [*names, *names])
 
     def one_club_player(self):
         s = self.s
@@ -451,9 +481,21 @@ class Square:
     best: tuple | None          # the top-ranked row, per `columns`
     obscurity: float | None     # 0-100 database proxy for the best answer
     defined: bool = True
+    #: The obscurity spread across every answer to this square, which is
+    #: what the stars are scaled against. None on an undefined or empty
+    #: square, where there is nothing to compare.
+    obscurity_min: float | None = None
+    obscurity_max: float | None = None
 
     @property
     def stars(self):
+        """Stars for the shown answer, scaled within this square."""
+        return star_value(self.obscurity, lo=self.obscurity_min,
+                          hi=self.obscurity_max)
+
+    @property
+    def absolute_stars(self):
+        """Stars on the whole-database scale, for comparing across squares."""
         return star_value(self.obscurity)
 
     @property
@@ -472,9 +514,15 @@ def square(con, constraints, schema: Schema, order="obscurity",
     select = ", ".join(expr for expr, _ in cols)
     # The hidden fields keep Square stable even when a caller requests a
     # custom result column list that does not include obscurity.
+    # The window functions have no PARTITION, so they are computed over the
+    # whole matching set before LIMIT takes the top row. That gives the
+    # square's obscurity spread for star scaling in the same single query
+    # the square already cost.
     query = (
         f"SELECT {select}, p.{schema.obscurity} AS __obscurity, "
-        f"COUNT(*) OVER() AS __eligible "
+        f"COUNT(*) OVER() AS __eligible, "
+        f"MIN(p.{schema.obscurity}) OVER() AS __obs_min, "
+        f"MAX(p.{schema.obscurity}) OVER() AS __obs_max "
         f"FROM {schema.players} p WHERE {where} "
         f"ORDER BY {schema.order_map()[order]} LIMIT 1"
     )
@@ -483,7 +531,8 @@ def square(con, constraints, schema: Schema, order="obscurity",
         return Square(0, None, None)
     width = len(cols)
     best = tuple(row[:width])
-    return Square(int(row[width + 1]), best, row[width])
+    return Square(int(row[width + 1]), best, row[width],
+                  obscurity_min=row[width + 2], obscurity_max=row[width + 3])
 
 
 def _sql_literal(value):
@@ -534,17 +583,38 @@ STAR_DISCLAIMER = ("Stars are this database's obscurity proxy, derived from "
 STAR_TOOLTIP = "Database obscurity proxy, not crowd rarity"
 
 
-def star_value(obscurity, scale=STAR_SCALE):
-    """Map a 0-100 obscurity score onto 0-5 stars in half-star steps."""
+def star_value(obscurity, scale=STAR_SCALE, lo=None, hi=None):
+    """Map an obscurity score onto 0-5 stars in half-star steps.
+
+    With `lo` and `hi`, the score is rescaled against that range instead of
+    the absolute 0-100 one, so five stars means "the rarest answer to this
+    square" rather than "the most obscure player in the database".
+
+    The absolute scale made the rating nearly useless on a board: obscurity
+    is a whole-database percentile, so reaching 5/5 took the single most
+    obscure player of 13,353 and real squares clustered between 1.5 and 4
+    however rare or common their answers actually were. Within one square
+    the spread is what a solver cares about.
+
+    A square whose answers all share one obscurity, including a square with
+    a single answer, has no spread to rescale against. Those score 5: the
+    only answer to a square is trivially its rarest.
+    """
     if obscurity is None:
         return None
-    v = max(0.0, min(float(obscurity), scale)) / scale * STAR_MAX
+    if lo is None or hi is None:
+        v = max(0.0, min(float(obscurity), scale)) / scale * STAR_MAX
+        return round(v * 2) / 2
+    lo, hi = float(lo), float(hi)
+    if hi <= lo:
+        return float(STAR_MAX)
+    v = (max(lo, min(float(obscurity), hi)) - lo) / (hi - lo) * STAR_MAX
     return round(v * 2) / 2
 
 
-def stars_text(obscurity, scale=STAR_SCALE):
+def stars_text(obscurity, scale=STAR_SCALE, lo=None, hi=None):
     """'★★★★☆ 4.5/5' -- safe for dataframes, CLI output and buttons."""
-    v = star_value(obscurity, scale)
+    v = star_value(obscurity, scale, lo, hi)
     if v is None:
         return "—"
     full = int(v)
@@ -554,13 +624,13 @@ def stars_text(obscurity, scale=STAR_SCALE):
     return f"{glyphs} {v:g}/5"
 
 
-def stars_html(obscurity, scale=STAR_SCALE, cls="stars"):
+def stars_html(obscurity, scale=STAR_SCALE, cls="stars", lo=None, hi=None):
     """
     Half-star-accurate rendering: a filled row clipped to the score sits
     over a hollow row. Avoids relying on a half-star glyph being present
     in the user's font.
     """
-    v = star_value(obscurity, scale)
+    v = star_value(obscurity, scale, lo, hi)
     if v is None:
         return "<span class='stars stars-none'>—</span>"
     pct = v / STAR_MAX * 100

@@ -305,7 +305,41 @@ AFL_STATS = ["disposals", "kicks", "handballs", "marks", "goals", "behinds",
              # uncontested from 1999.
              "frees_for", "frees_against", "clangers", "uncontested"]
 
-AFL_CLUBS = ["Adelaide", "Brisbane Bears", "Brisbane Lions", "Carlton",
+#: Current club name -> every identity that counts as that club.
+#:
+#: Only the Brisbane entry changes any answer. The build already rewrites
+#: South Melbourne to Sydney, Footscray to Western Bulldogs and Kangaroos
+#: to North Melbourne in `club_now`, so those three lines are no-ops that
+#: exist to state the rule in one place instead of leaving it as something
+#: the loader happens to do.
+#:
+#: Brisbane is different: `club_now` keeps 'Brisbane Bears' and 'Fitzroy'
+#: as distinct values, so a Lions square matched 249 players and missed
+#: 143 Bears and 1,157 Fitzroy. The puzzle's own criterion reads "Played at
+#: least 1 game for the Brisbane Lions ... Includes Brisbane Bears and
+#: Fitzroy Lions players", so the shortfall was a wrong answer, not a
+#: difference of opinion.
+#:
+#: University folded in 1914 with no successor, so it has no entry and is
+#: only ever found by its own name.
+AFL_CLUB_LINEAGE = {
+    "Brisbane Lions": ["Brisbane Lions", "Brisbane Bears", "Fitzroy"],
+    "Sydney": ["Sydney", "South Melbourne"],
+    "Western Bulldogs": ["Western Bulldogs", "Footscray"],
+    "North Melbourne": ["North Melbourne", "Kangaroos"],
+}
+
+#: Clubs offered in a picker.
+#:
+#: 'Brisbane Bears' is deliberately absent: it is the same franchise under
+#: its earlier name, so offering both invited picking one and getting a
+#: partial answer. It still resolves when named directly in criterion text,
+#: and every Bears player is reachable through Brisbane Lions.
+#:
+#: Fitzroy stays. It is a distinct club with 1,157 players and a century of
+#: its own history, and a Fitzroy square is a real question -- being folded
+#: into the Lions for a *Lions* square does not make it stop existing.
+AFL_CLUBS = ["Adelaide", "Brisbane Lions", "Carlton",
              "Collingwood", "Essendon", "Fitzroy", "Fremantle", "Geelong",
              "Gold Coast", "GWS", "Hawthorn", "Melbourne", "North Melbourne",
              "Port Adelaide", "Richmond", "St Kilda", "Sydney", "University",
@@ -332,6 +366,7 @@ AFL_SCHEMA = core.Schema(
     is_final="is_final",
     stats=AFL_STATS,
     clubs=AFL_CLUBS,
+    club_lineage=AFL_CLUB_LINEAGE,
     venue_aliases=AFL_VENUE_ALIASES,
     rebuild_cmd="python build_db.py",
     # app.py, fetch_grid.py and the tests index this tuple positionally,

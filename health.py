@@ -190,6 +190,133 @@ def stat_era_starts(con: sqlite3.Connection, stats: list[str] | None = None) -> 
     return sorted(out, key=lambda r: (r[1] is None, r[1] or 0))
 
 
+#: What each table is for, so the inventory reads as an explanation of the
+#: database rather than a list of names. Tables with no entry still appear;
+#: an unexplained table is a prompt to document it, not something to hide.
+TABLE_PURPOSE = {
+    "players": "One row per person, with career totals and the obscurity score",
+    "games": "One row per player per match — the core fact table",
+    "matches": "One row per match, derived from games",
+    "match_details": "Quarter scores and attendance per match, linked",
+    "club_match_sources": "One row per club per match from the all-games scrape",
+    "club_match_source_issues": "Recorded disagreements between the two sides",
+    "team_seasons": "Ladder position and season record per club",
+    "season_goals": "Per-club leading goalkicker by season",
+    "clubs": "Current-club catalogue from the club-sources scrape",
+    "club_wikipedia_fields": "Scraped infobox fields per club",
+    "club_source_snapshots": "When each club source page was fetched",
+    "club_player_totals": "Career totals per player per club",
+    "club_player_register": "All-time player list per club",
+    "club_player_records": "Season and game record leaderboards per club",
+    "club_player_averages": "Per-season averages per player per club",
+    "draft": "Draft and signing rows from Draftguru",
+    "draft_links": "Draft rows resolved to a player_id",
+    "dg_people": "Draftguru person records",
+    "person_links": "Draftguru people resolved to a player_id",
+    "awards": "Award winners and placings",
+    "all_australian": "All-Australian selections",
+    "captaincies": "Club captains by season",
+    "rising_star_nominees": "FootyWire Rising Star nominations",
+    "family_members": "People in a listed football family",
+    "family_relationships": "Explicit relationships between people",
+    "family_draft": "Father-son and academy draft rows",
+    "stat_coverage": "Measured era each statistic actually covers",
+    "meta": "Build timestamps and source URLs",
+}
+
+
+def stat_coverage_rows(con: sqlite3.Connection) -> list[dict]:
+    """The measured coverage table, if load_stat_coverage.py has run."""
+    if not table_exists(con, "stat_coverage"):
+        return []
+    return [
+        {"Statistic": stat, "From": lo, "To": hi, "Notes": notes}
+        for stat, lo, hi, notes in con.execute(
+            "SELECT stat_name, available_from, available_to, coverage_notes "
+            "FROM stat_coverage ORDER BY available_from, stat_name")
+    ]
+
+
+def match_coverage(con: sqlite3.Connection) -> dict:
+    """What the all-games layer holds, and how complete it is."""
+    if not table_exists(con, "club_match_sources"):
+        return {"state": "not loaded"}
+    total, matches, lo, hi, crowds, finals = con.execute(
+        "SELECT COUNT(*), COUNT(DISTINCT source_game_key), "
+        "       MIN(season), MAX(season), SUM(attendance IS NOT NULL), "
+        "       SUM(is_final) FROM club_match_sources").fetchone()
+    statuses = dict(con.execute(
+        "SELECT match_status, COUNT(*) FROM club_match_sources "
+        "GROUP BY match_status"))
+    return {
+        "state": "loaded",
+        "observations": total,
+        "matches": matches,
+        "season_min": lo,
+        "season_max": hi,
+        "with_attendance": crowds or 0,
+        "finals": finals or 0,
+        "clubs": con.execute(
+            "SELECT COUNT(DISTINCT source_club_id) "
+            "FROM club_match_sources").fetchone()[0],
+        "venues": con.execute(
+            "SELECT COUNT(DISTINCT venue_raw) "
+            "FROM club_match_sources").fetchone()[0],
+        "statuses": statuses,
+    }
+
+
+def inventory(con: sqlite3.Connection) -> dict:
+    """Counts of the things a user would think of as "what's in here"."""
+    out: dict = {}
+    if table_exists(con, "games"):
+        out["clubs"] = con.execute(
+            "SELECT COUNT(DISTINCT club_now) FROM games").fetchone()[0]
+        out["club_identities"] = con.execute(
+            "SELECT COUNT(*) FROM (SELECT club_now AS c FROM games "
+            "UNION SELECT club_hist FROM games)").fetchone()[0]
+        out["venues"] = con.execute(
+            "SELECT COUNT(DISTINCT venue) FROM games").fetchone()[0]
+        out["seasons"] = con.execute(
+            "SELECT COUNT(DISTINCT season) FROM games").fetchone()[0]
+        out["finals"] = con.execute(
+            "SELECT COUNT(*) FROM games WHERE is_final = 1").fetchone()[0]
+    if table_exists(con, "players"):
+        out["one_game_players"] = con.execute(
+            "SELECT COUNT(*) FROM players WHERE career_games = 1").fetchone()[0]
+        out["still_playing"] = con.execute(
+            "SELECT COUNT(*) FROM players WHERE final_season = "
+            "(SELECT MAX(season) FROM games)").fetchone()[0]
+    return out
+
+
+def per_season_rows(con: sqlite3.Connection) -> list[tuple]:
+    """Player-games and distinct players per season, for a coverage chart."""
+    if not table_exists(con, "games"):
+        return []
+    return con.execute(
+        "SELECT season, COUNT(*), COUNT(DISTINCT player_id) "
+        "FROM games GROUP BY season ORDER BY season").fetchall()
+
+
+def database_file(con: sqlite3.Connection) -> dict:
+    """Size on disk and page statistics, so growth is visible."""
+    try:
+        page_size = con.execute("PRAGMA page_size").fetchone()[0]
+        page_count = con.execute("PRAGMA page_count").fetchone()[0]
+        freelist = con.execute("PRAGMA freelist_count").fetchone()[0]
+    except sqlite3.Error:
+        return {}
+    return {
+        "bytes": page_size * page_count,
+        "pages": page_count,
+        "free_pages": freelist,
+        "indexes": con.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index'"
+        ).fetchone()[0],
+    }
+
+
 def integrity_warnings(con: sqlite3.Connection) -> list[str]:
     """Cheap checks that catch the failure modes seen in this project."""
     warnings = []
@@ -273,6 +400,11 @@ def collect(con: sqlite3.Connection) -> dict:
         "untrusted": untrusted_rows(con),
         "rising_star": rising_star_coverage(con),
         "stat_eras": stat_era_starts(con),
+        "stat_coverage": stat_coverage_rows(con),
+        "match_coverage": match_coverage(con),
+        "inventory": inventory(con),
+        "per_season": per_season_rows(con),
+        "file": database_file(con),
         "warnings": integrity_warnings(con),
         "meta": source_dates(con),
     }
@@ -347,6 +479,7 @@ def print_report(report: dict) -> None:
 
 def health_page(SPORT, con) -> None:
     """Streamlit page. Imported lazily so the CLI needs no Streamlit."""
+    import pandas as pd
     import streamlit as st
 
     st.header("Database Health")
@@ -358,11 +491,30 @@ def health_page(SPORT, con) -> None:
         st.error(core["error"])
         return
 
+    inv = report["inventory"]
+    fileinfo = report["file"]
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Seasons", f"{core['season_min']}–{core['season_max']}")
-    c2.metric("Players", f"{core['players']:,}")
+    c1.metric("Seasons", f"{core['season_min']}–{core['season_max']}",
+              help=f"{core['seasons']} seasons with at least one match")
+    c2.metric("Players", f"{core['players']:,}",
+              help=f"{inv.get('one_game_players', 0):,} played exactly one "
+                   f"{SPORT.vocab.game}")
     c3.metric(f"Player-{SPORT.vocab.games}", f"{core['player_games']:,}")
-    c4.metric("Matches", f"{core.get('matches', 0):,}")
+    c4.metric("Matches", f"{core.get('matches', 0):,}",
+              help=f"{inv.get('finals', 0):,} finals player-{SPORT.vocab.games}")
+
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric(SPORT.vocab.title_case("clubs"), f"{inv.get('clubs', 0)}",
+              help=f"{inv.get('club_identities', 0)} identities including "
+                   "historical names")
+    d2.metric(SPORT.vocab.title_case("venues"), f"{inv.get('venues', 0)}")
+    d3.metric("Still playing", f"{inv.get('still_playing', 0):,}",
+              help=f"final season is {core['season_max']}")
+    d4.metric("Database size",
+              f"{fileinfo.get('bytes', 0) / 1_048_576:.0f} MB",
+              help=f"{fileinfo.get('indexes', 0)} indexes, "
+                   f"{fileinfo.get('free_pages', 0):,} free pages")
 
     warnings = report["warnings"]
     if warnings:
@@ -399,13 +551,67 @@ def health_page(SPORT, con) -> None:
             st.warning(f"Missing seasons: {rs['missing_seasons']}")
         st.bar_chart({str(season): count for season, count in rs["by_season"]})
 
-    with st.expander("Detailed-stat start seasons"):
-        st.caption("Statistics recorded only from a later era. Cross-era "
-                   "comparisons should filter on availability.")
-        st.dataframe(
-            [{"Statistic": stat, "First recorded": season or "never"}
-             for stat, season in report["stat_eras"]],
-            width="stretch", hide_index=True)
+    mc = report["match_coverage"]
+    if mc.get("state") == "loaded":
+        st.subheader("Match data")
+        st.caption(
+            "The all-games layer: one row per club per match, which is what "
+            "Past Games, club history and the crowd constraints read.")
+        e1, e2, e3, e4 = st.columns(4)
+        e1.metric("Matches", f"{mc['matches']:,}",
+                  help=f"{mc['observations']:,} club-match observations")
+        e2.metric("Seasons", f"{mc['season_min']}–{mc['season_max']}")
+        pct = (100 * mc["with_attendance"] / mc["observations"]
+               if mc["observations"] else 0)
+        e3.metric("With attendance", f"{pct:.0f}%",
+                  help=f"{mc['with_attendance']:,} of {mc['observations']:,}; "
+                       "the rest are unrecorded at source, not a link failure")
+        not_unique = sum(n for s, n in mc["statuses"].items() if s != "unique")
+        e4.metric("Not cleanly linked", f"{mc['statuses'] and not_unique:,}",
+                  help="Excluded from club history and crowd constraints")
+        st.caption(
+            f"{mc['clubs']} clubs · {mc['venues']} grounds · "
+            f"{mc['finals']:,} finals observations · link outcomes: "
+            + ", ".join(f"{n:,} {s}" for s, n in mc["statuses"].items()))
+
+    st.subheader("What is in the database")
+    st.caption("Every table, what it holds and how many rows.")
+    st.dataframe(
+        [{"Table": name, "Rows": f"{n:,}" if n >= 0 else "unreadable",
+          "Holds": TABLE_PURPOSE.get(name, "—")}
+         for name, n in report["tables"]],
+        width="stretch", hide_index=True)
+
+    coverage_rows = report["stat_coverage"]
+    with st.expander("Statistic coverage by era"):
+        st.caption(
+            "Measured from the built database, not assumed. A statistic is "
+            "empty before its first season, so a square using one cannot be "
+            "satisfied by an earlier player — that is a gap in the record, "
+            "not in the player.")
+        if coverage_rows:
+            st.dataframe(coverage_rows, width="stretch", hide_index=True)
+        else:
+            st.info("Run `python load_stat_coverage.py` for measured "
+                    "coverage with population percentages.")
+            st.dataframe(
+                [{"Statistic": stat, "First recorded": season or "never"}
+                 for stat, season in report["stat_eras"]],
+                width="stretch", hide_index=True)
+
+    per_season = report["per_season"]
+    if per_season:
+        with st.expander(f"Coverage by {SPORT.vocab.season}"):
+            st.caption(
+                f"Player-{SPORT.vocab.games} and distinct players per "
+                f"{SPORT.vocab.season}. A dip is a shorter season — the war "
+                "years and 2020 — not missing data.")
+            st.line_chart(
+                pd.DataFrame(
+                    per_season,
+                    columns=[SPORT.vocab.title_case("season"),
+                             f"Player-{SPORT.vocab.games}", "Players"]
+                ).set_index(SPORT.vocab.title_case("season")))
 
     with st.expander("Tables and row counts"):
         st.dataframe([{"Table": name, "Rows": f"{count:,}"}

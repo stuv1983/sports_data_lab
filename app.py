@@ -427,6 +427,7 @@ NAV_ITEMS = [
     "Home",
     "Player Search",
     "Club Explorer",
+    "Past Games",
     "Advanced Search",
     "Stats Explorer",
     "Random Discovery",
@@ -448,6 +449,9 @@ if PAGE != "Grid Solver":
     elif PAGE == "Club Explorer":
         import club_explorer
         club_explorer.club_explorer_page(SPORT, con)
+    elif PAGE == "Past Games":
+        import past_games
+        past_games.past_games_page(SPORT, con)
     elif PAGE == "Advanced Search":
         import advanced_search
         advanced_search.search_page(SPORT, con)
@@ -754,7 +758,7 @@ for r in range(3):
             face = (
                 f"<div class='square{' is-open' if open_here else ''}'>"
                 f"<div class='square-name'>{sq.best_name}</div>"
-                f"<div>{core.stars_html(sq.obscurity)}</div>"
+                f"<div>{core.stars_html(sq.obscurity, lo=sq.obscurity_min, hi=sq.obscurity_max)}</div>"
                 f"<div class='square-meta'>{sq.eligible:,} eligible</div>"
                 f"</div>")
             action = "open" if not open_here else "showing"
@@ -793,14 +797,22 @@ if st.session_state.cell:
         if "Clubs" in df:
             df["Clubs"] = df["Clubs"].str.replace("|", ", ", regex=False)
 
-        # Star ratings replace the raw 0-100 obscurity score everywhere.
-        df["Rating"] = df["Obscurity"].map(core.stars_text)
-        df = df.drop(columns=["Obscurity"])
-
         best = rows[0]
         best_name, best_obsc = best[0], best[-1]
         selected_square = square_for(r, c)
         total = selected_square.eligible if selected_square else len(rows)
+
+        # Star ratings replace the raw 0-100 obscurity score everywhere,
+        # scaled against this square's own spread rather than the whole
+        # database: five stars is the rarest answer to THIS square. On the
+        # absolute scale every square landed between 1.5 and 4 regardless
+        # of how rare its answers were, because obscurity is a percentile
+        # across 13,353 players and 5/5 needed the most obscure of them.
+        obs_lo = selected_square.obscurity_min if selected_square else None
+        obs_hi = selected_square.obscurity_max if selected_square else None
+        df["Rating"] = df["Obscurity"].map(
+            lambda o: core.stars_text(o, lo=obs_lo, hi=obs_hi))
+        df = df.drop(columns=["Obscurity"])
 
         card1, card2, card3 = st.columns(3)
         card1.markdown(
@@ -809,10 +821,11 @@ if st.session_state.cell:
             f"<div class='card-sub'>{best[1]}–{best[2]} · "
             f"{best[3]:,} {V.games}</div></div>", unsafe_allow_html=True)
         card2.markdown(
-            f"<div class='card'><div class='card-label'>Obscurity rating"
-            f"</div><div class='card-value'>"
-            f"{core.stars_html(best_obsc)}</div>"
-            f"<div class='card-sub'>obscurity {best_obsc:.1f} / 100</div>"
+            f"<div class='card'><div class='card-label'>Rarity for this "
+            f"square</div><div class='card-value'>"
+            f"{core.stars_html(best_obsc, lo=obs_lo, hi=obs_hi)}</div>"
+            f"<div class='card-sub'>obscurity {best_obsc:.1f} / 100 "
+            f"database-wide</div>"
             f"</div>", unsafe_allow_html=True)
         card3.markdown(
             f"<div class='card'><div class='card-label'>Eligible players"
