@@ -220,6 +220,8 @@ TABLE_PURPOSE = {
     "family_members": "People in a listed football family",
     "family_relationships": "Explicit relationships between people",
     "family_draft": "Father-son and academy draft rows",
+    "hall_of_fame": "Australian Football Hall of Fame inductees",
+    "team_selections": "Team of the Century selections",
     "stat_coverage": "Measured era each statistic actually covers",
     "meta": "Build timestamps and source URLs",
 }

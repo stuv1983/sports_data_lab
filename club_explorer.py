@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import sqlite3
 
 import pandas as pd
@@ -9,6 +10,7 @@ import streamlit as st
 
 import club_fields as CF
 import club_history as CH
+import club_logos as CL
 
 REQUIRED_TABLES = {
     "clubs", "club_source_snapshots", "club_wikipedia_fields",
@@ -206,6 +208,40 @@ def _past_games_tab(con, club_id: str, club_name: str) -> None:
             st.write(f"**{kind.title()}:** {best}")
 
 
+@st.cache_data(show_spinner=False)
+def _logo_map(_con, folder_stamp) -> dict:
+    """club_id -> logo file path, cached against the folder's contents.
+
+    The cache key is a stamp over the folder rather than the connection, so
+    dropping a new logo in refreshes it without restarting the app.
+    """
+    return {k: str(v) for k, v in
+            CL.resolve(CL.clubs_from_db(_con)).items()}
+
+
+def _logo_stamp() -> tuple:
+    """Cheap fingerprint of the logo folder: names and modification times."""
+    return tuple(sorted((p.name, p.stat().st_mtime_ns)
+                        for p in CL.logo_files()))
+
+
+def _logo_html(path: str, height: int = 72) -> str:
+    """Inline the image as a data URI.
+
+    Streamlit serves static files only from a configured static folder, and
+    st.image does not render SVG. Inlining sidesteps both and keeps the
+    logo a self-contained part of the page.
+    """
+    import base64
+    import mimetypes
+
+    data = pathlib.Path(path).read_bytes()
+    mime = mimetypes.guess_type(path)[0] or "image/svg+xml"
+    encoded = base64.b64encode(data).decode("ascii")
+    return (f"<img src='data:{mime};base64,{encoded}' "
+            f"style='height:{height}px;width:auto;max-width:100%;'/>")
+
+
 def _source_status(con, club_id: str) -> pd.DataFrame:
     return _read(con, """
         SELECT source_type AS Source,
@@ -246,7 +282,15 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
     club = clubs.loc[clubs.club_id == club_id].iloc[0]
     fields = _field_map(con, club_id)
 
-    st.markdown(f"## {club['name']}")
+    logos = _logo_map(con, _logo_stamp())
+    logo = logos.get(club_id)
+    if logo:
+        badge, title = st.columns([1, 9])
+        badge.markdown(_logo_html(logo), unsafe_allow_html=True)
+        title.markdown(f"## {club['name']}")
+    else:
+        st.markdown(f"## {club['name']}")
+
     c1, c2, c3, c4 = st.columns(4)
     _headline(c1, fields, "nickname", "Nickname")
     _headline(c2, fields, "founded", "Founded")

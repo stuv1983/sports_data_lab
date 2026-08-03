@@ -225,11 +225,19 @@ def _filters(sport, con, key):
 # ------------------------------------------------------- player search
 
 def player_page(sport, con, player_picker):
-    V, sc = sport.vocab, sport.schema
     st.markdown("# Player Search")
     st.caption("Search the full player database, then inspect the selected "
-               "player's career and best performances.")
+               "player's career and best performances — or put two careers "
+               "side by side.")
+    one, two = st.tabs(["One player", "Compare two"])
+    with one:
+        _player_profile(sport, con, player_picker)
+    with two:
+        _compare_players(sport, con, player_picker)
 
+
+def _player_profile(sport, con, player_picker):
+    V, sc = sport.vocab, sport.schema
     selected = player_picker(sport.k("explore_player"),
                              label="Search by name")
     if selected is None:
@@ -319,6 +327,140 @@ def player_page(sport, con, player_picker):
         ORDER BY {metric} DESC, {sc.season} LIMIT 20"""
     best = _read_frame(best_sql, (pid,), revision, con)
     st.dataframe(best, hide_index=True, width="stretch")
+
+
+# ---------------------------------------------------- player comparison
+
+def _compare_players(sport, con, player_picker):
+    """Two careers side by side, honest about what is comparable."""
+    import player_compare as PC
+
+    V, sc = sport.vocab, sport.schema
+    left, right = st.columns(2)
+    with left:
+        a_sel = player_picker(sport.k("cmp_a"), label="First player")
+    with right:
+        b_sel = player_picker(sport.k("cmp_b"), label="Second player")
+
+    if a_sel is None or b_sel is None:
+        st.caption("Pick a player on each side to compare them.")
+        return
+    if a_sel[0] == b_sel[0]:
+        st.info("Pick two different players.")
+        return
+
+    a = PC.profile(con, a_sel[0], sc)
+    b = PC.profile(con, b_sel[0], sc)
+    if a is None or b is None:
+        return
+
+    # -- headline -------------------------------------------------------
+    hl, hr = st.columns(2)
+    for col, p in ((hl, a), (hr, b)):
+        col.markdown(f"### {p.player}")
+        col.caption(f"{p.span} · {p.clubs}")
+        m1, m2, m3 = col.columns(3)
+        m1.metric(V.games.capitalize(), f"{p.career_games:,}")
+        m2.metric(V.score.capitalize(), f"{p.career_score:,}")
+        m3.metric(V.postseason.capitalize(), f"{p.finals:,}")
+
+    # -- career shape ---------------------------------------------------
+    st.markdown("#### Career")
+    shape = [
+        (V.games.capitalize(), a.career_games, b.career_games),
+        (V.score.capitalize(), a.career_score, b.career_score),
+        (V.postseason.capitalize(), a.finals, b.finals),
+        ("Seasons spanned", a.seasons, b.seasons),
+        (f"{V.score.capitalize()} per {V.game}",
+         round(a.career_score / a.career_games, 2) if a.career_games else 0,
+         round(b.career_score / b.career_games, 2) if b.career_games else 0),
+    ]
+    st.dataframe(
+        pd.DataFrame([{"Measure": label, a.player: x, b.player: y,
+                       "Leader": a.player if x > y else
+                                 (b.player if y > x else "—")}
+                      for label, x, y in shape]),
+        hide_index=True, width="stretch")
+
+    # -- statistics -----------------------------------------------------
+    shared = PC.comparable_stats(a, b)
+    if shared:
+        st.markdown("#### Statistics")
+        basis = st.radio("Compare on", ["Career total", f"Per {V.game}",
+                                        f"Best single {V.game}"],
+                         horizontal=True, key=sport.k("cmp_basis"))
+        # Streamlit's NumberColumn takes a printf-style format string, not
+        # a str.format one: '{:,.0f}' is rendered literally in every cell.
+        if basis == "Career total":
+            pick = lambda p, s: p.totals[s]          # noqa: E731
+            fmt = "%.0f"
+        elif basis == f"Per {V.game}":
+            pick = lambda p, s: p.per_game[s]        # noqa: E731
+            fmt = "%.2f"
+        else:
+            pick = lambda p, s: p.best[s]            # noqa: E731
+            fmt = "%.0f"
+
+        rows = []
+        for stat in shared:
+            x, y = pick(a, stat), pick(b, stat)
+            lo_a, hi_a = a.covered[stat]
+            lo_b, hi_b = b.covered[stat]
+            rows.append({
+                "Statistic": stat.replace("_", " "),
+                a.player: float(x), b.player: float(y),
+                "Leader": a.player if x > y else (b.player if y > x else "—"),
+                "Recorded": f"{lo_a}–{hi_a} vs {lo_b}–{hi_b}",
+            })
+        frame = pd.DataFrame(rows)
+        st.dataframe(
+            frame, hide_index=True, width="stretch",
+            column_config={
+                a.player: st.column_config.NumberColumn(format=fmt),
+                b.player: st.column_config.NumberColumn(format=fmt),
+                "Recorded": st.column_config.TextColumn(
+                    help="Seasons each player actually has this statistic "
+                         "for. A shorter window is a recording-era limit, "
+                         "not a weaker career."),
+            })
+
+    # A statistic only one of them could ever record is not a comparison.
+    gaps = PC.era_gap(a, b, list(sc.stats))
+    if gaps:
+        with st.expander(f"{len(gaps)} statistics not comparable across "
+                         "these eras"):
+            for note in gaps:
+                st.write(f"• {note}")
+
+    # -- honours --------------------------------------------------------
+    if a.honours or b.honours:
+        st.markdown("#### Honours")
+        oh1, oh2 = st.columns(2)
+        for col, p in ((oh1, a), (oh2, b)):
+            col.markdown(f"**{p.player}**")
+            if p.honours:
+                col.dataframe(
+                    pd.DataFrame([{"Honour": k, "Detail": v}
+                                  for k, v in p.honours]),
+                    hide_index=True, width="stretch")
+            else:
+                col.caption("No linked award or selection rows.")
+
+    # -- shared matches -------------------------------------------------
+    both = PC.overlap(con, a, b, sc)
+    if both:
+        together, against = both.get("together", 0), both.get("against", 0)
+        if together or against:
+            st.markdown("#### Shared matches")
+            s1, s2 = st.columns(2)
+            s1.metric("As teammates", f"{together:,}",
+                      help=(f"{both.get('together_from')}–"
+                            f"{both.get('together_to')}") if together else None)
+            s2.metric("As opponents", f"{against:,}",
+                      help=(f"{both.get('against_from')}–"
+                            f"{both.get('against_to')}") if against else None)
+        else:
+            st.caption("These two never played in the same match.")
 
 
 # ------------------------------------------------------ stats explorer

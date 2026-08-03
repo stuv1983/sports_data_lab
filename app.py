@@ -428,6 +428,7 @@ NAV_ITEMS = [
     "Player Search",
     "Club Explorer",
     "Past Games",
+    "Awards",
     "Advanced Search",
     "Stats Explorer",
     "Random Discovery",
@@ -452,6 +453,9 @@ if PAGE != "Grid Solver":
     elif PAGE == "Past Games":
         import past_games
         past_games.past_games_page(SPORT, con)
+    elif PAGE == "Awards":
+        import awards_page
+        awards_page.awards_page(SPORT, con)
     elif PAGE == "Advanced Search":
         import advanced_search
         advanced_search.search_page(SPORT, con)
