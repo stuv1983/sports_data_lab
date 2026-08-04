@@ -21,10 +21,10 @@ Dependencies:
     pip install requests beautifulsoup4
 
 Examples:
-    python scrape_wikipedia_families.py
-    python scrape_wikipedia_families.py --refresh
-    python scrape_wikipedia_families.py --offline
-    python scrape_wikipedia_families.py --report
+    python -m afl.scrape_wikipedia_families
+    python -m afl.scrape_wikipedia_families --refresh
+    python -m afl.scrape_wikipedia_families --offline
+    python -m afl.scrape_wikipedia_families --report
 """
 
 from __future__ import annotations

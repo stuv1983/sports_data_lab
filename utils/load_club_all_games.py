@@ -9,7 +9,7 @@ Three stages, each independently re-runnable:
 
 Why the split matters
 ---------------------
-``derive_matches.py`` writes the matches table with ``if_exists="replace"``, so
+``afl/derive_matches.py`` writes the matches table with ``if_exists="replace"``, so
 attendance and the quarter columns are cleared by every database rebuild. The
 source observations live in their own table and survive, which means a rebuild
 is followed by ``--apply-only`` rather than a re-fetch.
@@ -26,7 +26,7 @@ Orientation
 -----------
 The game key does not say who was at home. H/A rows orient themselves; ``T=F``
 finals do not, and are oriented from the linked matches row (which carries the
-home/away flag persisted by build_db.py). A final that cannot be oriented keeps
+home/away flag persisted by afl/build_db.py). A final that cannot be oriented keeps
 its quarter data in match_details as for/against only.
 
 Usage:
@@ -224,7 +224,7 @@ def match_lookup(con: sqlite3.Connection) -> dict:
     """(season, date, club_now) -> [match rows], indexed from both sides.
 
     ``home_team_now``/``away_team_now`` on ``matches`` already carry the
-    canonical current-club identity -- the same lineage mapping build_db.py
+    canonical current-club identity -- the same lineage mapping afl/build_db.py
     uses for ``games.club_now``. Matching on that, rather than on any text
     parsed from a source page, sidesteps a real problem: several AFL Tables
     All Games pages carry a *combined* heading across a club's renamed eras
@@ -302,7 +302,7 @@ def apply_details(con: sqlite3.Connection) -> dict:
         grouped.setdefault(row["match_id"], []).append(row)
 
     # home_team_now already carries the canonical current identity computed
-    # by derive_matches.py -- the same target vocabulary as
+    # by afl/derive_matches.py -- the same target vocabulary as
     # ClubSource.db_club_now, so orientation never depends on any text parsed
     # from a source page.
     homes_now = {row[0]: row[1] for row in
@@ -462,7 +462,7 @@ def run(db_path: Path, raw_dir: Path, *, club_ids=None, apply_only=False,
         write_sources(con, observations, club_ids)
 
     if not table_exists(con, "matches"):
-        print("No matches table. Run derive_matches.py first.")
+        print("No matches table. Run afl/derive_matches.py first.")
         con.close()
         return 1
 

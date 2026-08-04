@@ -243,7 +243,7 @@ class LoaderTests(unittest.TestCase):
     def test_apply_only_refills_after_a_rebuild(self):
         self._run()
         con = sqlite3.connect(self.db)
-        # derive_matches.py replaces the table, clearing enrichment.
+        # afl/derive_matches.py replaces the table, clearing enrichment.
         con.execute("UPDATE matches SET attendance = NULL, home_q1 = NULL")
         con.commit()
         con.close()

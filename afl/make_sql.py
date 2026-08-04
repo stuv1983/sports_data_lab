@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-make_sql.py -- Write one .sql file per square of a grid.
+afl/make_sql.py -- Write one .sql file per square of a grid.
 
 Edit ROWS and COLS below to match the day's grid, then:
 
-    python make_sql.py
+    python -m afl.make_sql
 
 ...which writes sql/cell_r1c1.sql etc. Run any of them with:
 
@@ -21,7 +21,7 @@ from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
 import os
-import constraints as C
+from . import constraints as C
 
 # ---- Gridley #1106 ---------------------------------------------------
 COLS = [

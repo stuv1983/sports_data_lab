@@ -59,8 +59,8 @@ DB_BACKUPS = {
 REPAIR_FILES = {
     "fix_rising_star_parse_patch.py",
     "investigate_rising_star_mismatch.py",
-    "parse_criteria.py.broken_rising_star",
-    "parse_criteria.py.bak_rising_star",
+    "afl/parse_criteria.py.broken_rising_star",
+    "afl/parse_criteria.py.bak_rising_star",
 }
 
 BACKUP_GLOBS = (

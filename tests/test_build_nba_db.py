@@ -37,11 +37,11 @@ from pathlib import Path
 
 import pytest
 
-import build_nba_db
+from nba import build_nba_db
 import core
 import health
 import nba_fixture
-import nba_source
+from nba import nba_source
 import sports
 
 SCHEMA = sports.NBA_SCHEMA

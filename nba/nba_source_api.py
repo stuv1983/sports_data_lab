@@ -1,5 +1,5 @@
 """
-nba_source_api.py -- NBA.com via the community `nba_api` package.
+nba/nba_source_api.py -- NBA.com via the community `nba_api` package.
 
 LICENSING -- READ BEFORE USING
 ------------------------------
@@ -14,7 +14,7 @@ for redistribution or for backing a hosted game.
 
 `nba_api` is a community package. NBA.com does not document these endpoints
 and does not announce changes to them, so this adapter will break without
-warning. That is the reason build_nba_db.py talks to nba_source.NbaSource
+warning. That is the reason nba/build_nba_db.py talks to nba_source.NbaSource
 and not to this module: when the endpoints move, or when a licensed source
 becomes available, only this file changes.
 
@@ -36,8 +36,8 @@ import time
 from pathlib import Path
 
 import data_paths
-import nba_source
-from nba_source import (MATCH_COLUMNS, PLAYER_COLUMNS, PLAYER_GAME_COLUMNS,
+from . import nba_source
+from .nba_source import (MATCH_COLUMNS, PLAYER_COLUMNS, PLAYER_GAME_COLUMNS,
                         PHASES, STAT_COLUMNS, TEAM_COLUMNS, Fetch, SourceError,
                         canonical_params, digest_bytes, now, numeric,
                         parse_minutes, validate)
@@ -160,7 +160,7 @@ class NbaApiSource:
             raise SourceError(
                 "the nba_api package is not installed. Either `pip install "
                 "nba_api`, or build from CSV exports with "
-                "`build_nba_db.py --source csv`.") from exc
+                "`nba/build_nba_db.py --source csv`.") from exc
 
     @staticmethod
     def _frame(payload, name=None):
@@ -196,7 +196,7 @@ class NbaApiSource:
         """
         import pandas as pd
 
-        import nba_reference
+        from . import nba_reference
 
         self._require_nba_api()
         from nba_api.stats.static import teams as static_teams

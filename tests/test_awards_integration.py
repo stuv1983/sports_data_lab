@@ -23,12 +23,12 @@ import argparse
 import sqlite3
 
 import data_paths
-import awards as A
-import constraints as C
-import link_draft as LD
-import link_people as LP
-import parse_criteria as P
-from grid_fixtures import GRIDS
+from afl import awards as A
+from afl import constraints as C
+from afl import link_draft as LD
+from afl import link_people as LP
+from afl import parse_criteria as P
+from afl.grid_fixtures import GRIDS
 
 
 class Checks:
@@ -100,7 +100,7 @@ def main():
     # (test_footywire_rising_star.py), so this list must no longer expect
     # them to be declined.  Only criteria with no data source at all remain.
     # BROTHER PLAYED joined them once the broad Wikipedia family layer landed
-    # (test_family_relationships.py). historic_grids.py and test_integration.py
+    # (test_family_relationships.py). afl/historic_grids.py and test_integration.py
     # were updated for that at the time; this file was missed.
     now_supported = ('club captain', 'rising star', 'brother played')
     genuinely_unsupported = [

@@ -1,11 +1,11 @@
 """
-historic_grids.py -- Captured Gridley boards, and what this database can
+afl/historic_grids.py -- Captured Gridley boards, and what this database can
 honestly do with them.
 
-Real grids used to live in a dictionary inside grid_fixtures.py, which
+Real grids used to live in a dictionary inside afl/grid_fixtures.py, which
 made them visible to the test suite and to nothing else. They are now
 declared here as HistoricGrid records so the app, the tests and Game Lab
-all read the same list. grid_fixtures.py re-exports it in its old shape
+all read the same list. afl/grid_fixtures.py re-exports it in its old shape
 so existing tests keep passing unchanged.
 
 WHAT THIS MODULE PROMISES
@@ -37,8 +37,8 @@ whole reason the label is loud.
 import re
 from dataclasses import dataclass, field
 
-import constraints as C
-import parse_criteria as P
+from . import constraints as C
+from . import parse_criteria as P
 
 MANUAL = "manual_capture"
 
@@ -176,13 +176,13 @@ def get(number=None, date=None):
 #: criterion whose SQL touches one of these is answerable in principle but
 #: not in this database until the loader has run.
 OPTIONAL_TABLES = {
-    "draft_links": "Draft data — run `load_draftguru.py`, then "
-                   "`link_draft.py`.",
-    "awards": "Award data — run `load_draftguru.py`, then "
-              "`link_people.py`.",
-    "all_australian": "All-Australian data — run `load_draftguru.py`, "
-                      "then `link_people.py`.",
-    "person_links": "Draftguru person links — run `link_people.py`.",
+    "draft_links": "Draft data — run `afl/load_draftguru.py`, then "
+                   "`afl/link_draft.py`.",
+    "awards": "Award data — run `afl/load_draftguru.py`, then "
+              "`afl/link_people.py`.",
+    "all_australian": "All-Australian data — run `afl/load_draftguru.py`, "
+                      "then `afl/link_people.py`.",
+    "person_links": "Draftguru person links — run `afl/link_people.py`.",
 }
 
 
@@ -302,19 +302,19 @@ def _optional_unavailable_reason(con, sql):
     if re.search(r"\bcaptaincies\b", lowered):
         available = getattr(C, "captain_available", None)
         if available is None or not available(con):
-            return "Club captain data is not loaded; run `load_captains.py`."
+            return "Club captain data is not loaded; run `afl/load_captains.py`."
 
     if re.search(r"\b(?:awards|all_australian|person_links)\b", lowered):
         available = getattr(C, "awards_available", None)
         if available is None or not available(con):
-            return ("Award data is not loaded; run `load_draftguru.py`, then "
-                    "`link_people.py`.")
+            return ("Award data is not loaded; run `afl/load_draftguru.py`, then "
+                    "`afl/link_people.py`.")
 
     if re.search(r"\b(?:draft|draft_links)\b", lowered):
         available = getattr(C, "draft_available", None)
         if available is None or not available(con):
-            return ("Draft data is not loaded; run `load_draftguru.py`, then "
-                    "`link_draft.py`.")
+            return ("Draft data is not loaded; run `afl/load_draftguru.py`, then "
+                    "`afl/link_draft.py`.")
     return None
 
 def _era_warnings(sport, sql):

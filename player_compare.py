@@ -59,6 +59,10 @@ def _table_exists(con: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
+def _columns(con: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+
+
 def _honours(con: sqlite3.Connection, player_id: int) -> list[tuple[str, str]]:
     """Award and selection rows, from whichever optional layers are loaded.
 
@@ -107,14 +111,27 @@ def _honours(con: sqlite3.Connection, player_id: int) -> list[tuple[str, str]]:
             years = str(lo) if lo == hi else f"{lo}–{hi}"
             out.append(("Club captain", f"{club} {years} ({n} seasons)"))
 
+    # Two shapes exist. The AFL table is a scraped inductee list that had to
+    # be name-matched onto players, so it carries a match_status and a Legend
+    # flag; the MLB one is Lahman's ballot history keyed on player_id, where
+    # a row only counts if it was actually an induction.
     if _table_exists(con, "hall_of_fame"):
-        row = con.execute(
-            "SELECT inducted_year, is_legend FROM hall_of_fame "
-            "WHERE player_id = ? AND match_status IN ('unique','resolved')",
-            (player_id,)).fetchone()
-        if row:
-            label = "Hall of Fame (Legend)" if row[1] else "Hall of Fame"
-            out.append((label, str(row[0] or "")))
+        have = _columns(con, "hall_of_fame")
+        if {"inducted_year", "is_legend"} <= have:
+            row = con.execute(
+                "SELECT inducted_year, is_legend FROM hall_of_fame "
+                "WHERE player_id = ? AND match_status IN ('unique','resolved')",
+                (player_id,)).fetchone()
+            if row:
+                label = "Hall of Fame (Legend)" if row[1] else "Hall of Fame"
+                out.append((label, str(row[0] or "")))
+        elif {"inducted", "season"} <= have:
+            row = con.execute(
+                "SELECT MIN(season) FROM hall_of_fame "
+                "WHERE player_id = ? AND inducted = 'Y'",
+                (player_id,)).fetchone()
+            if row and row[0]:
+                out.append(("Hall of Fame", str(row[0])))
 
     if _table_exists(con, "team_selections"):
         rows = con.execute(

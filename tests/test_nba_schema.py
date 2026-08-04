@@ -9,14 +9,14 @@ existed, and would have surfaced only once the sport became selectable:
     core.require_schema would have rejected every NBA database.
   * `clubs` was `[]`. app.axis_widget does `clubs[0]`.
   * `solve_cols` was `()`, so core's six-column default applied -- but
-    app.py and fetch_grid.py read that tuple by position.
+    app.py and afl/fetch_grid.py read that tuple by position.
   * data_paths.LEGACY listed a root `nba.db` that has never existed, so
     sport_db("nba") resolved outside data/nba/ for exactly as long as the
     database was missing.
 
 The solve-column test runs over every registered sport, not just the NBA.
 Obscurity-last is an unenforced contract read in three places
-(core.square's row[width], app.py's best[-1], fetch_grid.py's g[7]) and
+(core.square's row[width], app.py's best[-1], afl/fetch_grid.py's g[7]) and
 getting it wrong rates every square by the wrong column, silently.
 """
 
@@ -37,7 +37,7 @@ import pytest
 
 import core
 import data_paths
-import nba_reference
+from nba import nba_reference
 import sports
 
 
@@ -86,7 +86,7 @@ def test_obscurity_is_the_last_solve_column(sport):
 @pytest.mark.parametrize("sport", list(sports.SPORTS.values()),
                          ids=list(sports.SPORTS))
 def test_solve_columns_are_eight_wide(sport):
-    """app.py and fetch_grid.py index this tuple positionally."""
+    """app.py and afl/fetch_grid.py index this tuple positionally."""
     assert len(sport.schema.solve_columns()) == 8, sport.key
 
 
@@ -195,6 +195,34 @@ def test_required_player_cols_names_the_obscurity_inputs():
     """career_minutes is an NBA obscurity term; require_schema must demand it."""
     assert "career_minutes" in sports.NBA_SCHEMA.required_player_cols
     assert "name_key" in sports.NBA_SCHEMA.required_player_cols
+
+
+# ------------------------------------------------- staging is not the app db
+
+def test_staging_output_is_never_the_database_the_app_opens():
+    """The fifth bug, and the one that broke the NBA sport outright.
+
+    The Basketball-Reference ingestion scripts wrote leaderboard and award
+    staging tables straight into data/nba/nba.db -- the path sport_db("nba")
+    resolves. The result was a file with a `players` table of the wrong
+    shape, so Sport.exists() said yes and every query then failed on a
+    missing column.
+    """
+    staging = data_paths.staging_db("nba", "nba_bbr.db")
+    assert str(staging) != data_paths.sport_db("nba")
+    assert staging.parent.name == "staging"
+
+
+@pytest.mark.parametrize("module", ["link_nba_bbr_players",
+                                    "load_nba_bbr_staging", "patch_nba_db",
+                                    "seed_nba_test_players",
+                                    "load_and_link_nba_sample"])
+def test_no_bbr_script_points_at_the_app_database(module):
+    import importlib
+
+    imported = importlib.import_module(f"nba.{module}")
+    assert str(imported.DB_PATH) != data_paths.sport_db("nba")
+    assert "staging" in str(imported.DB_PATH)
 
 
 def main():

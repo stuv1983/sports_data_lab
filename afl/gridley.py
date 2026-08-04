@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
 """
-gridley.py -- Query the local AFL database for players matching Gridley
+afl/gridley.py -- Query the local AFL database for players matching Gridley
 grid constraints, ranked by how obscure they are.
 
-Run build_db.py first to create gridley.db.
+Run afl/build_db.py first to create gridley.db.
 
 EXAMPLES
 --------
 Players who kicked 3+ goals AND had 30+ disposals in the SAME game:
-    python gridley.py --min-goals 3 --min-disposals 30
+    python -m afl.gridley --min-goals 3 --min-disposals 30
 
 ...but only in the 1990s, rarest first:
-    python gridley.py --min-goals 3 --min-disposals 30 --from 1990 --to 1999
+    python -m afl.gridley --min-goals 3 --min-disposals 30 --from 1990 --to 1999
 
 Players who turned out for both Fitzroy and Richmond:
-    python gridley.py --club Fitzroy --club Richmond
+    python -m afl.gridley --club Fitzroy --club Richmond
 
 Obscure Hawthorn players who kicked 5 in a game:
-    python gridley.py --club Hawthorn --min-goals 5 --max-career-games 50
+    python -m afl.gridley --club Hawthorn --min-goals 5 --max-career-games 50
 
 A one-club player with under 20 career games who played a final:
-    python gridley.py --one-club --max-career-games 20 --min-finals 1
+    python -m afl.gridley --one-club --max-career-games 20 --min-finals 1
 
 Look up everything about a specific player:
-    python gridley.py --player "Peter Bosustow"
+    python -m afl.gridley --player "Peter Bosustow"
 
 List the club names the database understands:
-    python gridley.py --clubs
+    python -m afl.gridley --clubs
 """
 
 import argparse
@@ -47,7 +47,7 @@ def connect(db):
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     except sqlite3.OperationalError:
-        sys.exit(f"Cannot open {db}. Run:  python build_db.py")
+        sys.exit(f"Cannot open {db}. Run:  python -m afl.build_db")
     con.row_factory = sqlite3.Row
     return con
 

@@ -8,9 +8,9 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
-import club_fields as CF
-import club_history as CH
-import club_logos as CL
+from . import club_fields as CF
+from . import club_history as CH
+from . import club_logos as CL
 
 REQUIRED_TABLES = {
     "clubs", "club_source_snapshots", "club_wikipedia_fields",

@@ -518,7 +518,7 @@ def _default_sources() -> list[Path]:
     sources = captaincy_sources("afl")
     if not sources:
         raise FileNotFoundError(
-            "no captaincy CSV found; run scrape_afl_captains.py or provide a CSV"
+            "no captaincy CSV found; run afl/scrape_afl_captains.py or provide a CSV"
         )
     return sources
 

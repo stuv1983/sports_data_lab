@@ -18,9 +18,9 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-import fetch_footywire_rising_star as F
-import load_rising_star as L
-import rising_star as R
+from afl import fetch_footywire_rising_star as F
+from afl import load_rising_star as L
+from afl import rising_star as R
 
 HTML = """
 <html><body>

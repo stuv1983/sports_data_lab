@@ -1,5 +1,5 @@
 """
-game_lab.py -- Database-driven AFL games.
+afl/game_lab.py -- Database-driven AFL games.
 
 Guess the Player. Each clue is a real SQL predicate, so the game can show
 how many players still fit and clues can be ordered by how much they
@@ -12,7 +12,7 @@ Two clue styles:
                      longevity, scoring, clubs. Always available.
 
   Gridley criteria   Clues drawn from criteria that have appeared on real
-                     Gridley boards (historic_grids.py), phrased the way
+                     Gridley boards (afl/historic_grids.py), phrased the way
                      Gridley phrases them. Only criteria this database
                      genuinely supports are in the bank: a criterion the
                      parser declines is never reworded into a different
@@ -25,11 +25,11 @@ delegates here for the AFL sport.
 
 import streamlit as st
 
-import constraints as C
-import historic_grids as HG
-import parse_criteria as P
+from . import constraints as C
+from . import historic_grids as HG
+from . import parse_criteria as P
 
-# Target pools. Obscurity is the fame proxy from build_db.py: low = famous.
+# Target pools. Obscurity is the fame proxy from afl/build_db.py: low = famous.
 DIFFICULTY = {
     "Easy": "career_games >= 150 AND obscurity <= 30",
     "Medium": "career_games >= 100 AND obscurity <= 55",

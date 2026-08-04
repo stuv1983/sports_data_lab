@@ -16,7 +16,7 @@ the mirror below.
 
 **fitzRoy and fitzRoy_data** — Jimmy Day and contributors
 <https://github.com/jimmyday12/fitzRoy> · <https://github.com/jimmyday12/fitzRoy_data>
-`build_db.py` downloads the community-maintained cached copy of the AFL
+`afl/build_db.py` downloads the community-maintained cached copy of the AFL
 Tables player-stats dataset from `fitzRoy_data`, the same file the R package
 `fitzRoy` reads. One ~14 MB download replaces tens of thousands of page
 requests. This is the single most load-bearing dependency in the project.
@@ -86,6 +86,17 @@ retrieval is cached and recorded in the `source_manifest` table so what was
 taken, and when, is auditable. `nba_api` is an unofficial community package;
 NBA.com does not document these endpoints and does not announce changes to
 them.
+
+**Lahman baseball database** — <https://sabr.org/lahman-database/>
+Sean Lahman's baseball database, maintained with SABR, is the source for the
+entire MLB build: career and season batting, pitching and appearance records,
+their postseason counterparts, franchise history, awards and Hall of Fame
+voting, from 1871. It is published for research and non-commercial use under
+a Creative Commons Attribution-ShareAlike licence, which asks for attribution
+and that derived work carry the same terms. The CSV export is not
+redistributed in this repository -- `mlb/build_mlb_db.py` reads a copy you
+supply under `data/mlb/raw/`. Lahman has no box scores, so the MLB database
+here is season-grain and says so; see the README.
 
 **Immaculate Grid** — <https://www.immaculategrid.com>
 The daily grid puzzle format the NBA solver answers questions in. This project

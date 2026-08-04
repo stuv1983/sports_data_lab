@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-link_people.py -- Resolve Draftguru people to AFL Tables player_ids.
+afl/link_people.py -- Resolve Draftguru people to AFL Tables player_ids.
 
-load_draftguru.py gives every Draftguru person a stable id (dg_person_id,
+afl/load_draftguru.py gives every Draftguru person a stable id (dg_person_id,
 from their Player URL). This links that person once, and every draft row,
 award row and All-Australian selection they own inherits it. That is a
 strictly better position than linking each award row by name: a 1979
@@ -11,14 +11,14 @@ same person's draft row carries an age and a year.
 
 Two sources of evidence, in order:
 
-  1. draft_links, if link_draft.py has run. A person whose draft rows all
+  1. draft_links, if afl/link_draft.py has run. A person whose draft rows all
      resolved to the same player_id is linked with status `from_draft`.
   2. name + club + activity window, for people who never appear in a draft
      (anyone active before 1981, and anyone who was never drafted). The
      award year must fall inside the player's debut-final span, and the
      award club must be one of theirs.
 
-Statuses match link_draft.py's vocabulary, and only `unique` / `resolved`
+Statuses match afl/link_draft.py's vocabulary, and only `unique` / `resolved`
 / `from_draft` carry a player_id:
 
   from_draft  inherited from an unambiguous draft link
@@ -29,8 +29,8 @@ Statuses match link_draft.py's vocabulary, and only `unique` / `resolved`
   implausible one match but the years or clubs don't work -- NOT linked
   unmatched   no player of that name
 
-    python link_people.py
-    python link_people.py --report        # show ambiguous people
+    python -m afl.link_people
+    python -m afl.link_people --report        # show ambiguous people
 """
 
 # Run standalone from anywhere: this file lives at the project root.
@@ -43,7 +43,7 @@ import sqlite3
 import sys
 
 from data_paths import default_db
-from link_draft import draft_rule
+from .link_draft import draft_rule
 
 LINKED = ("from_draft", "unique", "resolved")
 
@@ -128,7 +128,7 @@ def person_evidence(con):
             if dyear and dage:
                 # Draftguru ages are whole numbers, so a player aged N at a
                 # draft held late in the year was born in (year - N) or
-                # (year - N - 1). Keep the range, as link_draft.py does.
+                # (year - N - 1). Keep the range, as afl/link_draft.py does.
                 lo, hi = int(dyear) - int(dage) - 1, int(dyear) - int(dage)
                 e["birth_lo"] = (lo if e["birth_lo"] is None
                                  else min(e["birth_lo"], lo))
@@ -301,9 +301,9 @@ def main():
     have = {r[0] for r in con.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     if "dg_people" not in have:
-        sys.exit("No dg_people table. Run load_draftguru.py first.")
+        sys.exit("No dg_people table. Run afl/load_draftguru.py first.")
     if "players" not in have:
-        sys.exit("No players table. Run build_db.py first.")
+        sys.exit("No players table. Run afl/build_db.py first.")
 
     by_key = load_players(con)
     ev_all = person_evidence(con)

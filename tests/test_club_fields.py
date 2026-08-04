@@ -22,7 +22,7 @@ import sqlite3
 
 import pytest
 
-import club_fields as CF
+from afl import club_fields as CF
 
 
 # ------------------------------------------------------------- nicknames

@@ -36,11 +36,11 @@ import sqlite3
 import pandas as pd
 import pytest
 
-import build_nba_db
-import load_nba_playoff_series as loader
+from nba import build_nba_db
+from nba import load_nba_playoff_series as loader
 import nba_fixture
-import nba_playoff_rounds as rounds
-import nba_source
+from nba import nba_playoff_rounds as rounds
+from nba import nba_source
 
 
 # ------------------------------------------------------- classification

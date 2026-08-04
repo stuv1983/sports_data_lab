@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Load Team of the Century selections and link them to players.
 
-    python load_teams_of_the_century.py
-    python load_teams_of_the_century.py --unmatched
+    python -m afl.load_teams_of_the_century
+    python -m afl.load_teams_of_the_century --unmatched
 
 Reads ``data/afl/raw/wikipedia_teams_of_the_century.csv`` (see
-``scrape_teams_of_the_century.py``) into a `team_selections` table.
+``afl/scrape_teams_of_the_century.py``) into a `team_selections` table.
 
 Linking is deliberately conservative, and for these teams that matters more
 than usual. Three of the five -- Italian, Greek and Queensland -- name the
@@ -231,7 +231,7 @@ def main(argv=None) -> int:
         return 0
     path = Path(args.csv) if args.csv else raw_dir("afl") / SOURCE_CSV
     if not path.exists():
-        sys.exit(f"{path} not found -- run scrape_teams_of_the_century.py")
+        sys.exit(f"{path} not found -- run afl/scrape_teams_of_the_century.py")
     load(db, path)
     return 0
 

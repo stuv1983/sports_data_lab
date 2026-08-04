@@ -96,8 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     note(have_rels, "family_relationships table exists")
     if not (have_members and have_rels):
         print(
-            "\nFamily layer not loaded -- run scrape_wikipedia_families.py "
-            "then load_family_relationships.py first."
+            "\nFamily layer not loaded -- run afl/scrape_wikipedia_families.py "
+            "then afl/load_family_relationships.py first."
         )
         return 1
 
@@ -221,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     print("\n9. Draft-specific filters still work alongside the broad layer")
     # A missing family_draft table is a legitimate "not loaded" state and
     # should raise QuerySyntaxError, not crash. See KNOWN_ISSUE below if it
-    # does crash -- that is a real bug in family_draft.py, not this test.
+    # does crash -- that is a real bug in afl/family_draft.py, not this test.
     for query in ("father_son:true sort:obscurity", "family_draft:true sort:obscurity"):
         try:
             names, desc = run_query(schema, con, query)
@@ -236,11 +236,11 @@ def main(argv: list[str] | None = None) -> int:
                 note(
                     False,
                     f"{query!r} parses and executes",
-                    "KNOWN ISSUE: family_draft.py:ensure_family_draft_table() "
+                    "KNOWN ISSUE: afl/family_draft.py:ensure_family_draft_table() "
                     "still uses the pre-hotfix placeholder strategy and "
                     "crashes on the read-only Streamlit connection when the "
                     "family_draft table has not been imported. Same class of "
-                    "bug as the one fixed in family_relationships.py -- "
+                    "bug as the one fixed in afl/family_relationships.py -- "
                     "needs the same _query_only(con) guard backported.",
                 )
             else:

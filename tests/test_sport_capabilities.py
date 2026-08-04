@@ -148,8 +148,8 @@ def test_every_loader_hint_names_a_declared_layer(sport):
 
 def test_afl_declares_the_pages_it_actually_has():
     assert sports.AFL.grid_library is True
-    assert sports.AFL.criterion_parser == "parse_criteria"
-    assert sports.AFL.game_lab_module == "game_lab"
+    assert sports.AFL.criterion_parser == "afl.parse_criteria"
+    assert sports.AFL.game_lab_module == "afl.game_lab"
     assert sports.AFL.has_club_explorer is True
     assert sports.AFL.has_awards_page is True
     assert sports.AFL.has_past_games is True
@@ -208,7 +208,7 @@ def test_missing_layer_hints_yields_the_afl_hints_when_layers_are_absent():
     con.execute("CREATE TABLE players (player_id INTEGER)")
     found = dict(sports.AFL.missing_layer_hints(con))
     assert "Draft data" in found
-    assert "load_draftguru.py" in found["Draft data"]
+    assert "afl/load_draftguru.py" in found["Draft data"]
     con.close()
 
 

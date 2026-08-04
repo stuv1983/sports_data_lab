@@ -1,6 +1,9 @@
 import sqlite3
 
-DB_PATH = "data/nba/nba.db"
+import data_paths
+
+#: Staging output, never data/nba/nba.db -- see data_paths.staging_db().
+DB_PATH = str(data_paths.staging_db("nba", "nba_bbr.db"))
 
 def seed_test_players():
     con = sqlite3.connect(DB_PATH)

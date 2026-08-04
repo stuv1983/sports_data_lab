@@ -32,7 +32,7 @@ _os.chdir(_ROOT)
 import pandas as pd
 import pytest
 
-from build_db import (OBSCURITY_MODEL_VERSION, OBSCURITY_WEIGHTS,
+from afl.build_db import (OBSCURITY_MODEL_VERSION, OBSCURITY_WEIGHTS,
                       obscurity_components, obscurity_score)
 
 

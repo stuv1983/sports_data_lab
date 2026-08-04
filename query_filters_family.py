@@ -92,7 +92,7 @@ def _split_query(query: str):
 
 def _draft_constraint(key: str, value: str, con):
     try:
-        import family_draft as F
+        from afl import family_draft as F
     except ImportError as exc:
         raise QuerySyntaxError("family-draft support is not installed") from exc
 
@@ -100,7 +100,7 @@ def _draft_constraint(key: str, value: str, con):
         F.ensure_family_draft_table(con)
         if not F.family_draft_available(con):
             raise QuerySyntaxError(
-                "family-draft data is not loaded; run load_family_draft.py"
+                "family-draft data is not loaded; run afl/load_family_draft.py"
             )
 
     negate = False
@@ -137,7 +137,7 @@ def _broad_constraint(schema, key: str, value: str, con):
     if con is not None and any(not _table_exists(con, table) for table in required):
         raise QuerySyntaxError(
             "family relationship data is not loaded; run "
-            "scrape_wikipedia_families.py then load_family_relationships.py"
+            "afl/scrape_wikipedia_families.py then afl/load_family_relationships.py"
         )
 
     s = schema

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Load Hall of Fame inductees and link them to players.
 
-    python load_hall_of_fame.py
-    python load_hall_of_fame.py --report      # show link outcomes
-    python load_hall_of_fame.py --unmatched   # list rows needing review
+    python -m afl.load_hall_of_fame
+    python -m afl.load_hall_of_fame --report      # show link outcomes
+    python -m afl.load_hall_of_fame --unmatched   # list rows needing review
 
 Reads ``data/afl/raw/wikipedia_hall_of_fame.csv`` (see
-``scrape_hall_of_fame.py``) into a `hall_of_fame` table.
+``afl/scrape_hall_of_fame.py``) into a `hall_of_fame` table.
 
 Linking follows the same rule as every other optional layer: a row is
 trusted only when the name resolves to exactly one plausible player, and an
@@ -236,7 +236,7 @@ def main(argv=None) -> int:
 
     path = Path(args.csv) if args.csv else raw_dir("afl") / SOURCE_CSV
     if not path.exists():
-        sys.exit(f"{path} not found -- run scrape_hall_of_fame.py first")
+        sys.exit(f"{path} not found -- run afl/scrape_hall_of_fame.py first")
     load(db, path)
     return 0
 

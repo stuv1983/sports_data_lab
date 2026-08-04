@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-nba_playoff_rounds.py -- Assign a playoff round to every post-season match.
+nba/nba_playoff_rounds.py -- Assign a playoff round to every post-season match.
 
 The box-score sources say a game was a playoff game. They do not say which
 round, and four criteria cannot answer anything without that: Finals
 appearance, Finals win, appeared for the championship team, and the
-championship derivation itself. `build_nba_db.py` recorded the gap honestly
+championship derivation itself. `nba/build_nba_db.py` recorded the gap honestly
 as a `no_finals_round` issue and refused to guess; this is what fills it.
 
 HOW A GAME FINDS ITS SERIES

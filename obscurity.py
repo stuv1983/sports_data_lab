@@ -6,9 +6,9 @@ handful of ranked career-footprint terms. The machinery here is identical
 for every sport; only the *terms* are a sport decision, and those are
 declared as a `Model` at the bottom of this module.
 
-This was lifted verbatim out of build_db.py so a second sport could score
+This was lifted verbatim out of afl/build_db.py so a second sport could score
 its players without either copying the logic or inheriting AFL column
-names. build_db.py re-exports the AFL names it used to define, so nothing
+names. afl/build_db.py re-exports the AFL names it used to define, so nothing
 that imported them had to change.
 
   Term   -- one ranked input: a column (or a derivation) and its weight.
@@ -316,4 +316,39 @@ NBA_MODEL = Model(version=1, terms=(
     Term("playoffs", 0.13, column="playoffs_played", fillna=0.0),
     Term("points", 0.07, column="career_points", fillna=0.0),
     Term("teams", 0.05, column="n_clubs"),
+))
+
+
+# ------------------------------------------------------------------- MLB
+
+#: The MLB model. Again a distinct version number, and again not the AFL or
+#: NBA weights renamed.
+#:
+#: Career games carries the most weight because Lahman's Appearances table
+#: counts every player the same way whatever position they played, which is
+#: the one visibility measure that is fair to a relief pitcher and a
+#: shortstop at once.
+#:
+#: Hits outweigh home runs (0.10 to 0.07) for the reason points sit low in
+#: the NBA model: the home-run leaderboard is the most role-dependent
+#: counting stat baseball has, and weighting it heavily would score every
+#: contact hitter and every pitcher as obscure for the position they
+#: played. Both terms use `fillna=0.0` -- batting lines exist for every
+#: player-season in the file, so a zero is a real zero.
+#:
+#: The postseason term is `optional`. There was no postseason at all in
+#: several early seasons and no Division Series before 1969, so a career
+#: wholly inside a year with no October cannot be read as having failed to
+#: reach one. The build leaves it NULL for those players and the term drops.
+#:
+#: Version 1, distinct from the AFL's 2 and the NBA's 1-for-a-different-
+#: formula: no score here is comparable with a score there.
+MLB_MODEL = Model(version=1, terms=(
+    Term("games", 0.32, column="career_games", fillna=0.0),
+    Term("span", 0.16, derive=span),
+    Term("era", 0.16, column="final_season"),
+    Term("postseason", 0.13, column="postseason_played", optional=True),
+    Term("hits", 0.11, column="career_hits", fillna=0.0),
+    Term("home_runs", 0.07, column="career_home_runs", fillna=0.0),
+    Term("franchises", 0.05, column="n_clubs"),
 ))

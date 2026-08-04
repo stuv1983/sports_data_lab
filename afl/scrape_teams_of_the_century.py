@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Fetch and parse the Australian football Teams of the Century.
 
-    python scrape_teams_of_the_century.py            # fetch (cached), CSV
-    python scrape_teams_of_the_century.py --refresh  # re-fetch
-    python scrape_teams_of_the_century.py --report   # parse only
+    python -m afl.scrape_teams_of_the_century            # fetch (cached), CSV
+    python -m afl.scrape_teams_of_the_century --refresh  # re-fetch
+    python -m afl.scrape_teams_of_the_century --report   # parse only
 
 Writes ``data/afl/raw/wikipedia_teams_of_the_century.csv``; load it with
-``load_teams_of_the_century.py``.
+``afl/load_teams_of_the_century.py``.
 
 Five teams, from four Wikipedia pages. Two of them are sections of a larger
 article rather than pages of their own -- 'AFL Team of the Century' is a

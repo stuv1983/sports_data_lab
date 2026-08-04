@@ -694,7 +694,7 @@ def game_lab_page(sport, con, player_picker):
     """
     Game Lab entry point, called by app.py.
 
-    The real game lives in game_lab.py: a clue ladder built from SQL
+    The real game lives in afl/game_lab.py: a clue ladder built from SQL
     predicates, plus a question bank drawn from criteria that have
     actually appeared on Gridley boards. That module reads AFL-only
     columns (career_brownlow and the AFL finals count) and AFL-only criterion

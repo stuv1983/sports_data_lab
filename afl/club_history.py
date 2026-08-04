@@ -11,7 +11,7 @@ layer built on it would silently under-report by however much was dropped.
 This module reads the source rows directly.
 
 Scope note. Everything here is about clubs, not players, which is why it is
-not in constraints.py: none of it returns a player_id predicate. A player-
+not in afl/constraints.py: none of it returns a player_id predicate. A player-
 level bridge onto these matches belongs in step 5's match_queries.py.
 
 

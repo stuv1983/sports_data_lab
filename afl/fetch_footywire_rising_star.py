@@ -3,7 +3,7 @@
 
 The importer saves one CSV per season plus one combined CSV.  It can then
 load and link those rows into the AFL SQLite database through
-``load_rising_star.py``.
+``afl/load_rising_star.py``.
 
 FootyWire's published terms prohibit automated page copying without prior
 written permission.  Live HTTP fetching is therefore disabled unless the
@@ -14,18 +14,18 @@ Examples
 --------
 Parse manually saved pages and load the database::
 
-    python fetch_footywire_rising_star.py \
+    python -m afl.fetch_footywire_rising_star \
         --html-dir saved_footywire_pages --load-db
 
 After receiving written permission from FootyWire, save the HTML first::
 
-    python fetch_footywire_rising_star.py \
+    python -m afl.fetch_footywire_rising_star \
         --permission-confirmed --from 1993 --to 2026 --delay 3 \
         --save-html-only
 
 Then parse the cached pages and load the database::
 
-    python fetch_footywire_rising_star.py \
+    python -m afl.fetch_footywire_rising_star \
         --html-dir data/afl/raw/footywire/rising_star/html --load-db
 
 Expected local page names are ``1993.html`` or
@@ -566,7 +566,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.load_db:
-        import load_rising_star
+        from . import load_rising_star
         result = load_rising_star.load_sources(args.db, [combined], verbose=True)
         if result.get("trusted", 0) == 0:
             return 1

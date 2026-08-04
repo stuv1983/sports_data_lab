@@ -19,7 +19,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
-import club_history as CH
+from . import club_history as CH
 
 ANY = "Any"
 

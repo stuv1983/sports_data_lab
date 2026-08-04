@@ -7,7 +7,7 @@ through core.count. A registry is a wall of tuples, and a typo in one of
 them is invisible until somebody picks that axis. Running all of them costs
 nothing and catches all of them.
 
-The rest pin the three decisions constraints_nba.py makes that are not
+The rest pin the three decisions nba/constraints_nba.py makes that are not
 simply "the generic builder, renamed":
 
   * franchise lineage expands one way (a Seattle square is about Seattle);
@@ -31,7 +31,7 @@ import sqlite3
 
 import pytest
 
-import constraints_nba as C
+from nba import constraints_nba as C
 import core
 
 SCHEMA = C.SCHEMA

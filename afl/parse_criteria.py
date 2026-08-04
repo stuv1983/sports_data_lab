@@ -1,17 +1,17 @@
 """
-parse_criteria.py -- Turn Gridley's criterion text into constraints.
+afl/parse_criteria.py -- Turn Gridley's criterion text into constraints.
 
 Gridley writes squares as short phrases: "150+ GAMES PLAYED",
 "30+ GOALS TWO DIFF CLUBS", "MASON WOOD TEAMMATE". This maps those to
-the constraint functions in constraints.py.
+the constraint functions in afl/constraints.py.
 
 Anything it can't map returns None with a reason, so an unrecognised
 square is reported rather than silently answered wrong.
 """
 
 import re
-import constraints as C
-import awards as A
+from . import constraints as C
+from . import awards as A
 
 # Gridley shows clubs as logos, not text. Column identity usually arrives
 # as a club name or slug from the API; these are the aliases we accept.
@@ -110,7 +110,7 @@ def _max_bound(t, n):
 
 
 def _family_builders_available():
-    """True when constraints.py exposes the broad family relationship layer."""
+    """True when afl/constraints.py exposes the broad family relationship layer."""
     return all(
         hasattr(C, name)
         for name in (

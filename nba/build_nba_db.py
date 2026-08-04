@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-build_nba_db.py -- Build data/nba/nba.db from any NBA source adapter.
+nba/build_nba_db.py -- Build data/nba/nba.db from any NBA source adapter.
 
-    python build_nba_db.py --source csv
-    python build_nba_db.py --source csv --seasons 2018-2023
-    python build_nba_db.py --source bbr --source-root C:/nbaData/data
-    python build_nba_db.py --source nba_api --seasons 1946-2026
-    python build_nba_db.py --reference-only
+    python -m nba.build_nba_db --source csv
+    python -m nba.build_nba_db --source csv --seasons 2018-2023
+    python -m nba.build_nba_db --source bbr --source-root C:/nbaData/data
+    python -m nba.build_nba_db --source nba_api --seasons 1946-2026
+    python -m nba.build_nba_db --reference-only
 
 The build talks to nba_source.NbaSource and never to a website. Adapters
-live in nba_source.py (CSV, the canonical one), nba_source_bbr.py (the
-local Basketball-Reference scrape) and nba_source_api.py (NBA.com). The
+live in nba/nba_source.py (CSV, the canonical one), nba/nba_source_bbr.py (the
+local Basketball-Reference scrape) and nba/nba_source_api.py (NBA.com). The
 last two carry licensing conditions -- read the note at the top of each
 before using it. `--source csv` is the default because it is the one with
 no conditions attached.
 
-Before a long `--source bbr` build, `python check_nba_scrape.py` reports
+Before a long `--source bbr` build, `python -m nba.check_nba_scrape` reports
 how much of the scrape has landed and whether the playoff-series reference
 covers it, without building anything.
 
@@ -84,8 +84,8 @@ from pathlib import Path
 
 import data_paths
 import names
-import nba_playoff_rounds
-import nba_source
+from . import nba_playoff_rounds
+from . import nba_source
 import obscurity
 import sports
 
@@ -409,7 +409,7 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
             detail = "no matching series in reference/playoff_series.csv"
         issue(issues, "unresolved_playoff_round",
               f"{int(blank.sum()):,} playoff match(es) have no round -- "
-              f"{detail}. Run load_nba_playoff_series.py; without a round no "
+              f"{detail}. Run nba/load_nba_playoff_series.py; without a round no "
               f"championship can be derived.",
               severity="error", source_key=source.key)
 
@@ -1268,7 +1268,7 @@ def load_reference(db_path, out_path=None, verbose=True):
     finally:
         con.close()
 
-    import nba_reference
+    from . import nba_reference
     payload = {
         "generated_at": nba_source.now(),
         "db": str(db_path),
@@ -1294,7 +1294,7 @@ def load_reference(db_path, out_path=None, verbose=True):
 
 def _measured_venue_aliases(con):
     """The checked-in alias map, narrowed to arenas the database has."""
-    import nba_reference
+    from . import nba_reference
     known = {r[0] for r in con.execute(
         "SELECT DISTINCT venue FROM games WHERE venue IS NOT NULL")}
     if not known:
@@ -1327,7 +1327,7 @@ def main(argv=None):
     ap.add_argument("--db", default=data_paths.default_db("nba"))
     ap.add_argument("--source", default="csv",
                     help="csv (default), bbr or nba_api; see the licensing "
-                         "notes in nba_source_bbr.py and nba_source_api.py "
+                         "notes in nba/nba_source_bbr.py and nba/nba_source_api.py "
                          "before using either of the last two")
     ap.add_argument("--csv-root", "--source-root", dest="source_root",
                     default=None,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-link_draft.py -- Resolve Draftguru rows to player_ids.
+afl/link_draft.py -- Resolve Draftguru rows to player_ids.
 
 Name alone is not a safe key: 1,007 players in the stats table share a name
 with someone else (six Peter Browns, four Mark Williamses). Draftguru also
@@ -23,8 +23,8 @@ Every row is written to `draft_links` with an explicit status:
 
 Only `unique` and `resolved` rows get a player_id. Nothing is silently linked.
 
-    python link_draft.py
-    python link_draft.py --report        # show ambiguous rows for review
+    python -m afl.link_draft
+    python -m afl.link_draft --report        # show ambiguous rows for review
 """
 
 # Run standalone from anywhere: this file lives at the project root.
@@ -217,7 +217,7 @@ def main():
     con = sqlite3.connect(a.db)
     if not con.execute("SELECT name FROM sqlite_master WHERE name='draft'"
                        ).fetchall():
-        sys.exit("No draft table. Run load_draftguru.py first.")
+        sys.exit("No draft table. Run afl/load_draftguru.py first.")
 
     by_key = load_players(con)
     draft = con.execute(

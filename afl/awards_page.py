@@ -127,8 +127,8 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
         st.info(f"No award data is loaded for {sport.label}.")
         return
     if not awards_data_available(con):
-        st.info("Award data is not loaded. Run `python load_draftguru.py`, "
-                "then `python link_people.py`.")
+        st.info("Award data is not loaded. Run `python -m afl.load_draftguru`, "
+                "then `python -m afl.link_people`.")
         return
 
     have = _tables(con)

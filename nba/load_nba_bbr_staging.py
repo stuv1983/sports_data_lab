@@ -4,8 +4,11 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-DB_PATH = Path("data/nba/nba.db")
-SCHEMA_PATH = Path("nba_bbr_reference_schema.sql")
+import data_paths
+
+#: Staging output, never data/nba/nba.db -- see data_paths.staging_db().
+DB_PATH = data_paths.staging_db("nba", "nba_bbr.db")
+SCHEMA_PATH = Path(__file__).resolve().parent / "nba_bbr_reference_schema.sql"
 
 # Update these paths if your sample data is stored elsewhere
 LEADERBOARDS_CSV = Path("data/nba/raw/basketball_reference/indexes/leaderboard_records.csv")

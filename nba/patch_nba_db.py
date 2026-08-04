@@ -8,7 +8,10 @@ to satisfy the core application's schema validation.
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path("data/nba/nba.db")
+import data_paths
+
+#: Staging output, never data/nba/nba.db -- see data_paths.staging_db().
+DB_PATH = data_paths.staging_db("nba", "nba_bbr.db")
 
 def patch_players_table():
     print(f"Applying players patch to {DB_PATH}...")

@@ -1,11 +1,11 @@
 """
-nba_reference.py -- Team names, lineage and stat eras, for import time.
+nba/nba_reference.py -- Team names, lineage and stat eras, for import time.
 
 core.Schema is a frozen dataclass constructed while sports.py is being
 imported, long before any database is open. But three of the NBA schema's
 fields are properties of the *built data*: which teams exist, which
 historical identities belong to which franchise, and which season each
-statistic actually starts in. build_nba_db.py discovers all three and
+statistic actually starts in. nba/build_nba_db.py discovers all three and
 writes them to data/nba/reference/nba_reference.json; this module reads
 that file back.
 
@@ -124,7 +124,7 @@ FALLBACK_VENUE_ALIASES = {
     "seattle center coliseum": "KeyArena",
 }
 
-#: Provisional. Every one of these is a guess until build_nba_db.py has
+#: Provisional. Every one of these is a guess until nba/build_nba_db.py has
 #: measured the built database and load_stat_coverage.py has confirmed it;
 #: sports.NBA.stat_eras reads the measured values as soon as PATH exists.
 #: `minutes` and `plus_minus` in particular are the two most likely to be

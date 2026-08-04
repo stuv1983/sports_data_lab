@@ -6,10 +6,10 @@ an AFL or VFL/AFL heading are accepted; AFLW/VFLW and modern second-tier VFL
 sections are excluded. Output grain is one row per season, club and captain.
 
 Examples:
-    python scrape_afl_captains.py --inspect
-    python scrape_afl_captains.py
-    python scrape_afl_captains.py --load --db gridley.db
-    python scrape_afl_captains.py --refresh --through 2026
+    python -m afl.scrape_afl_captains --inspect
+    python -m afl.scrape_afl_captains
+    python -m afl.scrape_afl_captains --load --db gridley.db
+    python -m afl.scrape_afl_captains --refresh --through 2026
 """
 
 from __future__ import annotations
@@ -453,7 +453,7 @@ def inspect(rows: list[CaptainRow], issues: list[str]) -> None:
 
 def load_into_db(csv_path: Path, db_path: str) -> None:
     import sqlite3
-    import load_captains
+    from . import load_captains
 
     if not Path(db_path).exists():
         raise FileNotFoundError(f"database not found: {db_path}")
@@ -518,7 +518,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.load:
             load_into_db(args.output, args.db)
         else:
-            print(f"Next: python load_captains.py {args.output}")
+            print(f"Next: python -m afl.load_captains {args.output}")
         return 0
     except (FetchError, OSError, ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

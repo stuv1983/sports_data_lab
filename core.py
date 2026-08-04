@@ -16,7 +16,7 @@ Three things live in this module:
                       star-rating helpers the UI displays.
 
 Sport-specific constraints (finals semantics, drafts, awards) stay in the
-sport's own module: constraints.py for the AFL, constraints_nba.py for the
+sport's own module: afl/constraints.py for the AFL, nba/constraints_nba.py for the
 NBA. See sports.py for how the two are bound together.
 """
 
@@ -34,7 +34,7 @@ class Schema:
     """
     Column and table names for one sport's database.
 
-    The defaults are the AFL build produced by build_db.py. The NBA build
+    The defaults are the AFL build produced by afl/build_db.py. The NBA build
     should reuse as many of them as it honestly can -- every name that
     matches is a page of explore.py that needs no changes at all.
     """
@@ -141,7 +141,19 @@ class Schema:
     # without inheriting AFL literal column names.
     required_games_cols: Sequence[str] = ()
     required_player_cols: Sequence[str] = ("name_key",)
-    rebuild_cmd: str = "python build_db.py"
+
+    #: How a career column on `players` reconciles against `games`, as
+    #: {players column: (aggregate expression, WHERE predicate or "")}.
+    #:
+    #: health.career_totals_reconcile defaults to "one games row is one
+    #: game, and a career total sums every row", which is true of the AFL
+    #: and NBA builds and false of the MLB one -- Lahman has no box scores,
+    #: so a row there is a player's season with one team and career_games
+    #: is SUM(games) over the regular-season rows. A sport whose grain
+    #: differs states it here rather than health.py learning three sports'
+    #: worth of special cases. An entry mapping to None skips the check.
+    career_totals_sql: dict = field(default_factory=dict)
+    rebuild_cmd: str = "python -m afl.build_db"
 
     def canonical_venue(self, name):
         return self.venue_aliases.get(str(name).strip().lower(), name)

@@ -47,7 +47,11 @@ The application reads the generated database locally. Database files and downloa
 | NBA Player Search, Advanced Search, Stats Explorer, Grid Solver | Supported |
 | NBA Club Explorer, Past Games, Awards, Game Lab, grid library | Not implemented |
 | NBA draft, awards, teammates, coaches | Not implemented |
-| Daily grid, practice grid, crowd rarity | Not implemented for either sport |
+| MLB career history from the Lahman database | Supported |
+| MLB Player Search, Advanced Search, Stats Explorer, Grid Solver | Supported |
+| MLB single-game squares | Not possible from Lahman (see below) |
+| MLB Club Explorer, Past Games, Awards page, Game Lab, grid library | Not implemented |
+| Daily grid, practice grid, crowd rarity | Not implemented for any sport |
 
 Exact season coverage and row counts depend on the version of the upstream cached dataset used for the local build. The application displays live database counts in its **Database status** panel rather than relying on hard-coded numbers.
 
@@ -152,7 +156,7 @@ python -m pip install streamlit pandas numpy pyreadr
 Run the standard build from the repository root:
 
 ```bash
-python build_db.py
+python -m afl.build_db
 ```
 
 The build process:
@@ -170,12 +174,12 @@ The build process:
 
 Step 9 matters. A rebuild reassigns `player_id` values, so any layer that
 resolves names to ids has to be re-run afterwards or it points at the wrong
-people. `build_db.py` now does this itself, into the same database it just
+people. `afl/build_db.py` now does this itself, into the same database it just
 built. Use `--core-only` to skip it, and `--db` to build somewhere else:
 
 ```bash
-python build_db.py --db scratch.db      # everything lands in scratch.db
-python build_db.py --core-only          # base tables only
+python -m afl.build_db --db scratch.db      # everything lands in scratch.db
+python -m afl.build_db --core-only          # base tables only
 ```
 
 ### Database location
@@ -200,25 +204,25 @@ When both layouts are possible, `data_paths.py` resolves the active database con
 ### Refresh the source cache
 
 ```bash
-python build_db.py --refresh
+python -m afl.build_db --refresh
 ```
 
 ### Use a different database path
 
 ```bash
-python build_db.py --db my_afl.db
+python -m afl.build_db --db my_afl.db
 ```
 
 ### Skip match derivation
 
 ```bash
-python build_db.py --no-matches
+python -m afl.build_db --no-matches
 ```
 
 Match derivation can then be run separately:
 
 ```bash
-python derive_matches.py --db my_afl.db
+python -m afl.derive_matches --db my_afl.db
 ```
 
 ## Build the NBA database
@@ -227,10 +231,10 @@ The NBA build is a **private, local prototype**. Read the licensing note
 under [NBA.com via nba_api](#nbacom-via-nba_api) before using that source.
 
 ```bash
-python build_nba_db.py --source csv                      # from CSV exports
-python build_nba_db.py --source csv --seasons 2018-2023  # a subset
-python build_nba_db.py --source bbr --source-root C:/nbaData/data
-python build_nba_db.py --source nba_api --seasons 1946-2026
+python -m nba.build_nba_db --source csv                      # from CSV exports
+python -m nba.build_nba_db --source csv --seasons 2018-2023  # a subset
+python -m nba.build_nba_db --source bbr --source-root C:/nbaData/data
+python -m nba.build_nba_db --source nba_api --seasons 1946-2026
 python health.py --sport nba --strict
 ```
 
@@ -241,14 +245,14 @@ default because it is the one with no conditions attached.
 
 ### Build from the Basketball-Reference scrape
 
-`nba_source_bbr.py` reads the local scrape: `games.csv` and `players.csv`
+`nba/nba_source_bbr.py` reads the local scrape: `games.csv` and `players.csv`
 plus one JSON box score per game. Read the licensing note under
 [Basketball-Reference](#basketball-reference) first.
 
 ```bash
-python check_nba_scrape.py --verbose        # how far has the scrape got?
-python build_nba_db.py --source bbr --source-root C:/nbaData/data
-python build_nba_db.py --source bbr --complete-only   # skip unscraped games
+python -m nba.check_nba_scrape --verbose        # how far has the scrape got?
+python -m nba.build_nba_db --source bbr --source-root C:/nbaData/data
+python -m nba.build_nba_db --source bbr --complete-only   # skip unscraped games
 ```
 
 Set `NBA_SCRAPE_ROOT` and `--source-root` can be dropped. `data/nba/sample`
@@ -272,8 +276,8 @@ A failed build leaves the live database untouched, keeps `nba.db.building`
 for inspection, and writes the reason to `nba.db.build-report.json`.
 
 ```bash
-python build_nba_db.py --source csv --keep-backups 10   # deeper history
-python build_nba_db.py --source csv --in-place          # no temp, no backup
+python -m nba.build_nba_db --source csv --keep-backups 10   # deeper history
+python -m nba.build_nba_db --source csv --in-place          # no temp, no backup
 ```
 
 ### NBA data layout
@@ -306,8 +310,8 @@ copy of Basketball-Reference's playoff-series index and read at build time;
 nothing in the build touches the network.
 
 ```bash
-python load_nba_playoff_series.py --check   # parse and verify, write nothing
-python load_nba_playoff_series.py           # write the reference file
+python -m nba.load_nba_playoff_series --check   # parse and verify, write nothing
+python -m nba.load_nba_playoff_series           # write the reference file
 ```
 
 The loader checks its own output before writing: every series name must
@@ -331,7 +335,7 @@ under `data/`, which is not tracked.
 
 `nba_reference.json` is written by the build and read back by `sports.py` at
 import time, because `core.Schema` is a frozen dataclass constructed before
-any database is open. `nba_reference.py` carries checked-in fallbacks so a
+any database is open. `nba/nba_reference.py` carries checked-in fallbacks so a
 clean clone imports and runs before anything is built.
 
 **Restart Streamlit after a build that changes the team list or the measured
@@ -360,6 +364,75 @@ frozen dataclass.
   includes Seattle SuperSonics players; a Seattle SuperSonics square returns
   only players who appeared under that name.
 
+## Build the MLB database
+
+The MLB build reads the [Lahman baseball database](#lahman-baseball-database)
+CSV export. Put the extracted CSVs under `data/mlb/raw/` (or drop the
+`lahman_*_csv.zip` in there and leave it zipped), then:
+
+```bash
+python -m mlb.build_mlb_db                       # -> data/mlb/mlb.db
+python -m mlb.build_mlb_db --raw path/to/csv     # a different export
+python -m mlb.build_mlb_db --db /tmp/mlb.db      # a different output
+python health.py --sport mlb --strict
+```
+
+The build reads `People`, `Appearances`, `Batting`, `Pitching`, their
+`*Post` counterparts, `Teams`, `TeamsFranchises`, `SeriesPost`,
+`AwardsPlayers` and `HallOfFame`, and writes `data/mlb/mlb.db` plus the
+measured franchise list and stat eras in
+`data/mlb/reference/mlb_reference.json`. Restart Streamlit after a build
+that changes the franchise list: `sports.py` freezes it into a dataclass at
+import, so the query cache key does not invalidate it.
+
+### A row of `games` is a season, not a game
+
+Lahman's finest grain is a player's season with one team. It has no box
+scores, so an MLB row of `games` is a player-season-team carrying that
+season's totals, and the repository is deliberate about this rather than
+quiet:
+
+- `games` on the row is the appearance count the season is worth, so
+  `career_games` still sums to a real number of games played. It comes from
+  `Appearances.G_all`, not from the batting line, so a relief pitcher's 60
+  games are 60 games.
+- `constraints_mlb.py` does **not** offer the per-game squares -- "X+ of a
+  stat in one game", "two stats in the same game", per-game averages, or
+  teammates. A per-season total behind a per-game label would silently turn
+  "40 home runs in a game" into a routine season, and a missing square is
+  better than a wrong one. `tests/test_mlb_build.py` fails if one is added
+  back.
+- The Database status panel labels the count **Player-seasons**, not
+  Player-games.
+- `career_game_no` numbers a player's seasons, so "first career game for
+  club" means "debuted for this club" -- the same question at this grain.
+
+### Franchises and the postseason
+
+`club_hist` is the team's name in that season ("Brooklyn Dodgers") and
+`club_now` is the franchise's current name ("Los Angeles Dodgers"), which is
+the same convention the AFL and NBA builds use. The mapping is measured from
+Lahman's `franchID` rather than hand-maintained, and franchise lineage is
+one-directional: a Dodgers square includes Brooklyn, a Brooklyn square does
+not include Los Angeles.
+
+`BattingPost`, `PitchingPost` and `SeriesPost` give each postseason row a
+real `round` (`WS`, `ALCS`, ...) and a real `result`, so "won a final" means
+won a postseason series and "Won the World Series" is a distinct square.
+Players whose entire career fell in seasons with no postseason carry NULL
+rather than 0 for `postseason_played`, and the obscurity model drops the
+term for them instead of scoring them as having failed to reach an October
+that did not exist.
+
+### MLB statistic eras
+
+Every stat in the current export is recorded from 1871, which the build
+measures rather than assumes. That is not the same as full coverage:
+thousands of 19th-century batting lines leave RBI, stolen bases and
+strikeouts NULL even though the columns exist. An era cutoff cannot express
+"recorded, patchily", so the caveat is carried in the sport's empty-square
+hint instead.
+
 ## Run the application
 
 ```bash
@@ -380,13 +453,13 @@ The base database remains usable without optional datasets. Builders and filters
 
 Draftguru data supports draft history, recruitment source, father-son, academy, trade, free-agency and related criteria.
 
-`build_db.py` runs this layer automatically when a Draftguru scrape is present
+`afl/build_db.py` runs this layer automatically when a Draftguru scrape is present
 under `data/afl/raw/draftguru`. To re-run it on its own:
 
 ```bash
-python load_draftguru.py
-python link_draft.py
-python link_people.py
+python -m afl.load_draftguru
+python -m afl.link_draft
+python -m afl.link_people
 ```
 
 Run the three in that order: the loader writes `dg_people`, `draft`, `awards`
@@ -413,8 +486,8 @@ Only rows linked to a database player with a trusted status are exposed to searc
 Captaincy data is imported separately:
 
 ```bash
-python load_captains.py
-python load_captains.py --report
+python -m afl.load_captains
+python -m afl.load_captains --report
 ```
 
 Captain filters become available only after linked captaincy rows exist.
@@ -424,19 +497,19 @@ Captain filters become available only after linked captaincy rows exist.
 The Rising Star layer supports locally saved source pages and a permission-gated live fetch path:
 
 ```bash
-python fetch_footywire_rising_star.py --html-dir SAVED_PAGES --load-db
+python -m afl.fetch_footywire_rising_star --html-dir SAVED_PAGES --load-db
 ```
 
 After written permission for live access:
 
 ```bash
-python fetch_footywire_rising_star.py --permission-confirmed --load-db
+python -m afl.fetch_footywire_rising_star --permission-confirmed --load-db
 ```
 
 The importer can also be run separately:
 
 ```bash
-python load_rising_star.py
+python -m afl.load_rising_star
 ```
 
 ### Broad family relationships
@@ -445,8 +518,8 @@ Wikipedia's broad football-family list can be scraped and conservatively
 linked for sibling, parent-child and extended-family search:
 
 ```bash
-python scrape_wikipedia_families.py --report
-python load_family_relationships.py --report --details
+python -m afl.scrape_wikipedia_families --report
+python -m afl.load_family_relationships --report --details
 ```
 
 Advanced Search examples:
@@ -497,8 +570,8 @@ it, so it is safe to skip.
 Family-draft data is loaded and linked separately:
 
 ```bash
-python load_family_draft.py
-python load_family_draft.py --report --details
+python -m afl.load_family_draft
+python -m afl.load_family_draft --report --details
 ```
 
 Relationship rows outside the senior-game dataset remain explicitly marked as out of scope rather than being forced onto an incorrect player.
@@ -561,7 +634,7 @@ is the `stat_coverage` table, measured from the built database by
 
 ### Basketball-Reference
 
-`nba_source_bbr.py` reads a local scrape of Basketball-Reference: two index
+`nba/nba_source_bbr.py` reads a local scrape of Basketball-Reference: two index
 CSVs and one JSON box score per game.
 
 **This adapter is for a private, local prototype only.** Sports Reference
@@ -585,7 +658,7 @@ franchise comes from `nba_reference.club_lineage()`.
 
 ### NBA.com via nba_api
 
-`nba_source_api.py` reads NBA.com's statistics endpoints through the
+`nba/nba_source_api.py` reads NBA.com's statistics endpoints through the
 community `nba_api` package.
 
 **This adapter is for a private, local prototype only.** NBA.com's terms
@@ -598,7 +671,7 @@ backing a hosted application.
 
 `nba_api` is a community package and the endpoints it uses are undocumented
 and change without notice, so this adapter will break without warning. That
-is why `build_nba_db.py` is written against `nba_source.NbaSource` rather
+is why `nba/build_nba_db.py` is written against `nba_source.NbaSource` rather
 than against a website: when the endpoints move, or when a licensed source
 becomes available, only the adapter changes.
 
@@ -615,7 +688,7 @@ This project does **not** scrape AFL Tables directly. Its automated-client restr
 
 ### fitzRoy and fitzRoy_data
 
-`build_db.py` downloads the community-maintained cached AFL Tables player-stat dataset published by the fitzRoy project. A single cached dataset replaces a large number of individual page requests.
+`afl/build_db.py` downloads the community-maintained cached AFL Tables player-stat dataset published by the fitzRoy project. A single cached dataset replaces a large number of individual page requests.
 
 ### Draftguru
 
@@ -625,6 +698,15 @@ Used by optional local importers for draft, recruitment and award history.
 
 Used for Rising Star nomination history. Live fetching is permission-gated. Manually saved pages may be parsed locally for personal use.
 
+### Lahman baseball database
+
+The MLB build reads Sean Lahman's baseball database, the long-running
+community-maintained CSV export of MLB career, season and postseason
+records. It is published for research use under a Creative Commons
+Attribution-ShareAlike licence; the CSVs are not redistributed here. Put
+your own copy under `data/mlb/raw/` and see
+[`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md) for the terms.
+
 ### Gridley
 
 Gridley inspired the original grid-solving workflow. Sports Data Lab is an unaffiliated research and puzzle-support tool. It does not reproduce Gridley's live crowd selection percentages.
@@ -633,6 +715,36 @@ See [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md) for source credits, terms and r
 
 ## Repository layout
 
+Each sport owns a package. Anything that is true of one sport and not the
+others -- its constraint set, its build, its loaders and scrapers, its
+sport-only pages -- lives in `afl/`, `nba/` or `mlb/`. The repository root
+holds only the multi-sport framework: the registry, the query engine, the
+pages that serve every sport, and the path policy.
+
+```
+app.py  core.py  sports.py  explore.py  ...   the sport-agnostic framework
+afl/    constraints, build, loaders, scrapers, Club Explorer, Game Lab
+nba/    constraints, build, source adapters, Basketball-Reference staging
+mlb/    constraints, the Lahman build, franchise reference
+data/   afl/  nba/  mlb/  -- databases, raw sources, caches, references
+tests/  utils/  docs/  sql/
+```
+
+The sport packages are imported, not path-executed, so their scripts run as
+modules from the repository root:
+
+```bash
+python -m afl.build_db
+python -m nba.build_nba_db --source csv
+python -m mlb.build_mlb_db
+```
+
+Two rules keep the split honest, and both are enforced by
+`tests/test_sport_capabilities.py`: no module outside `sports.py`,
+`data_paths.py` and `theme.py` may branch on a sport's key, and every
+sport-only page is reached through a capability field on the `Sport`
+object rather than an `if`.
+
 Selected files:
 
 | File | Purpose |
@@ -640,29 +752,32 @@ Selected files:
 | `app.py` | Streamlit application, navigation and Grid Solver |
 | `core.py` | Sport-agnostic schema, query engine and result ranking |
 | `sports.py` | Sport registry, schemas and vocabulary |
-| `constraints.py` | AFL-specific constraint builders |
+| `afl/constraints.py` | AFL-specific constraint builders |
 | `advanced_search.py` | URL-addressable advanced player search |
 | `query_filters.py` | Query parser and SQL compiler |
 | `explore.py` | Home, player search, leaderboards and discovery pages |
-| `game_lab.py` | Player and criterion exploration |
+| `afl/game_lab.py` | Player and criterion exploration |
 | `health.py` | Database health and integrity page |
 | `theme.py` | Dark, Light and Custom themes |
-| `build_db.py` | Base AFL SQLite database builder |
+| `afl/build_db.py` | Base AFL SQLite database builder |
 | `obscurity.py` | Sport-agnostic, term-driven obscurity model |
-| `constraints_nba.py` | NBA-specific constraint builders |
-| `build_nba_db.py` | NBA SQLite database builder |
-| `nba_source.py` | NBA source-adapter contract and the CSV adapter |
-| `nba_source_api.py` | NBA.com adapter (private local prototype only) |
-| `nba_reference.py` | NBA team list, franchise lineage and measured eras |
-| `derive_matches.py` | Canonical match table and stable match IDs |
+| `nba/constraints_nba.py` | NBA-specific constraint builders |
+| `nba/build_nba_db.py` | NBA SQLite database builder |
+| `nba/nba_source.py` | NBA source-adapter contract and the CSV adapter |
+| `nba/nba_source_api.py` | NBA.com adapter (private local prototype only) |
+| `nba/nba_reference.py` | NBA team list, franchise lineage and measured eras |
+| `mlb/constraints_mlb.py` | MLB-specific constraint builders |
+| `mlb/build_mlb_db.py` | MLB SQLite builder, from the Lahman CSV export |
+| `mlb/mlb_reference.py` | MLB franchise list, lineage and measured eras |
+| `afl/derive_matches.py` | Canonical match table and stable match IDs |
 | `repair_database.py` | Non-download database repair workflow |
 | `data_paths.py` | Single source of truth for every database and data path |
-| `awards.py` | Award and recruitment constraints |
-| `captains.py` | Club captaincy constraints |
-| `rising_star.py` | Rising Star nomination constraints |
-| `historic_grids.py` | Captured-grid validation and practice support |
-| `parse_criteria.py` | Grid criterion parser |
-| `club_explorer.py` | Current-club metadata and records page |
+| `afl/awards.py` | Award and recruitment constraints |
+| `afl/captains.py` | Club captaincy constraints |
+| `afl/rising_star.py` | Rising Star nomination constraints |
+| `afl/historic_grids.py` | Captured-grid validation and practice support |
+| `afl/parse_criteria.py` | Grid criterion parser |
+| `afl/club_explorer.py` | Current-club metadata and records page |
 | `utils/fetch_club_sources.py` | Cache current-club source pages |
 | `utils/load_club_sources.py` | Parse and load club metadata and records |
 | `utils/load_club_all_games.py` | Reconcile per-club match sources (no UI yet) |

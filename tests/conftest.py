@@ -46,9 +46,9 @@ def nba_db(tmp_path_factory):
     particular so a five-player fixture never replaces the real reference
     file that sports.py reads at import.
     """
-    import build_nba_db
+    from nba import build_nba_db
     import nba_fixture
-    import nba_source
+    from nba import nba_source
 
     root = tmp_path_factory.mktemp("nba")
     nba_fixture.write(root / "csv")
@@ -73,6 +73,6 @@ def con():
 
     connection = test_integration.build(keep=True)
     if connection is None:
-        pytest.fail("build_db.py failed -- see captured output")
+        pytest.fail("afl/build_db.py failed -- see captured output")
     yield connection
     connection.close()

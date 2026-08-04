@@ -13,9 +13,9 @@ Ambiguous and unmatched names are retained for audit and excluded from all
 constraints.
 
 Examples:
-    python load_family_draft.py --inspect
-    python load_family_draft.py --db gridley.db
-    python load_family_draft.py --db gridley.db --report --details
+    python -m afl.load_family_draft --inspect
+    python -m afl.load_family_draft --db gridley.db
+    python -m afl.load_family_draft --db gridley.db --report --details
 """
 
 from __future__ import annotations
@@ -612,7 +612,7 @@ def _default_sources() -> list[Path]:
     paths = family_draft_sources("afl")
     if not paths:
         raise FileNotFoundError(
-            "no family-draft CSV found; run scrape_wikipedia_family_draft.py"
+            "no family-draft CSV found; run afl/scrape_wikipedia_family_draft.py"
         )
     return paths
 

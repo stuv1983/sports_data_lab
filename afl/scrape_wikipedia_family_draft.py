@@ -19,10 +19,10 @@ Dependencies:
     pip install requests beautifulsoup4
 
 Examples:
-    python scrape_wikipedia_family_draft.py
-    python scrape_wikipedia_family_draft.py --refresh
-    python scrape_wikipedia_family_draft.py --offline
-    python scrape_wikipedia_family_draft.py --output father_son.csv
+    python -m afl.scrape_wikipedia_family_draft
+    python -m afl.scrape_wikipedia_family_draft --refresh
+    python -m afl.scrape_wikipedia_family_draft --offline
+    python -m afl.scrape_wikipedia_family_draft --output father_son.csv
 """
 
 from __future__ import annotations

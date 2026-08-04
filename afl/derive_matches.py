@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-derive_matches.py -- Build the canonical `matches` table from `games`.
+afl/derive_matches.py -- Build the canonical `matches` table from `games`.
 
 Every player-game row already carries season, round, date, venue, the club
 played for, the opponent, and both scores. Collapsing those rows gives the
@@ -22,12 +22,12 @@ anything else holding a match_id.
 
 Home and away
 -------------
-build_db.py persists `is_home`. If you are running against a database built
+afl/build_db.py persists `is_home`. If you are running against a database built
 before that change the column will be missing; this script still works, but
 it cannot orient a match. In that case the two clubs are written to
 home_team/away_team in alphabetical order and `home_away_known` is set to 0,
 so nothing downstream mistakes a guess for a fact. Rebuild with the current
-build_db.py to get real orientation.
+afl/build_db.py to get real orientation.
 
 Not derivable
 -------------
@@ -36,10 +36,10 @@ columns are created and left NULL so a later import can fill them in place
 without a schema migration.
 
 Usage:
-    python derive_matches.py                     # ./gridley.db
-    python derive_matches.py --db my.db
-    python derive_matches.py --report            # show integrity problems
-    python derive_matches.py --dry-run           # derive and check, write nothing
+    python -m afl.derive_matches                     # ./gridley.db
+    python -m afl.derive_matches --db my.db
+    python -m afl.derive_matches --report            # show integrity problems
+    python -m afl.derive_matches --dry-run           # derive and check, write nothing
 """
 
 import argparse
@@ -77,7 +77,7 @@ def load_games(con):
     import pandas as pd
 
     if not _table_exists(con, "games"):
-        sys.exit("No `games` table. Run build_db.py first.")
+        sys.exit("No `games` table. Run afl/build_db.py first.")
 
     oriented = _has_column(con, "games", "is_home")
     cols = ["rowid AS rid", "season", "round", "date", "venue",
@@ -281,7 +281,7 @@ def write(con, m, rid_map):
 
 
 def run(db_path, report=False, dry_run=False):
-    """Derive and write. Importable so build_db.py can finish the job itself."""
+    """Derive and write. Importable so afl/build_db.py can finish the job itself."""
     try:
         import pandas  # noqa: F401
     except ImportError:

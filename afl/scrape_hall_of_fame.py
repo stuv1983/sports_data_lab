@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Fetch and parse the Australian Football Hall of Fame from Wikipedia.
 
-    python scrape_hall_of_fame.py            # fetch (cached), write CSV
-    python scrape_hall_of_fame.py --refresh  # re-fetch even if cached
-    python scrape_hall_of_fame.py --report   # parse counts, write nothing
+    python -m afl.scrape_hall_of_fame            # fetch (cached), write CSV
+    python -m afl.scrape_hall_of_fame --refresh  # re-fetch even if cached
+    python -m afl.scrape_hall_of_fame --report   # parse counts, write nothing
 
 Writes ``data/afl/raw/wikipedia_hall_of_fame.csv``; load it with
-``load_hall_of_fame.py``.
+``afl/load_hall_of_fame.py``.
 
 Two requests, both to the MediaWiki API rather than to article HTML, so the
 output is a documented interface rather than whatever the skin renders

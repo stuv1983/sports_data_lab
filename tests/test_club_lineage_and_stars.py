@@ -209,7 +209,7 @@ def test_live_brisbane_lions_includes_bears_and_fitzroy():
     con = live()
     if con is None:
         pytest.skip("no built database")
-    import constraints as C
+    from afl import constraints as C
 
     lions = C.count(con, [C.played_for("Brisbane Lions")])
     bears = C.count(con, [C.played_for("Brisbane Bears")])
@@ -228,7 +228,7 @@ def test_live_already_merged_clubs_are_unchanged():
     con = live()
     if con is None:
         pytest.skip("no built database")
-    import constraints as C
+    from afl import constraints as C
 
     for club, predecessor in (("Sydney", "South Melbourne"),
                               ("Western Bulldogs", "Footscray"),
@@ -245,7 +245,7 @@ def test_live_university_is_not_folded_into_anyone():
     con = live()
     if con is None:
         pytest.skip("no built database")
-    import constraints as C
+    from afl import constraints as C
     uni = C.count(con, [C.played_for("University")])
     assert 0 < uni < 200
     for club in sports.AFL_CLUBS:
@@ -261,7 +261,7 @@ def test_live_square_stars_spread_across_the_range():
     con = live()
     if con is None:
         pytest.skip("no built database")
-    import parse_criteria as P
+    from afl import parse_criteria as P
 
     schema = sports.AFL_SCHEMA
     cs = [P.parse("ST KILDA")[0], P.parse("150+ GAMES PLAYED")[0]]

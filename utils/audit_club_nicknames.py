@@ -200,14 +200,14 @@ def audit_game_identities(con, club_rows):
 # ------------------------------------------------------- 4. codebase aliases
 
 def audit_code_aliases(con, club_rows):
-    """Do the alias literals in parse_criteria.py all resolve?
+    """Do the alias literals in afl/parse_criteria.py all resolve?
 
     Imported rather than duplicated, so this stays true as the dict changes.
     """
     rule("4. parse_criteria.CLUB_ALIASES resolution")
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from parse_criteria import CLUB_ALIASES
+        from afl.parse_criteria import CLUB_ALIASES
     except Exception as exc:
         print(f"  could not import parse_criteria ({exc}).")
         print("  Run from the repo root, or skip -- this check is advisory.")

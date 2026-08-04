@@ -1,7 +1,7 @@
 """Optional broad AFL/VFL family relationship constraints.
 
-``scrape_wikipedia_families.py`` extracts listed families and explicit
-relationships. ``load_family_relationships.py`` links each source member to the
+``afl/scrape_wikipedia_families.py`` extracts listed families and explicit
+relationships. ``afl/load_family_relationships.py`` links each source member to the
 local AFL ``players`` table. Only links resolved to exactly one database player
 are visible here; ambiguous/unmatched rows remain available for audit.
 

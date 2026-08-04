@@ -26,9 +26,9 @@ import sqlite3
 
 import pytest
 
-import constraints as C
+from afl import constraints as C
 import core
-import parse_criteria as P
+from afl import parse_criteria as P
 import sports
 
 

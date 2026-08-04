@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-load_nba_playoff_series.py -- Normalise the saved playoff-series extract
+nba/load_nba_playoff_series.py -- Normalise the saved playoff-series extract
 into data/nba/reference/playoff_series.csv.
 
-    python load_nba_playoff_series.py
-    python load_nba_playoff_series.py --check          # verify, write nothing
+    python -m nba.load_nba_playoff_series
+    python -m nba.load_nba_playoff_series --check          # verify, write nothing
 
 WHY THIS IS A REFERENCE FILE AND NOT A SOURCE ADAPTER
 ------------------------------------------------------
@@ -13,7 +13,7 @@ tool to hang a nightly import on: its terms do not clear a comprehensive
 database for redistribution, and a recurring scraper would be a standing
 imposition on a site that owes us nothing. So this runs once over HTML that
 was already saved, writes a small checked-in CSV, and never touches the
-network. `build_nba_db.py` reads the CSV. Nothing in the build ever fetches.
+network. `nba/build_nba_db.py` reads the CSV. Nothing in the build ever fetches.
 
 The output is bracket structure -- which teams met, in which round, and who
 won -- which the box-score sources do not carry and which four criteria
@@ -268,7 +268,7 @@ def write(rows, out_path, extract_path, verbose=True):
         Path(extract_path).read_bytes()).hexdigest()
     meta = out_path.with_suffix(".meta.json")
     meta.write_text(json.dumps({
-        "generated_by": "load_nba_playoff_series.py",
+        "generated_by": "nba/load_nba_playoff_series.py",
         "extract": str(extract_path),
         "extract_sha256": digest,
         "source": "https://www.basketball-reference.com/playoffs/series.html",

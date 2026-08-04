@@ -19,8 +19,8 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-import load_captains as captains
-import scrape_afl_captains as scraper
+from afl import load_captains as captains
+from afl import scrape_afl_captains as scraper
 
 
 def make_db() -> sqlite3.Connection:

@@ -1,11 +1,11 @@
 """
-awards.py -- Constraints over the Draftguru award tables.
+afl/awards.py -- Constraints over the Draftguru award tables.
 
-Same contract as constraints.py: every function returns
+Same contract as afl/constraints.py: every function returns
 (sql_selecting_player_id, params).
 
 Everything here goes through person_links and only trusts rows that
-link_people.py resolved. An award row whose person is `ambiguous` or
+afl/link_people.py resolved. An award row whose person is `ambiguous` or
 `unmatched` is invisible to the solver, exactly as ambiguous draft rows
 are. That is the difference between "this player was All-Australian" and
 "someone with this name was".
@@ -234,7 +234,7 @@ def awards_available(con):
 # --------------------------------------------------- draft signing squares
 # Draftguru's `Signing` column records how a player arrived, as
 # "Father-Son ( Anthony Daniher )", "Academy (GWS)", "Zone (Gold Coast)",
-# "FA (Restricted)", "International" and so on. load_draftguru.py splits
+# "FA (Restricted)", "International" and so on. afl/load_draftguru.py splits
 # that into signing_kind ("Father-Son") and signing_detail ("Anthony
 # Daniher"), so these match the kind exactly rather than by substring.
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-fetch_grid.py -- Pull a day's grid from gridleygame.com.
+afl/fetch_grid.py -- Pull a day's grid from gridleygame.com.
 
-    python fetch_grid.py 2026-07-27
-    python fetch_grid.py today
-    python fetch_grid.py 2026-07-27 --solve      # fetch, parse, solve all 9
-    python fetch_grid.py 2026-07-27 --discover   # dump what the site returns
+    python -m afl.fetch_grid 2026-07-27
+    python -m afl.fetch_grid today
+    python -m afl.fetch_grid 2026-07-27 --solve      # fetch, parse, solve all 9
+    python -m afl.fetch_grid 2026-07-27 --discover   # dump what the site returns
 
 IMPORTANT: gridleygame.com is a Next.js app that renders the grid in the
 browser, so the criteria are not in the plain HTML. This script tries the
@@ -219,7 +219,7 @@ def main():
     print(f"\nRows:    {rows}")
     print(f"Columns: {cols}")
 
-    import parse_criteria as P
+    from . import parse_criteria as P
     prows, pcols, problems = P.parse_grid(rows, cols)
     if problems:
         print("\nCouldn't interpret:")
@@ -228,7 +228,7 @@ def main():
 
     if a.solve:
         import sqlite3
-        import constraints as C
+        from . import constraints as C
         con = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
         if hasattr(C, "ensure_captain_table"):
             C.ensure_captain_table(con)

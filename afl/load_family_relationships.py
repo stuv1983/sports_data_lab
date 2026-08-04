@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Import and conservatively link Wikipedia family members to AFL players.
 
-Input files are produced by ``scrape_wikipedia_families.py``.  Every member is
+Input files are produced by ``afl/scrape_wikipedia_families.py``.  Every member is
 linked independently against the local ``players``/``games`` tables.  Exact
 normalised names are trusted only when club evidence does not contradict the
 candidate; same-name players require one clear club match.  Ambiguous and
@@ -15,9 +15,9 @@ Tables written:
   ``family_members`` when queried.
 
 Examples:
-    python load_family_relationships.py --inspect
-    python load_family_relationships.py --db gridley.db
-    python load_family_relationships.py --db gridley.db --report --details
+    python -m afl.load_family_relationships --inspect
+    python -m afl.load_family_relationships --db gridley.db
+    python -m afl.load_family_relationships --db gridley.db --report --details
 """
 
 from __future__ import annotations
@@ -630,13 +630,13 @@ def main(argv: list[str] | None = None) -> int:
     relationship_paths = args.relationships or family_relationship_sources("afl")
     if not member_paths:
         print(
-            "error: family-member CSV not found; run scrape_wikipedia_families.py",
+            "error: family-member CSV not found; run afl/scrape_wikipedia_families.py",
             file=sys.stderr,
         )
         return 1
     if not relationship_paths:
         print(
-            "error: family-relationship CSV not found; run scrape_wikipedia_families.py",
+            "error: family-relationship CSV not found; run afl/scrape_wikipedia_families.py",
             file=sys.stderr,
         )
         return 1

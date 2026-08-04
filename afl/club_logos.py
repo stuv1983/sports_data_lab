@@ -168,7 +168,7 @@ def clubs_from_db(con) -> dict[str, dict]:
         return {}
     nicknames = {}
     if "club_wikipedia_fields" in have:
-        import club_fields as CF
+        from . import club_fields as CF
         for club_id, in con.execute("SELECT club_id FROM clubs"):
             fields = dict(con.execute(
                 "SELECT field_key, field_value FROM club_wikipedia_fields "

@@ -17,8 +17,8 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 from bs4 import BeautifulSoup
 
-import parse_criteria as P
-import scrape_wikipedia_families as S
+from afl import parse_criteria as P
+from afl import scrape_wikipedia_families as S
 
 
 def _li(html: str):

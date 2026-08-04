@@ -28,7 +28,7 @@ import sqlite3
 
 import pytest
 
-import club_history as H
+from afl import club_history as H
 
 
 COLUMNS = [

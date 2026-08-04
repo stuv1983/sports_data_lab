@@ -1,7 +1,7 @@
 """AFL club-captain constraints and availability helpers.
 
 The table is optional because the core AFL source does not contain reliable
-club captaincy.  ``load_captains.py`` creates and links the table from a
+club captaincy.  ``afl/load_captains.py`` creates and links the table from a
 separate scrape.  Only rows resolved to exactly one database player are
 visible to search, the grid solver or Game Lab.
 

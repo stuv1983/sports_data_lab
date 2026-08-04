@@ -466,13 +466,13 @@ if PAGE != "Grid Solver":
     elif PAGE == "Player Search":
         explore.player_page(SPORT, con, player_picker)
     elif PAGE == "Club Explorer":
-        import club_explorer
+        from afl import club_explorer
         club_explorer.club_explorer_page(SPORT, con)
     elif PAGE == "Past Games":
-        import past_games
+        from afl import past_games
         past_games.past_games_page(SPORT, con)
     elif PAGE == "Awards":
-        import awards_page
+        from afl import awards_page
         awards_page.awards_page(SPORT, con)
     elif PAGE == "Advanced Search":
         import advanced_search
@@ -519,7 +519,7 @@ st.sidebar.markdown("---")
 @st.cache_data(show_spinner=False)
 def grid_library(sport_key, db, revision):
     """Every captured grid, analysed once at startup."""
-    import historic_grids as HG
+    from afl import historic_grids as HG
 
     sport = sports.get(sport_key)
     return HG.analyse_all(get_con(db, revision), sport)
@@ -539,7 +539,7 @@ LIB_BY_NUMBER = {r.grid.number: r for r in LIBRARY}
 
 
 def show_report(picked, mode):
-    import historic_grids as HG
+    from afl import historic_grids as HG
 
     """Sidebar verdict for an analysed grid, and load it onto the board.
 
@@ -625,12 +625,12 @@ if source == "Today's grid":
             import datetime
             date = d.strip() or datetime.date.today().isoformat()
             try:
-                import fetch_grid as FG
-                import parse_criteria as PC
+                from afl import fetch_grid as FG
+                from afl import parse_criteria as PC
                 grid, attempts = FG.fetch(date)
                 if not grid:
                     st.error("Grid data not found. Run "
-                             f"`python fetch_grid.py {date} --discover`.")
+                             f"`python -m afl.fetch_grid {date} --discover`.")
                     st.json({w: h for w, h in attempts})
                 else:
                     r = [FG.to_label(x) for x in grid["rows"]]
@@ -646,7 +646,7 @@ if source == "Today's grid":
             st.session_state.pop("loaded", None)
 
 elif source in ("Past grid", "Random supported grid") and LIBRARY:
-    import historic_grids as HG
+    from afl import historic_grids as HG
 
     ready = HG.supported_grids(LIBRARY)
 
@@ -687,19 +687,19 @@ elif source in ("Past grid", "Random supported grid"):
     st.sidebar.info(f"No captured grid library exists for {SPORT.label} yet.")
 
 elif source == "Paste criteria" and not SPORT.criterion_parser:
-    # parse_criteria.py compiles against the AFL constraint set, so offering
+    # afl/parse_criteria.py compiles against the AFL constraint set, so offering
     # it for another sport would answer AFL questions from an NBA database.
     st.sidebar.info(f"Criterion parsing is not available for {SPORT.label}.")
 
 elif source == "Paste criteria":
-    import historic_grids as HG
+    from afl import historic_grids as HG
 
     # The failure this exists to prevent: hand-picking an axis builder that
     # is one word away from the question actually asked. "50+ GAMES TWO
     # DIFF CLUBS" and "50+ GOALS TWO DIFF CLUBS" are different squares with
     # different answers, and choosing between them from a dropdown is a
     # guess made once and never re-checked. Typing Gridley's own wording
-    # hands that decision to parse_criteria.py, which reads the words.
+    # hands that decision to afl/parse_criteria.py, which reads the words.
     with st.sidebar.expander("Type the six criteria", expanded=True):
         st.caption(
             "Copy each axis exactly as the board words it — "

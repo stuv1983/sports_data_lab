@@ -38,6 +38,21 @@ def default_db(sport_key: str) -> str:
     return sport_db(sport_key)
 
 
+def staging_db(sport_key: str, name: str) -> Path:
+    """A scratch database for an import that is not the app's database.
+
+    The Basketball-Reference ingestion writes leaderboard and award rows
+    that no page reads yet, and it wrote them straight into
+    ``data/nba/nba.db`` -- the path ``sport_db("nba")`` resolves. The
+    result was a file with a `players` table of the wrong shape, so
+    ``Sport.exists()`` said yes and every query then failed on a missing
+    column. Staging output belongs beside the real database, never in it.
+    """
+    base = ROOT / "data" / sport_key.strip().lower() / "staging"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / name
+
+
 def raw_dir(sport_key: str) -> Path:
     return ROOT / "data" / sport_key.strip().lower() / "raw"
 
@@ -45,7 +60,7 @@ def raw_dir(sport_key: str) -> Path:
 def cache_dir(sport_key: str, name: str | None = None) -> Path:
     """Scratch space for archived source pages.
 
-    ``scrape_afl_captains.py`` stores fetched Wikipedia pages here so a rerun
+    ``afl/scrape_afl_captains.py`` stores fetched Wikipedia pages here so a rerun
     does not re-request them.  A named subfolder keeps one scraper's pages
     separate from another's::
 
@@ -64,7 +79,7 @@ def nba_scrape_root() -> Path:
     is where a symlink or a copied export belongs.
 
     ``nba_source_bbr.BbrNbaSource`` resolves through here, and
-    ``build_nba_db.py --source-root`` overrides it for one run.
+    ``nba/build_nba_db.py --source-root`` overrides it for one run.
     """
     import os
     configured = os.environ.get("NBA_SCRAPE_ROOT", "").strip()
@@ -79,7 +94,7 @@ def reference_dir(sport_key: str) -> Path:
     Distinct from raw/ and cache/: these files are *outputs* of a build that
     later become *inputs* to importing the app. nba_reference.json is the
     working example -- the NBA team list and measured stat eras are
-    discovered by build_nba_db.py and then read back by sports.py at import
+    discovered by nba/build_nba_db.py and then read back by sports.py at import
     time, because core.Schema is a frozen dataclass built before any
     database is open.
     """

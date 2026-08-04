@@ -15,8 +15,11 @@ from pathlib import Path
 BASE_DIR = Path("C:/sports_data_lab")
 DATA_DIR = BASE_DIR / "data" / "nba"
 SAMPLE_DIR = DATA_DIR / "sample"
-DB_PATH = DATA_DIR / "nba.db"
-SCHEMA_PATH = BASE_DIR / "nba_bbr_reference_schema.sql"
+import data_paths
+
+#: Staging output, never data/nba/nba.db -- see data_paths.staging_db().
+DB_PATH = data_paths.staging_db("nba", "nba_bbr.db")
+SCHEMA_PATH = Path(__file__).resolve().parent / "nba_bbr_reference_schema.sql"
 
 
 def get_db_connection() -> sqlite3.Connection:

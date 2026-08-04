@@ -2,7 +2,10 @@ import sqlite3
 import csv
 import os
 
-DB_PATH = "data/nba/nba.db"
+import data_paths
+
+#: Staging output, never data/nba/nba.db -- see data_paths.staging_db().
+DB_PATH = str(data_paths.staging_db("nba", "nba_bbr.db"))
 UNRESOLVED_CSV = "unresolved_nba_links.csv"
 
 def link_players():

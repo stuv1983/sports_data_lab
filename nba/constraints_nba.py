@@ -1,9 +1,9 @@
 """
-constraints_nba.py -- NBA square descriptions, compiled to SQL.
+nba/constraints_nba.py -- NBA square descriptions, compiled to SQL.
 
 Every constraint compiles to a fragment selecting DISTINCT player_id.
 Intersecting two of them solves one square of the grid. Same contract as
-constraints.py; the machinery is shared and lives in core.py.
+afl/constraints.py; the machinery is shared and lives in core.py.
 
 Most of this file is re-exports. That is the point of core.Generic: a
 constraint that differs between the AFL and the NBA only by column name and

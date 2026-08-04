@@ -3,7 +3,7 @@
 
 Obscurity is derived entirely from columns the players table already holds
 (career games, span and whatever else the sport's model names), so a change
-to the formula does not need the multi-minute rebuild that build_db.py
+to the formula does not need the multi-minute rebuild that afl/build_db.py
 performs from the raw source. This reads the table, calls the one
 authoritative scorer, and writes the column back.
 

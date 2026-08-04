@@ -22,7 +22,7 @@ Used by tests/test_build_nba_db.py and tests/test_constraints_nba.py.
 import csv
 from pathlib import Path
 
-import nba_source
+from nba import nba_source
 
 # franchise_id -> (team_id, name, is_current)
 TEAMS = [

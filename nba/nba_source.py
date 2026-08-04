@@ -1,7 +1,7 @@
 """
-nba_source.py -- The contract every NBA data source has to satisfy.
+nba/nba_source.py -- The contract every NBA data source has to satisfy.
 
-build_nba_db.py is written against this protocol and never against a
+nba/build_nba_db.py is written against this protocol and never against a
 website. That is the point: NBA.com's stats endpoints are undocumented and
 change without notice, and its terms do not clear a comprehensive database
 for redistribution. A build tied directly to one provider is a build that
@@ -15,9 +15,9 @@ Three pieces:
   * `validate`, which rejects a frame missing a column rather than filling
     it in;
   * `CsvNbaSource`, the canonical adapter. Every test uses it, and it is
-    the default for build_nba_db.py.
+    the default for nba/build_nba_db.py.
 
-`nba_source_api.py` adds `NbaApiSource` for NBA.com. Read its docstring
+`nba/nba_source_api.py` adds `NbaApiSource` for NBA.com. Read its docstring
 before using it -- it carries licensing conditions this module does not.
 
 A NOTE ON ZEROS
@@ -91,7 +91,7 @@ class Fetch:
 
 
 class NbaSource(Protocol):
-    """What build_nba_db.py requires of a source. Nothing more."""
+    """What nba/build_nba_db.py requires of a source. Nothing more."""
     key: str
 
     def seasons(self) -> list: ...
@@ -216,7 +216,7 @@ class CsvNbaSource:
     Reads normalised CSVs from disk. The canonical adapter.
 
     This is what the build and every test are written against, and the
-    default for `build_nba_db.py --source csv`. It has no network access, no
+    default for `nba/build_nba_db.py --source csv`. It has no network access, no
     licensing conditions and no undocumented endpoints, so a build from it
     is reproducible and a failure in it is a bug here rather than a website
     changing shape.
@@ -300,10 +300,10 @@ def get_source(name, **kwargs):
     if name == "csv":
         return CsvNbaSource(**kwargs)
     if name in ("nba_api", "nba-api", "nbaapi"):
-        import nba_source_api
+        from . import nba_source_api
         return nba_source_api.NbaApiSource(**kwargs)
     if name in ("bbr", "basketball_reference", "basketball-reference"):
-        import nba_source_bbr
+        from . import nba_source_bbr
         return nba_source_bbr.BbrNbaSource(**kwargs)
     raise SourceError(
         f"unknown source {name!r}; expected csv, bbr or nba_api")

@@ -3,9 +3,9 @@
 The supported pipeline is the cached-export/person-link pipeline:
 
 ```powershell
-python load_draftguru.py --root data\draftguru
-python link_draft.py
-python link_people.py
+python -m afl.load_draftguru --root data\draftguru
+python -m afl.link_draft
+python -m afl.link_people
 ```
 
 `fetch_draft.py` is obsolete and must be deleted. It writes a small legacy

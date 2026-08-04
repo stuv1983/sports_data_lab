@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-load_draftguru.py -- Load a scraped Draftguru CSV tree into gridley.db.
+afl/load_draftguru.py -- Load a scraped Draftguru CSV tree into gridley.db.
 
-Replaces fetch_draft.py: same destination `draft` table (so link_draft.py
+Replaces fetch_draft.py: same destination `draft` table (so afl/link_draft.py
 keeps working unchanged), plus three new tables the scrape makes possible.
 
-    python load_draftguru.py --root data/afl/raw/draftguru
-    python load_draftguru.py --root data/afl/raw/draftguru --inspect   # headers only
+    python -m afl.load_draftguru --root data/afl/raw/draftguru
+    python -m afl.load_draftguru --root data/afl/raw/draftguru --inspect   # headers only
 
 Tables written
 --------------
@@ -21,7 +21,7 @@ awards         long/tidy: one row per (award, year, player). Every award
 all_australian one row per team selection, with position and captaincy.
 
 Nothing here links a Draftguru person to an AFL Tables player_id. That is
-link_people.py's job, and it is separate for the same reason link_draft.py
+afl/link_people.py's job, and it is separate for the same reason afl/link_draft.py
 is: name alone is not a safe key.
 
 The loader is deliberately loud about schema drift. If a source column it
@@ -341,7 +341,7 @@ def build_people(frames):
                                      "name_key"])
     p = pd.concat(parts, ignore_index=True)
     # A person with a URL is identified by it. A person without one falls
-    # back to their name key, flagged so link_people.py can treat those
+    # back to their name key, flagged so afl/link_people.py can treat those
     # rows with less confidence.
     p["person_key"] = p["player_url"].fillna("name:" + p["name_key"])
     p = (p.sort_values("player_url", na_position="last")
@@ -438,7 +438,7 @@ def main():
         print(f"award pages    {n} distinct slugs")
 
     con.close()
-    print("\nNext:  python link_draft.py  then  python link_people.py")
+    print("\nNext:  python -m afl.link_draft  then  python -m afl.link_people")
     print("Pick numbers restart per draft type, so a `pick` of 3 may be a")
     print("National, Rookie or Pre-Season selection. Constraints that mean")
     print("'top-10 pick' must filter draft_type as well.")

@@ -27,8 +27,8 @@ _os.chdir(_ROOT)
 import sqlite3
 
 import core
-import historic_grids as HG
-import parse_criteria as P
+from afl import historic_grids as HG
+from afl import parse_criteria as P
 
 
 def fixture():

@@ -13,9 +13,9 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-import family_relationships as F
-import load_family_relationships as L
-import scrape_wikipedia_families as S
+from afl import family_relationships as F
+from afl import load_family_relationships as L
+from afl import scrape_wikipedia_families as S
 
 
 FIXTURE_HTML = """

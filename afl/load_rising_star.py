@@ -6,7 +6,7 @@ constraints.  Name collisions, implausible career seasons and unmatched rows
 remain in the table for audit but are invisible to the solver.
 
 Rows the automatic linker cannot resolve may be corrected through a reviewed
-override file (see ``rising_star_overrides.py``)::
+override file (see ``afl/rising_star_overrides.py``)::
 
     data/afl/reference/rising_star_name_overrides.csv
 
@@ -242,10 +242,10 @@ def apply_reviewed_overrides(con: sqlite3.Connection, linked: list[dict],
     if not path.exists():
         return 0
     try:
-        import rising_star_overrides as overrides_module
+        from . import rising_star_overrides as overrides_module
     except ImportError:
         if verbose:
-            print("  (rising_star_overrides.py not found; corrections skipped)")
+            print("  (afl/rising_star_overrides.py not found; corrections skipped)")
         return 0
     try:
         overrides = overrides_module.load_overrides(path)
@@ -324,7 +324,7 @@ def load_sources(db_path: str | Path, sources: Iterable[str | Path],
     con = sqlite3.connect(str(db_path))
     try:
         if not _table_exists(con, "players") or not _table_exists(con, "games"):
-            raise RuntimeError("database needs players and games tables; run build_db.py first")
+            raise RuntimeError("database needs players and games tables; run afl/build_db.py first")
 
         imported_at = dt.datetime.now(dt.timezone.utc).isoformat()
         linked = []
@@ -454,7 +454,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     sources = args.source or default_sources()
     if not sources:
-        print("No Rising Star CSV found. Run fetch_footywire_rising_star.py first.",
+        print("No Rising Star CSV found. Run afl/fetch_footywire_rising_star.py first.",
               file=sys.stderr)
         return 1
     overrides: str | Path | None = "default"

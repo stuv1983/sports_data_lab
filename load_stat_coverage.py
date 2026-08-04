@@ -16,7 +16,7 @@ non-zero value, matching health.stat_era_starts. A stat that is a column on
 `games` but is empty end to end is recorded with NULL bounds and a note,
 rather than omitted: "loaded but never populated" is a different fact from
 "not a column at all", and only the first one means a mapping in
-build_db.py's HEADER_MAP is silently doing nothing.
+afl/build_db.py's HEADER_MAP is silently doing nothing.
 
 Re-run after every rebuild. The in-code `Sport.stat_eras` dict in sports.py
 remains the zero-cost fast path for the UI caption; this table is the
@@ -47,8 +47,8 @@ CREATE TABLE IF NOT EXISTS stat_coverage (
 #: sport key -> (competition label, source description). The label is half
 #: the primary key above, so it has to be stable once rows exist.
 COMPETITIONS = {
-    "afl": ("AFL/VFL", "AFL Tables via build_db.py"),
-    "nba": ("NBA", "build_nba_db.py"),
+    "afl": ("AFL/VFL", "AFL Tables via afl/build_db.py"),
+    "nba": ("NBA", "nba/build_nba_db.py"),
 }
 
 

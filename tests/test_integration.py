@@ -4,7 +4,7 @@ test_integration.py -- Clean-build release gate.
 
 Builds the database from scratch and asserts the whole pipeline, so that
 verification can never again pass against an out-of-band patched artefact.
-Every check runs against the file build_db.py just produced.
+Every check runs against the file afl/build_db.py just produced.
 
     python test_integration.py              # full run (rebuilds, ~90s)
     python test_integration.py --keep-db    # reuse an existing gridley.db
@@ -49,13 +49,13 @@ def build(keep):
     if not keep and os.path.exists(DB):
         os.remove(DB)
     if not os.path.exists(DB):
-        r = subprocess.run([sys.executable, "build_db.py", "--db", DB],
+        r = subprocess.run([sys.executable, "afl/build_db.py", "--db", DB],
                            capture_output=True, text=True)
         if r.returncode != 0:
             print(r.stdout[-2000:], r.stderr[-2000:])
-            check("build_db.py completes", False, "non-zero exit")
+            check("afl/build_db.py completes", False, "non-zero exit")
             return None
-    check("build_db.py completes", True)
+    check("afl/build_db.py completes", True)
     return sqlite3.connect(DB)
 
 
@@ -63,7 +63,7 @@ def build(keep):
 def test_source_assertion():
     """Required source columns are asserted before transformation."""
     print("\n3. Source-column assertion")
-    raw = open("build_db.py", encoding="utf-8").read()
+    raw = open("afl/build_db.py", encoding="utf-8").read()
     # Strip comments: a comment naming the wrong column is documentation,
     # not a defect. Only executable lines matter here.
     code = "\n".join(l.split("#")[0] for l in raw.splitlines())
@@ -122,7 +122,7 @@ def test_indexes(con):
 # ---------------------------------------------------------------------- 7
 def test_finals_constraints(con):
     print("\n7. Finals constraints execute and return sane counts")
-    import constraints as C
+    from afl import constraints as C
     for name, c in [("no finals wins", C.no_finals_wins()),
                     ("never won a final", C.never_won_a_final()),
                     ("never played finals", C.never_played_finals()),
@@ -147,9 +147,9 @@ def test_finals_constraints(con):
 # ---------------------------------------------------------------------- 8
 def test_square_sql(con):
     print("\n8. All nine square SQL files generate and execute")
-    r = subprocess.run([sys.executable, "make_sql.py"],
+    r = subprocess.run([sys.executable, "afl/make_sql.py"],
                        capture_output=True, text=True)
-    check("make_sql.py completes", r.returncode == 0)
+    check("afl/make_sql.py completes", r.returncode == 0)
     files = [f"sql/cell_r{i}c{j}.sql" for i in (1, 2, 3) for j in (1, 2, 3)]
     check("nine cell files written", all(os.path.exists(f) for f in files))
 
@@ -217,9 +217,9 @@ def test_draft_fixtures(con):
     check("naive exact matching fails (regression guard)", naive == 0,
           f"{naive} of {len(rows)}")
 
-    r = subprocess.run([sys.executable, "link_draft.py", "--db", DB],
+    r = subprocess.run([sys.executable, "afl/link_draft.py", "--db", DB],
                        capture_output=True, text=True)
-    check("link_draft.py completes", r.returncode == 0, r.stderr[-200:])
+    check("afl/link_draft.py completes", r.returncode == 0, r.stderr[-200:])
 
     con2 = sqlite3.connect(DB)
     linked = dict(con2.execute(
@@ -255,7 +255,7 @@ def test_draft_fixtures(con):
 # --------------------------------------------------------------------- 10
 def test_no_unresolved_in_results(con):
     print("\n10. Ambiguous/unmatched rows cannot reach solver results")
-    import constraints as C
+    from afl import constraints as C
     if not C.draft_available(con):
         check("draft constraints gated when tables absent", True, "skipped")
         return
@@ -266,7 +266,7 @@ def test_no_unresolved_in_results(con):
             WHERE l.match_status NOT IN ('unique','resolved')
               AND l.player_id IN ({c[0]})""", c[1]).fetchone()[0]
         check(f"{name} excludes unresolved rows", leaked == 0)
-    src = open("constraints.py", encoding="utf-8").read()
+    src = open("afl/constraints.py", encoding="utf-8").read()
     check("every draft constraint filters on match_status",
           src.count("match_status IN ('unique','resolved')")
           >= src.count("JOIN draft d"))
@@ -276,9 +276,9 @@ def test_no_unresolved_in_results(con):
 # --------------------------------------------------------------------- 11
 def test_grid_fixtures(con):
     """Every captured Gridley criterion parses or is declined."""
-    import parse_criteria as P
-    from grid_fixtures import GRIDS, LOOSE_CRITERIA, KNOWN_GOOD_ANSWERS
-    import constraints as C
+    from afl import parse_criteria as P
+    from afl.grid_fixtures import GRIDS, LOOSE_CRITERIA, KNOWN_GOOD_ANSWERS
+    from afl import constraints as C
 
     span = f"#{min(_numbers())}-#{max(_numbers())}"
     print(f"\n11. Real grid fixtures ({span})")
@@ -349,7 +349,7 @@ def test_grid_fixtures(con):
           not any("matched 0" in w for w in wrong_decline))
 
     # #1106 outcome record: the tool's picks scored 1.8 rarity.
-    import constraints as CC
+    from afl import constraints as CC
     row = CC.goals_at_multiple_clubs(30, 2)
     col = CC.played_for("St Kilda")
     top = CC.solve(con, [row, col], limit=1)
@@ -359,7 +359,7 @@ def test_grid_fixtures(con):
 
 
 def _numbers():
-    import historic_grids as HG
+    from afl import historic_grids as HG
     return [g.number for g in HG.GRIDS]
 
 
@@ -374,8 +374,8 @@ def test_criterion_semantics(con):
     list of players.
     """
     print("\n11b. Criterion semantics")
-    import parse_criteria as P
-    import constraints as C
+    from afl import parse_criteria as P
+    from afl import constraints as C
 
     def parsed(text):
         cn, label = P.parse(text)
@@ -437,8 +437,8 @@ def test_criterion_semantics(con):
 def test_historic_grid_library(con):
     """Historic grids distinguish parser support from loaded data layers."""
     print("\n11c. Historic grid library")
-    import historic_grids as HG
-    import parse_criteria as P
+    from afl import historic_grids as HG
+    from afl import parse_criteria as P
     import sports
 
     reports = HG.analyse_all(con, sports.get("afl"))
@@ -518,7 +518,7 @@ def test_historic_grid_library(con):
 # --------------------------------------------------------------------- 12
 def test_rebuild_idempotent():
     """
-    build_db.py must be safe to re-run over an existing database.
+    afl/build_db.py must be safe to re-run over an existing database.
 
     This check exists because a real failure slipped through: every other
     test deletes the file first, so the rebuild path was never exercised
@@ -529,14 +529,14 @@ def test_rebuild_idempotent():
         check("database present to rebuild over", False)
         return
     before = os.path.getsize(DB)
-    r = subprocess.run([sys.executable, "build_db.py", "--db", DB],
+    r = subprocess.run([sys.executable, "afl/build_db.py", "--db", DB],
                        capture_output=True, text=True)
     ok = r.returncode == 0
     if not ok:
         tail = (r.stderr or r.stdout).strip().splitlines()[-1:]
-        check("second build_db.py run succeeds", False, " ".join(tail))
+        check("second afl/build_db.py run succeeds", False, " ".join(tail))
         return
-    check("second build_db.py run succeeds", True)
+    check("second afl/build_db.py run succeeds", True)
 
     con = sqlite3.connect(DB)
     n = con.execute("SELECT COUNT(*) FROM games").fetchone()[0]
@@ -555,7 +555,7 @@ def test_rebuild_idempotent():
     check("all indexes survive a rebuild", len(idx) >= 15, f"{len(idx)} found")
     con.close()
 
-    ddl = open("build_db.py", encoding="utf-8").read()
+    ddl = open("afl/build_db.py", encoding="utf-8").read()
     code = "\n".join(l.split("#")[0] for l in ddl.splitlines())
     bare = [l.strip() for l in code.splitlines()
             if "CREATE TABLE" in l and "IF NOT EXISTS" not in l
@@ -574,7 +574,7 @@ def test_widget_parameters():
     Ground picker showed '28' instead of a list of grounds.
     """
     print("\n13. Every constraint parameter has a typed widget")
-    import constraints as C
+    from afl import constraints as C
     app = open("app.py", encoding="utf-8").read()
     # VALIDATION_OPTIONAL_RISING_STAR_V1 — "season" is a real typed widget:
     # app.py bounds it to the database's actual season span (year_kinds), so

@@ -19,8 +19,8 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-import family_draft as F
-import load_family_draft as loader
+from afl import family_draft as F
+from afl import load_family_draft as loader
 
 
 def make_db() -> sqlite3.Connection:

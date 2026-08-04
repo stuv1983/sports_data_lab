@@ -2,7 +2,7 @@
 """The source contract: reject a missing column, never invent a zero.
 
 `validate` is four lines and it is the most important four lines in
-nba_source.py. A source that cannot produce `steals` and a source that
+nba/nba_source.py. A source that cannot produce `steals` and a source that
 produces NULL steals are different situations: the first is broken and the
 build must stop, the second is 1946-1973 and the build must carry it
 through untouched. A `reindex(fill_value=0)` would collapse both into
@@ -31,8 +31,8 @@ import pandas as pd
 import pytest
 
 import nba_fixture
-import nba_source
-import nba_source_api
+from nba import nba_source
+from nba import nba_source_api
 
 
 @pytest.fixture

@@ -27,7 +27,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-import parse_criteria
+from afl import parse_criteria
 from data_paths import sport_db
 
 LOG = Path("docs") / "rejected_answers.csv"
@@ -191,7 +191,7 @@ def main(argv=None) -> int:
 
     db = args.db or sport_db("afl")
     if not Path(db).exists():
-        print(f"No database at {db}. Run build_db.py first.", file=sys.stderr)
+        print(f"No database at {db}. Run afl/build_db.py first.", file=sys.stderr)
         return 2
     con = connect(db)
 

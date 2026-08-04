@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-check_nba_scrape.py -- Is the Basketball-Reference scrape ready to build?
+nba/check_nba_scrape.py -- Is the Basketball-Reference scrape ready to build?
 
-    python check_nba_scrape.py
-    python check_nba_scrape.py --root C:/nbaData/data
-    python check_nba_scrape.py --seasons 2016-2024 --verbose
+    python -m nba.check_nba_scrape
+    python -m nba.check_nba_scrape --root C:/nbaData/data
+    python -m nba.check_nba_scrape --seasons 2016-2024 --verbose
 
-Reads the scrape the way `build_nba_db.py --source bbr` will read it and
+Reads the scrape the way `nba/build_nba_db.py --source bbr` will read it and
 reports what it finds, without building anything. Run it before a long
 build rather than discovering an hour in that a third of the box scores
 have not landed.
@@ -35,8 +35,8 @@ import sys
 from pathlib import Path
 
 import data_paths
-import nba_source
-import nba_source_bbr
+from . import nba_source
+from . import nba_source_bbr
 
 #: A season below this share of box scores makes career and per-season
 #: totals misleading rather than incomplete: a player's "career points"
@@ -129,7 +129,7 @@ def check(root, seasons=None, leagues=nba_source_bbr.NBA_LINEAGE,
             f"left out of the build")
 
     # -- playoffs -------------------------------------------------------
-    import nba_playoff_rounds
+    from . import nba_playoff_rounds
     db_root = Path(data_paths.default_db("nba")).resolve().parent
     rounds = nba_playoff_rounds.load(db_root)
     playoff_seasons = {s for s, slot in by_season.items()
@@ -141,7 +141,7 @@ def check(root, seasons=None, leagues=nba_source_bbr.NBA_LINEAGE,
                 f"{len(playoff_seasons)} season(s) have playoff games and "
                 f"none would get a round, so no champion is derived and "
                 f"every Finals square answers nobody. "
-                f"Run load_nba_playoff_series.py first.")
+                f"Run nba/load_nba_playoff_series.py first.")
     else:
         covered = {season for season, _ in rounds}
         uncovered = sorted(playoff_seasons - covered)
@@ -159,7 +159,7 @@ def check(root, seasons=None, leagues=nba_source_bbr.NBA_LINEAGE,
         say("READY  build with:")
     else:
         say("BUILDABLE, with the gaps above:")
-    say(f"       python build_nba_db.py --source bbr "
+    say(f"       python -m nba.build_nba_db --source bbr "
         f"--source-root {source.root}")
     return worst, lines
 

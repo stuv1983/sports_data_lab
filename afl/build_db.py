@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-build_db.py -- One-time (or occasional) build of the local Gridley database.
+afl/build_db.py -- One-time (or occasional) build of the local Gridley database.
 
 Pulls the community-maintained cached copy of the AFL Tables player-stats
 dataset from GitHub (the same file the R package `fitzRoy` uses), normalises
@@ -12,11 +12,11 @@ This deliberately does NOT scrape afltables.com directly:
     maintainers, so one download replaces tens of thousands of page requests.
 
 Usage:
-    python build_db.py                  # build ./gridley.db
-    python build_db.py --refresh        # re-download even if cached
-    python build_db.py --db my.db
-    python build_db.py --no-matches     # skip the derive_matches.py step
-    python build_db.py --allow-duplicates   # build despite unresolved dupes
+    python -m afl.build_db                  # build ./gridley.db
+    python -m afl.build_db --refresh        # re-download even if cached
+    python -m afl.build_db --db my.db
+    python -m afl.build_db --no-matches     # skip the afl/derive_matches.py step
+    python -m afl.build_db --allow-duplicates   # build despite unresolved dupes
 """
 
 import argparse
@@ -218,7 +218,7 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
     # match could be reconstructed as a *pair* of clubs from the player rows
     # but not oriented -- and venue is not a reliable substitute (neutral
     # grounds, and the MCG/Docklands tenancies where both sides are hosts).
-    # derive_matches.py needs this to fill home_team/away_team properly.
+    # afl/derive_matches.py needs this to fill home_team/away_team properly.
     out["is_home"] = is_home.astype(int)
 
     hs = pd.to_numeric(df["Home.score"], errors="coerce")
@@ -345,7 +345,7 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
     con.commit()
 
     span = f"{out.season.min()}-{out.season.max()}"
-    # Idempotent: build_db.py must be safe to re-run over an existing file
+    # Idempotent: afl/build_db.py must be safe to re-run over an existing file
     # (e.g. `--refresh` mid-season). pandas' to_sql(if_exists="replace")
     # handles the data tables; meta is created here so it needs its own drop.
     con.execute("DROP TABLE IF EXISTS meta")
@@ -367,9 +367,9 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
     if not skip_matches:
         print()
         try:
-            import derive_matches
+            from . import derive_matches
         except ImportError:
-            print("derive_matches.py not found -- games.match_id not rebuilt. "
+            print("afl/derive_matches.py not found -- games.match_id not rebuilt. "
                   "Run it manually, or use --no-matches to silence this.")
         else:
             derive_matches.run(db_path)
@@ -461,32 +461,32 @@ def refresh_layers(db_path, verbose=True):
         root = raw_dir("afl") / "draftguru"
         if not root.is_dir():
             raise RuntimeError(f"no Draftguru scrape at {root}")
-        script("load_draftguru.py", "--root", str(root))
-        script("link_draft.py")
-        script("link_people.py")
+        script("afl/load_draftguru.py", "--root", str(root))
+        script("afl/link_draft.py")
+        script("afl/link_people.py")
 
     step("draft, awards and All-Australian", draftguru)
 
     def captains():
-        import load_captains
+        from . import load_captains
         load_captains.refresh_default(db_path=str(db_path), verbose=verbose)
 
     step("club captaincy", captains)
 
     def rising_star():
-        import load_rising_star
+        from . import load_rising_star
         load_rising_star.refresh_default(db_path=str(db_path), verbose=verbose)
 
     step("Rising Star nominations", rising_star)
 
     def family_draft():
-        import load_family_draft
+        from . import load_family_draft
         load_family_draft.refresh_default(db_path=str(db_path), verbose=verbose)
 
     step("family draft", family_draft)
 
     def family_relationships():
-        import load_family_relationships
+        from . import load_family_relationships
         load_family_relationships.refresh_default(str(db_path), verbose=verbose)
 
     step("family relationships", family_relationships)
@@ -512,7 +512,7 @@ if __name__ == "__main__":
     ap.add_argument("--db", default=default_db("afl"))
     ap.add_argument("--refresh", action="store_true")
     ap.add_argument("--no-matches", action="store_true",
-                    help="skip the derive_matches.py step")
+                    help="skip the afl/derive_matches.py step")
     ap.add_argument("--core-only", action="store_true",
                     help="skip every optional import layer")
     ap.add_argument("--allow-duplicates", action="store_true",

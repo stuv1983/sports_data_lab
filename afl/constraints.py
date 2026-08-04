@@ -1,11 +1,11 @@
 """
-constraints.py -- AFL square descriptions, compiled to SQL.
+afl/constraints.py -- AFL square descriptions, compiled to SQL.
 
 Every constraint compiles to a fragment selecting DISTINCT player_id.
 Intersecting two of them solves one square of the grid.
 
-Used by app.py (the Streamlit grid), make_sql.py (the .sql files),
-parse_criteria.py and gridley.py.
+Used by app.py (the Streamlit grid), afl/make_sql.py (the .sql files),
+afl/parse_criteria.py and afl/gridley.py.
 
 WHAT CHANGED
 ------------
@@ -129,7 +129,7 @@ def wooden_spoon_player():
 
 # ----------------------------------------------------- draft constraints
 # These read draft_links, and deliberately only trust rows that
-# link_draft.py resolved unambiguously. Ambiguous rows are excluded.
+# afl/link_draft.py resolved unambiguously. Ambiguous rows are excluded.
 
 _LINKED = ("SELECT player_id FROM draft_links "
            "WHERE match_status IN ('unique','resolved') AND player_id IS NOT NULL")
@@ -307,8 +307,8 @@ STAR_DISCLAIMER = core.STAR_DISCLAIMER
 
 
 # Optional club-captain layer. The persistent table is created by
-# load_captains.py; a TEMP placeholder keeps parsing and old databases safe.
-from captains import (  # noqa: E402
+# afl/load_captains.py; a TEMP placeholder keeps parsing and old databases safe.
+from .captains import (  # noqa: E402
     CAPTAIN_BUILDERS,
     captain_available,
     captain_count,
@@ -327,7 +327,7 @@ CAPTAIN_BUILDER_NAMES = set(CAPTAIN_BUILDERS)
 # separate Draftguru update, so its absence must degrade to "no award
 # builders" rather than break every import of this module.
 try:
-    from awards import AWARD_BUILDERS, AWARD_SLUGS, awards_available  # noqa: E402
+    from .awards import AWARD_BUILDERS, AWARD_SLUGS, awards_available  # noqa: E402
 except ImportError:
     AWARD_BUILDERS: dict = {}
     AWARD_SLUGS: dict = {}
@@ -339,8 +339,8 @@ BUILDERS.update(AWARD_BUILDERS)
 AWARD_BUILDER_NAMES = set(AWARD_BUILDERS)
 
 # Optional FootyWire Rising Star nomination layer.  The network fetcher is
-# permission-gated; load_rising_star.py links local CSV rows to players.
-from rising_star import (  # noqa: E402
+# permission-gated; afl/load_rising_star.py links local CSV rows to players.
+from .rising_star import (  # noqa: E402
     RISING_STAR_BUILDERS,
     ensure_rising_star_table,
     rising_star_available,
@@ -357,8 +357,8 @@ RISING_STAR_BUILDER_NAMES = set(RISING_STAR_BUILDERS)
 
 
 # Optional broad Wikipedia family layer. This is separate from the narrower
-# father-son/father-daughter draft dataset in family_draft.py.
-from family_relationships import (  # noqa: E402
+# father-son/father-daughter draft dataset in afl/family_draft.py.
+from .family_relationships import (  # noqa: E402
     FAMILY_RELATIONSHIP_BUILDERS,
     ensure_family_relationship_tables,
     family_relationships_available,

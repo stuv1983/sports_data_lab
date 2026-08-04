@@ -3,7 +3,7 @@
 
 Covers step 1 of the build plan:
 
-  * the four stats build_db.py has always loaded but sports.AFL_STATS never
+  * the four stats afl/build_db.py has always loaded but sports.AFL_STATS never
     listed (frees_for, frees_against, clangers, uncontested) now pass
     core._check() and reach the query layer;
   * season_stat_total_min sums across a season rather than per game, and
@@ -28,7 +28,7 @@ _os.chdir(_ROOT)
 import sqlite3
 
 import core
-import parse_criteria
+from afl import parse_criteria
 import sports
 
 
@@ -91,7 +91,7 @@ def ids(con, built):
 
 
 def grammar():
-    """A Generic bound to the AFL schema, as constraints.py builds one."""
+    """A Generic bound to the AFL schema, as afl/constraints.py builds one."""
     return core.Generic(sports.AFL_SCHEMA)
 
 
@@ -228,7 +228,7 @@ def test_stat_words_are_iterated_longest_first():
 # ------------------------------------------------------- builder registry
 
 def test_total_builder_is_registered():
-    import constraints
+    from afl import constraints
     assert "X+ of a stat in one season" in constraints.BUILDERS
     fn, args = constraints.BUILDERS["X+ of a stat in one season"]
     assert args == ["stat", "x"], args

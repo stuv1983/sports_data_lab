@@ -1,12 +1,12 @@
 """
-nba_source_bbr.py -- The Basketball-Reference scrape, as an NbaSource.
+nba/nba_source_bbr.py -- The Basketball-Reference scrape, as an NbaSource.
 
-    python build_nba_db.py --source bbr --source-root C:/nbaData/data
+    python -m nba.build_nba_db --source bbr --source-root C:/nbaData/data
 
 This is the adapter for the local scrape: the two index CSVs it writes
 (`players.csv`, `games.csv`) plus one JSON box score per game. It maps that
 shape onto nba_source's column vocabularies and nothing else, which is what
-keeps build_nba_db.py free of any knowledge that Basketball-Reference
+keeps nba/build_nba_db.py free of any knowledge that Basketball-Reference
 exists.
 
 LICENSING -- READ BEFORE USING
@@ -16,7 +16,7 @@ research. It does not clear republishing a comprehensive copy of the site's
 data, or using it to back a public service, without permission. A database
 built by this adapter is fine to hold and query locally; treat it as
 **not** cleared for redistribution or for a hosted game, exactly as
-`nba_source_api.py` is treated. Attribution belongs in ACKNOWLEDGEMENTS.md.
+`nba/nba_source_api.py` is treated. Attribution belongs in ACKNOWLEDGEMENTS.md.
 
 EXPECTED LAYOUT
 ---------------
@@ -54,7 +54,7 @@ mid-scrape; the default keeps the full schedule.
 NULL IS NOT ZERO
 ----------------
 A 1946 box score has no steals column. Those cells stay None. See the note
-in nba_source.py -- writing 0 there would rank the entire early league as
+in nba/nba_source.py -- writing 0 there would rank the entire early league as
 maximally obscure for a reason that is an artefact of record-keeping.
 """
 
@@ -64,8 +64,8 @@ import json
 from pathlib import Path
 
 import data_paths
-import nba_reference
-from nba_source import (MATCH_COLUMNS, PHASES, PLAYER_COLUMNS,
+from . import nba_reference
+from .nba_source import (MATCH_COLUMNS, PHASES, PLAYER_COLUMNS,
                         PLAYER_GAME_COLUMNS, STAT_COLUMNS, TEAM_COLUMNS,
                         Fetch, SourceError, canonical_params, digest_bytes,
                         now, numeric, parse_minutes, validate)
@@ -527,7 +527,7 @@ class BbrNbaSource:
         """How much of the indexed schedule has a box score on disk.
 
         For checking whether the scrape is far enough along to build,
-        without building. Returns a dict; `check_nba_scrape.py` prints it.
+        without building. Returns a dict; `nba/check_nba_scrape.py` prints it.
         """
         schedule = self._schedule()
         index = self._boxscore_index()

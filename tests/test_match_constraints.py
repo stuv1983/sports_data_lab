@@ -22,10 +22,10 @@ import sqlite3
 
 import pytest
 
-import club_history as CH
-import constraints as C
+from afl import club_history as CH
+from afl import constraints as C
 import match_constraints as M
-import parse_criteria as P
+from afl import parse_criteria as P
 
 
 def fixture():

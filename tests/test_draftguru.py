@@ -17,7 +17,7 @@ a synthetic tree with the documented headings -- including the awkward ones
 
 Point it at the real tree instead with:
 
-    python load_draftguru.py --root data/afl/raw/draftguru --inspect
+    python -m afl.load_draftguru --root data/afl/raw/draftguru --inspect
 """
 
 # --- test bootstrap: run from the repository root, import project modules ---
@@ -227,8 +227,8 @@ def main():
     make_tree()
 
     print("\n1. Loader")
-    r = run("load_draftguru.py", "--root", ROOT, "--db", DB)
-    check("load_draftguru.py completes", r.returncode == 0)
+    r = run("afl/load_draftguru.py", "--root", ROOT, "--db", DB)
+    check("afl/load_draftguru.py completes", r.returncode == 0)
     unmapped = [l for l in r.stdout.splitlines() if "not mapped" in l]
     check("every documented heading is mapped", not unmapped,
           unmapped[0] if unmapped else "no unmapped headings")
@@ -285,8 +285,8 @@ def main():
     con.close()
 
     print("\n2. Draft linking")
-    r = run("link_draft.py", "--db", DB)
-    check("link_draft.py still runs against the new draft table",
+    r = run("afl/link_draft.py", "--db", DB)
+    check("afl/link_draft.py still runs against the new draft table",
           r.returncode == 0)
     con = sqlite3.connect(DB)
     st = con.execute("""SELECT l.match_status FROM draft_links l
@@ -302,8 +302,8 @@ def main():
     con.close()
 
     print("\n3. Person linking")
-    r = run("link_people.py", "--db", DB)
-    check("link_people.py completes", r.returncode == 0)
+    r = run("afl/link_people.py", "--db", DB)
+    check("afl/link_people.py completes", r.returncode == 0)
 
     con = sqlite3.connect(DB)
     got = dict(con.execute("""
@@ -326,7 +326,7 @@ def main():
           == "unmatched")
 
     print("\n4. Constraints")
-    import awards as A
+    from afl import awards as A
     check("awards_available gate is true", A.awards_available(con))
     for name, c in [("All-Australian", A.all_australian(1)),
                     ("AA captain", A.all_australian_captain()),
@@ -356,7 +356,7 @@ def main():
     check("the ambiguous Peter Brown B&F is excluded", n_bf == 1,
           f"{n_bf} B&F winners (Outram only)")
 
-    src = open("awards.py").read()
+    src = open("afl/awards.py").read()
     check("every award constraint filters on match_status",
           src.count("match_status IN ('from_draft','unique','resolved')")
           + src.count("_OK") - 1 >= src.count("FROM awards a")

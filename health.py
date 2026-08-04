@@ -26,8 +26,8 @@ from pathlib import Path
 
 #: Optional link layers: table -> (label, id column, script hint).
 LINK_LAYERS = {
-    "captaincies": ("Captaincy", "player_id", "load_captains.py"),
-    "rising_star_nominees": ("Rising Star", "player_id", "load_rising_star.py"),
+    "captaincies": ("Captaincy", "player_id", "afl/load_captains.py"),
+    "rising_star_nominees": ("Rising Star", "player_id", "afl/load_rising_star.py"),
 }
 TRUSTED_STATUSES = ("unique", "resolved")
 
@@ -205,7 +205,7 @@ def stat_era_starts(con: sqlite3.Connection, stats: list[str] | None = None,
         "inside50s", "clearances", "rebounds", "contested", "contested_marks",
         "marks_i50", "one_percenters", "goal_assists", "brownlow", "goals",
         "behinds", "bounces",
-        # Loaded by build_db.py but absent from this list, so the health
+        # Loaded by afl/build_db.py but absent from this list, so the health
         # report never showed whether they were populated at all.
         "frees_for", "frees_against", "clangers", "uncontested",
     ) if s in cols]
@@ -231,7 +231,7 @@ TABLE_PURPOSE = {
     "club_match_source_issues": "Recorded disagreements between the two sides",
     "team_seasons": "Season record and final standing per club",
     "season_goals": "Per-club leading goalkicker by season",
-    # NBA (build_nba_db.py). The engine reads players/games as above; these
+    # NBA (nba/build_nba_db.py). The engine reads players/games as above; these
     # are the normalised source of truth the text columns are derived from.
     "franchises": "One row per continuous organisation, across relocations",
     "teams": "One row per team identity — the club_hist values",
@@ -381,20 +381,30 @@ def career_totals_reconcile(con: sqlite3.Connection, schema=None) -> list[str]:
         return out
     player_cols = columns(con, s.players)
 
+    # The default reads one games row as one game and sums every row, which
+    # is what the AFL and NBA builds write. A sport whose games table has a
+    # different grain says so in schema.career_totals_sql -- see the MLB
+    # entry in sports.py, where a row is a season.
     checks = [
-        (s.career_games, f"COUNT(*)", "career games"),
+        (s.career_games, "COUNT(*)", "career games"),
         (s.career_score, f"SUM(g.{s.game_score})", "career " + s.game_score),
         (s.career_postseason, f"SUM(g.{s.is_final})", "post-season games"),
     ]
-    for column, expression, label in checks:
+    for column, default, label in checks:
         if column not in player_cols:
             continue
+        override = s.career_totals_sql.get(column, (default, ""))
+        if override is None:
+            continue
+        expression, predicate = override
+        where = f"WHERE {predicate}" if predicate else ""
         try:
             bad = con.execute(f"""
                 SELECT COUNT(*) FROM (
                     SELECT p.{s.player_id}
                     FROM {s.players} p
                     JOIN {s.games} g ON g.{s.player_id} = p.{s.player_id}
+                    {where}
                     GROUP BY p.{s.player_id}, p.{column}
                     HAVING {expression} IS NOT NULL
                        AND p.{column} IS NOT NULL

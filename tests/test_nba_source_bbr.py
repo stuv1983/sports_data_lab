@@ -40,8 +40,8 @@ from pathlib import Path
 
 import pytest
 
-import nba_source
-import nba_source_bbr
+from nba import nba_source
+from nba import nba_source_bbr
 
 SAMPLE = Path("data/nba/sample")
 
@@ -294,7 +294,7 @@ def test_a_scrape_root_builds_a_database_end_to_end(tmp_path):
     Finals and championship squares answer nobody. Built strict, so any
     error issue fails this test rather than being reported and ignored.
     """
-    import build_nba_db
+    from nba import build_nba_db
 
     base = tmp_path / "scrape"
     _write_csv(base / "games.csv", GAME_COLUMNS, [
