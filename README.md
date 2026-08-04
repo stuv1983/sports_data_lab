@@ -258,8 +258,46 @@ data/nba/nba.db.build-report.json          how the last build ended
 data/nba/backups/nba-YYYYmmdd-HHMMSS.db    the databases it replaced
 data/nba/raw/csv/                          CSV source exports
 data/nba/cache/nba_api/                    cached NBA.com responses
+data/nba/output/                           saved reference pages, as retrieved
 data/nba/reference/nba_reference.json      team list, lineage, measured eras
+data/nba/reference/playoff_series.csv      bracket structure, 1946-2025
 ```
+
+### Playoff rounds
+
+Box-score sources say a game was a playoff game. They do not say which
+round, and without the round four criteria answer nobody: Finals appearance,
+Finals win, appeared for the championship team, and the championship
+derivation itself. The build records that gap as an error rather than
+guessing at it.
+
+`reference/playoff_series.csv` fills it. It is generated once from a saved
+copy of Basketball-Reference's playoff-series index and read at build time;
+nothing in the build touches the network.
+
+```bash
+python load_nba_playoff_series.py --check   # parse and verify, write nothing
+python load_nba_playoff_series.py           # write the reference file
+```
+
+The loader checks its own output before writing: every series name must
+classify to a known round, every season must contain exactly one Finals, no
+two teams may meet twice in one season, and every derived champion is
+cross-checked against the champion column of a separately saved league
+index. All 979 series and all 89 champions from 1946-47 to 2025-26 pass.
+
+A game is matched to its series by season and team pair, using the
+*historical* team identity — the reference names Seattle SuperSonics, not
+Oklahoma City Thunder. A playoff game with no matching series is left
+without a round and fails the strict build.
+
+BAA championships count as NBA championships, because the league counts
+them. ABA championships do not, and the loader keeps the leagues apart.
+
+Basketball-Reference is used here for verification and bracket structure,
+not as an import source: its terms do not clear a comprehensive database for
+redistribution, so the saved pages and everything derived from them stay
+under `data/`, which is not tracked.
 
 `nba_reference.json` is written by the build and read back by `sports.py` at
 import time, because `core.Schema` is a frozen dataclass constructed before

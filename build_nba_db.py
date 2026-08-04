@@ -78,6 +78,7 @@ from pathlib import Path
 
 import data_paths
 import names
+import nba_playoff_rounds
 import nba_source
 import obscurity
 import sports
@@ -91,7 +92,11 @@ import sports
 #: something else, every Finals and championship square silently returns
 #: nobody, which reads as "no player has ever won a title" -- so an
 #: unrecognised code is recorded as an error issue and fails the build.
-PLAYOFF_ROUNDS = ("R1", "CSF", "CF", "F")
+#: QF and TB exist for the early league: the 1950s ran a distinct
+#: quarter-final, and division ties were settled by a playoff game that is
+#: post-season but not part of the bracket. See nba_playoff_rounds for what
+#: each code means.
+PLAYOFF_ROUNDS = ("R1", "QF", "CSF", "CF", "F", "TB")
 
 #: Conferences, for the standings derived into team_seasons. Kept as a
 #: mapping of current franchise name so a relocated team follows its
@@ -366,6 +371,41 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
 
     matches["home_team"] = matches["home_team_id"].map(team_now)
     matches["away_team"] = matches["away_team_id"].map(team_now)
+    # The historical identities, for the playoff-round join below. The
+    # reference names a team as it was known that season, so a relocated
+    # franchise has to be matched on the name it played under.
+    matches["home_hist"] = matches["home_team_id"].map(team_hist)
+    matches["away_hist"] = matches["away_team_id"].map(team_hist)
+
+    # Playoff rounds, from the pinned reference rather than from the source:
+    # box-score feeds say a game was a playoff game and not which round, and
+    # the Finals, championship and champion-roster criteria all need the
+    # round before they can answer anything.
+    rounds = nba_playoff_rounds.load(Path(db_path).resolve().parent)
+    if rounds:
+        nba_playoff_rounds.assign(
+            matches, rounds,
+            lambda kind, detail, severity="warn", season=None: issue(
+                issues, kind, detail, severity=severity, season=season,
+                source_key=source.key),
+            verbose_log=(lambda text: log(verbose, text)))
+
+    # Whatever the source and the reference managed between them, a playoff
+    # match still without a round is one the Finals and championship
+    # criteria cannot see. Checked here rather than inside the assignment so
+    # that it holds for a source that carries its own rounds and needs no
+    # reference at all.
+    blank = ((matches["phase"] == "playoff")
+             & matches["round"].map(lambda v: not _text(v)))
+    if blank.any():
+        detail = "no reference/playoff_series.csv beside the database"
+        if rounds:
+            detail = "no matching series in reference/playoff_series.csv"
+        issue(issues, "unresolved_playoff_round",
+              f"{int(blank.sum()):,} playoff match(es) have no round -- "
+              f"{detail}. Run load_nba_playoff_series.py; without a round no "
+              f"championship can be derived.",
+              severity="error", source_key=source.key)
 
     playoff_rounds = matches.loc[matches["phase"] == "playoff", "round"]
     seen = {str(r).strip().upper() for r in playoff_rounds.dropna()}
@@ -545,6 +585,14 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
 
         _write_reference_tables(con, teams, franchise_name, matches)
         _write_derived(con, out, verbose)
+        # After team_seasons exists, because the champion count is derived
+        # there. Checked against what was written rather than what was
+        # intended: a season that reaches here without a Finals answers
+        # nobody for four criteria and must not pass quietly.
+        nba_playoff_rounds.verify(
+            con, lambda kind, detail, severity="warn", season=None: issue(
+                issues, kind, detail, severity=severity, season=season,
+                source_key=source.key))
         _write_manifest(con, source, issues)
 
         for statement in INDEXES:
