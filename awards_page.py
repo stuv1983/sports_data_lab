@@ -123,8 +123,8 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
         "Honour rolls for AFL/VFL, state-league and club awards, plus "
         "All-Australian selections and Hall of Fame inductees.")
 
-    if sport.key != "afl":
-        st.info("Awards are currently available for AFL only.")
+    if not sport.has_awards_page:
+        st.info(f"No award data is loaded for {sport.label}.")
         return
     if not awards_data_available(con):
         st.info("Award data is not loaded. Run `python load_draftguru.py`, "

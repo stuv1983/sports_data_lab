@@ -81,20 +81,10 @@ def venue_options(sport_key, db, revision):
     rows = get_con(db, revision).execute(
         f"SELECT {s.venue}, COUNT(*) c, MIN({s.season}), MAX({s.season}) "
         f"FROM {s.games} GROUP BY {s.venue} ORDER BY c DESC").fetchall()
-    alias = {
-        "Docklands": "Marvel Stadium",
-        "Kardinia Park": "GMHBA Stadium",
-        "Perth Stadium": "Optus Stadium",
-        "Football Park": "AAMI Stadium",
-        "M.C.G.": "MCG",
-        "S.C.G.": "SCG",
-        "Western Oval": "Whitten Oval",
-        "Princes Park": "Optus Oval",
-        "Carrara": "People First Stadium",
-        "Sydney Showground": "ENGIE Stadium",
-        "York Park": "UTAS Stadium",
-        "Manuka Oval": "Manuka",
-    }
+    # Stored name -> the name people actually use. Declared per sport in
+    # sports.py rather than here, so this function does not have to know
+    # that Docklands is Marvel Stadium and Staples Center is now Crypto.com.
+    alias = sports.get(sport_key).venue_display
     out = []
     for v, c, lo, hi in rows:
         extra = f"  ({alias[v]})" if v in alias else ""
@@ -199,11 +189,11 @@ CAPTAIN_OK = getattr(C, "captain_available", lambda _con: False)(con)
 CAPTAIN_BUILDERS = getattr(C, "CAPTAIN_BUILDER_NAMES", set())
 RISING_STAR_OK = getattr(C, "rising_star_available", lambda _con: False)(con)
 RISING_STAR_BUILDERS = getattr(C, "RISING_STAR_BUILDER_NAMES", set())
-CLUB_DATA_TABLES = {
-    "clubs", "club_source_snapshots", "club_wikipedia_fields",
-    "club_player_totals", "club_player_register", "club_player_records",
-}
-CLUB_DATA_OK = CLUB_DATA_TABLES <= {
+# The table list is a property of the sport's Club Explorer, not of this
+# page. An empty set is a subset of anything, so a sport without one is
+# trivially "OK" -- which is fine, because the flag is only ever read
+# inside a SPORT.has_club_explorer guard.
+CLUB_DATA_OK = SPORT.club_data_tables <= {
     row[0] for row in con.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
     )
@@ -235,34 +225,16 @@ with st.sidebar.expander("Database status", expanded=False):
                         for label, value in SPORT.status(con))
     st.markdown(f"<div class='status-row'>{lines}</div>",
                 unsafe_allow_html=True)
-    if not DRAFT_OK:
-        st.caption("Run `load_draftguru.py`, then `link_draft.py`.")
-    if not AWARDS_OK:
-        st.caption("Run `load_draftguru.py`, then `link_people.py`.")
-    if not CAPTAIN_OK and SPORT.key == "afl":
-        st.caption("Run `load_captains.py` for club-captain data.")
-    if not RISING_STAR_OK and SPORT.key == "afl":
-        st.caption("Run `fetch_footywire_rising_star.py`, "
-                   "then `load_rising_star.py`.")
-    if SPORT.key == "afl":
-        if CLUB_DATA_OK:
-            club_rows = con.execute(
-                "SELECT COUNT(*) FROM clubs WHERE active=1"
-            ).fetchone()[0]
-            pass  # ready state is shown in Database status
-        else:
-            st.caption("Run `utils/fetch_club_sources.py`, then "
-                       "`utils/load_club_sources.py` for Club Explorer.")
-    if SPORT.key == "afl":
-        if FAMILY_RELATIONSHIPS_OK:
-            n_family = getattr(C, "family_member_count", lambda _con: 0)(con)
-            n_relationships = getattr(
-                C, "trusted_relationship_count", lambda _con: 0
-            )(con)
-            pass  # ready state is shown in Database status
-        else:
-            st.caption("Run `scrape_wikipedia_families.py`, then "
-                       "`load_family_relationships.py` for family links.")
+    # One loop over whatever this sport declares, instead of five branches
+    # naming AFL scripts. A layer with no loader yet simply has no hint and
+    # reports "not loaded" in the rows above, which is the honest answer.
+    for _label, hint in SPORT.missing_layer_hints(con):
+        st.caption(hint)
+    if SPORT.has_club_explorer and not CLUB_DATA_OK and SPORT.club_data_hint:
+        st.caption(SPORT.club_data_hint)
+    if (SPORT.has_club_explorer and not FAMILY_RELATIONSHIPS_OK
+            and SPORT.family_hint):
+        st.caption(SPORT.family_hint)
 
 
 # ---------------------------------------------------------- appearance
@@ -336,8 +308,10 @@ def axis_widget(key, default_type, defaults=None):
                 args.append(pid)
                 st.session_state[f"{wk}_label"] = player_name
         elif a == "kind":
-            draft_kinds = ["National", "Rookie", "Pre-Season", "Mid-Season",
-                           "Trade", "Free Agency", "Pre-Draft", "Post-Draft"]
+            # The categories belong to the sport's draft layer, not to this
+            # widget. A sport with no draft layer defines no builder taking
+            # `kind`, so the empty default is never reached in practice.
+            draft_kinds = list(getattr(C, "DRAFT_TYPES", ()))
             args.append(st.selectbox("Draft type", draft_kinds, key=wk))
         elif a == "source":
             args.append(st.text_input("Recruited from",
@@ -522,18 +496,15 @@ st.sidebar.markdown("### Grid setup")
 # switch to the NBA and throws on the club lookup.
 st.sidebar.markdown("### Columns")
 cols_def = []
-col_defaults = [("Played for club", {"club": "St Kilda"}),
-                ("Played for club", {"club": "North Melbourne"}),
-                ("150+ / X+ career games", {"games": 150})]
+# Declared per sport: an NBA board opening on "St Kilda" would be silently
+# coerced to clubs[0] by axis_widget and answer a question nobody asked.
+col_defaults, row_defaults = SPORT.grid_defaults
 for i, (dt, dv) in enumerate(col_defaults):
     with st.sidebar.expander(f"Column {i+1}", expanded=False):
         cols_def.append(axis_widget(SPORT.k("c", i), dt, dv))
 
 st.sidebar.markdown("### Rows")
 rows_def = []
-row_defaults = [("X+ goals at 2+ clubs", {"goals": 30, "clubs": 2}),
-                ("Teammate of…", {"player": "Mason Wood"}),
-                ("No finals wins (played finals)", {})]
 for i, (dt, dv) in enumerate(row_defaults):
     with st.sidebar.expander(f"Row {i+1}", expanded=False):
         rows_def.append(axis_widget(SPORT.k("r", i), dt, dv))
@@ -545,12 +516,11 @@ st.sidebar.markdown("---")
 # criterion through the parser BEFORE the board is drawn, so a grid that
 # cannot be answered says why instead of quietly answering something else.
 
-import historic_grids as HG
-
-
 @st.cache_data(show_spinner=False)
 def grid_library(sport_key, db, revision):
     """Every captured grid, analysed once at startup."""
+    import historic_grids as HG
+
     sport = sports.get(sport_key)
     return HG.analyse_all(get_con(db, revision), sport)
 
@@ -560,12 +530,17 @@ def _axes_from(reports):
     return [(r.display, r.constraint) for r in reports]
 
 
+# historic_grids imports the AFL constraints module at module scope, so the
+# import stays inside grid_library() -- selecting the NBA should not pull in
+# the AFL constraint module and analyse a library that is not about it.
 LIBRARY = grid_library(
-    SPORT.key, SPORT.db, DB_REVISION) if SPORT.key == "afl" else []
+    SPORT.key, SPORT.db, DB_REVISION) if SPORT.grid_library else []
 LIB_BY_NUMBER = {r.grid.number: r for r in LIBRARY}
 
 
 def show_report(picked, mode):
+    import historic_grids as HG
+
     """Sidebar verdict for an analysed grid, and load it onto the board.
 
     Shared by every source that produces a GridReport -- the captured
@@ -671,6 +646,8 @@ if source == "Today's grid":
             st.session_state.pop("loaded", None)
 
 elif source in ("Past grid", "Random supported grid") and LIBRARY:
+    import historic_grids as HG
+
     ready = HG.supported_grids(LIBRARY)
 
     if source == "Random supported grid":
@@ -707,14 +684,16 @@ elif source in ("Past grid", "Random supported grid") and LIBRARY:
         show_report(picked, mode)
 
 elif source in ("Past grid", "Random supported grid"):
-    st.sidebar.info("The captured grid library is AFL-only for now.")
+    st.sidebar.info(f"No captured grid library exists for {SPORT.label} yet.")
 
-elif source == "Paste criteria" and SPORT.key != "afl":
+elif source == "Paste criteria" and not SPORT.criterion_parser:
     # parse_criteria.py compiles against the AFL constraint set, so offering
     # it for another sport would answer AFL questions from an NBA database.
-    st.sidebar.info("Criterion parsing is AFL-only for now.")
+    st.sidebar.info(f"Criterion parsing is not available for {SPORT.label}.")
 
 elif source == "Paste criteria":
+    import historic_grids as HG
+
     # The failure this exists to prevent: hand-picking an axis builder that
     # is one word away from the question actually asked. "50+ GAMES TWO
     # DIFF CLUBS" and "50+ GOALS TWO DIFF CLUBS" are different squares with
@@ -901,7 +880,9 @@ for r in range(3):
 
 # The only visible statement of what the stars mean. The rating card and
 # every star row carry it as a hover tooltip instead of repeating it.
-st.caption(core.STAR_DISCLAIMER)
+# Generated from this sport's own obscurity model. core's names goals,
+# finals and Brownlow votes, none of which the NBA model uses.
+st.caption(SPORT.star_disclaimer)
 st.markdown("---")
 
 
@@ -924,8 +905,12 @@ if st.session_state.cell:
     else:
         headers = ["__pid"] + [h for _, h in SCHEMA.solve_columns()]
         df = pd.DataFrame(rows, columns=headers)
-        if "Clubs" in df:
-            df["Clubs"] = df["Clubs"].str.replace("|", ", ", regex=False)
+        # The header the schema gave this column, not a literal: the AFL
+        # calls it "Clubs" and the NBA "Teams".
+        clubs_header = SCHEMA.clubs_hist_header()
+        if clubs_header in df:
+            df[clubs_header] = df[clubs_header].str.replace(
+                "|", ", ", regex=False)
         pids = df["__pid"].tolist()
         df = df.drop(columns=["__pid"])
 
@@ -942,9 +927,10 @@ if st.session_state.cell:
         # across 13,353 players and 5/5 needed the most obscure of them.
         obs_lo = selected_square.obscurity_min if selected_square else None
         obs_hi = selected_square.obscurity_max if selected_square else None
-        df["Rating"] = df["Obscurity"].map(
+        obscurity_header = SCHEMA.obscurity_header()
+        df["Rating"] = df[obscurity_header].map(
             lambda o: core.stars_text(o, lo=obs_lo, hi=obs_hi))
-        df = df.drop(columns=["Obscurity"])
+        df = df.drop(columns=[obscurity_header])
 
         card1, card2, card3 = st.columns(3)
         card1.markdown(

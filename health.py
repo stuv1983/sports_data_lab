@@ -32,6 +32,21 @@ LINK_LAYERS = {
 TRUSTED_STATUSES = ("unique", "resolved")
 
 
+def _schema(schema=None):
+    """The schema to check against, defaulting to the AFL build.
+
+    Every core probe takes an optional `schema` so the same checks can run
+    against an NBA database, where the post-season column is
+    `playoffs_played` and the headline stat is `points`. Passing nothing
+    keeps the AFL behaviour byte-identical, which is what the CLI's default
+    and every existing caller rely on.
+    """
+    if schema is not None:
+        return schema
+    import sports
+    return sports.AFL_SCHEMA
+
+
 # ------------------------------------------------------------------ probes
 
 def table_exists(con: sqlite3.Connection, name: str) -> bool:
@@ -63,16 +78,20 @@ def table_counts(con: sqlite3.Connection) -> list[tuple[str, int]]:
     return sorted(out, key=lambda row: -row[1])
 
 
-def core_summary(con: sqlite3.Connection) -> dict:
+def core_summary(con: sqlite3.Connection, schema=None) -> dict:
     out: dict = {}
-    if not table_exists(con, "games") or not table_exists(con, "players"):
-        return {"error": "core tables missing; run build_db.py"}
-    lo, hi = con.execute("SELECT MIN(season), MAX(season) FROM games").fetchone()
+    s = _schema(schema)
+    if not table_exists(con, s.games) or not table_exists(con, s.players):
+        return {"error": f"core tables missing; run {s.rebuild_cmd}"}
+    lo, hi = con.execute(
+        f"SELECT MIN({s.season}), MAX({s.season}) FROM {s.games}").fetchone()
     out["season_min"], out["season_max"] = lo, hi
     out["seasons"] = con.execute(
-        "SELECT COUNT(DISTINCT season) FROM games").fetchone()[0]
-    out["players"] = con.execute("SELECT COUNT(*) FROM players").fetchone()[0]
-    out["player_games"] = con.execute("SELECT COUNT(*) FROM games").fetchone()[0]
+        f"SELECT COUNT(DISTINCT {s.season}) FROM {s.games}").fetchone()[0]
+    out["players"] = con.execute(
+        f"SELECT COUNT(*) FROM {s.players}").fetchone()[0]
+    out["player_games"] = con.execute(
+        f"SELECT COUNT(*) FROM {s.games}").fetchone()[0]
     if table_exists(con, "matches"):
         out["matches"] = con.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
     if table_exists(con, "team_seasons"):
@@ -167,11 +186,20 @@ def rising_star_coverage(con: sqlite3.Connection) -> dict:
     }
 
 
-def stat_era_starts(con: sqlite3.Connection, stats: list[str] | None = None) -> list[tuple]:
-    """First season each detailed statistic carries a non-null, non-zero value."""
-    if not table_exists(con, "games"):
+def stat_era_starts(con: sqlite3.Connection, stats: list[str] | None = None,
+                    schema=None) -> list[tuple]:
+    """First season each detailed statistic carries a non-null, non-zero value.
+
+    Passing `schema` uses that sport's declared stat list, which is how the
+    NBA gets its own era table without a second copy of this query. An
+    explicit `stats` still wins, for callers auditing one column.
+    """
+    s = _schema(schema)
+    if not table_exists(con, s.games):
         return []
-    cols = columns(con, "games")
+    cols = columns(con, s.games)
+    if stats is None and schema is not None and schema.stats:
+        stats = [stat for stat in schema.stats if stat in cols]
     candidates = stats or [s for s in (
         "disposals", "kicks", "handballs", "marks", "tackles", "hitouts",
         "inside50s", "clearances", "rebounds", "contested", "contested_marks",
@@ -184,7 +212,8 @@ def stat_era_starts(con: sqlite3.Connection, stats: list[str] | None = None) -> 
     out = []
     for stat in candidates:
         row = con.execute(
-            f"SELECT MIN(season) FROM games WHERE {stat} IS NOT NULL AND {stat} != 0"
+            f"SELECT MIN({s.season}) FROM {s.games} "
+            f"WHERE {stat} IS NOT NULL AND {stat} != 0"
         ).fetchone()
         out.append((stat, row[0] if row else None))
     return sorted(out, key=lambda r: (r[1] is None, r[1] or 0))
@@ -200,8 +229,17 @@ TABLE_PURPOSE = {
     "match_details": "Quarter scores and attendance per match, linked",
     "club_match_sources": "One row per club per match from the all-games scrape",
     "club_match_source_issues": "Recorded disagreements between the two sides",
-    "team_seasons": "Ladder position and season record per club",
+    "team_seasons": "Season record and final standing per club",
     "season_goals": "Per-club leading goalkicker by season",
+    # NBA (build_nba_db.py). The engine reads players/games as above; these
+    # are the normalised source of truth the text columns are derived from.
+    "franchises": "One row per continuous organisation, across relocations",
+    "teams": "One row per team identity — the club_hist values",
+    "team_aliases": "Alternative spellings and abbreviations per team",
+    "player_seasons": "Per-player per-season totals, split by phase",
+    "player_team_history": "Which teams a player appeared for, and when",
+    "source_manifest": "Every source retrieval: what, when, and its digest",
+    "source_issues": "Anything the build reconciled rather than trusted",
     "clubs": "Current-club catalogue from the club-sources scrape",
     "club_wikipedia_fields": "Scraped infobox fields per club",
     "club_source_snapshots": "When each club source page was fetched",
@@ -268,37 +306,41 @@ def match_coverage(con: sqlite3.Connection) -> dict:
     }
 
 
-def inventory(con: sqlite3.Connection) -> dict:
+def inventory(con: sqlite3.Connection, schema=None) -> dict:
     """Counts of the things a user would think of as "what's in here"."""
     out: dict = {}
-    if table_exists(con, "games"):
+    s = _schema(schema)
+    if table_exists(con, s.games):
         out["clubs"] = con.execute(
-            "SELECT COUNT(DISTINCT club_now) FROM games").fetchone()[0]
+            f"SELECT COUNT(DISTINCT {s.club_now}) FROM {s.games}").fetchone()[0]
         out["club_identities"] = con.execute(
-            "SELECT COUNT(*) FROM (SELECT club_now AS c FROM games "
-            "UNION SELECT club_hist FROM games)").fetchone()[0]
+            f"SELECT COUNT(*) FROM (SELECT {s.club_now} AS c FROM {s.games} "
+            f"UNION SELECT {s.club_hist} FROM {s.games})").fetchone()[0]
         out["venues"] = con.execute(
-            "SELECT COUNT(DISTINCT venue) FROM games").fetchone()[0]
+            f"SELECT COUNT(DISTINCT {s.venue}) FROM {s.games}").fetchone()[0]
         out["seasons"] = con.execute(
-            "SELECT COUNT(DISTINCT season) FROM games").fetchone()[0]
+            f"SELECT COUNT(DISTINCT {s.season}) FROM {s.games}").fetchone()[0]
         out["finals"] = con.execute(
-            "SELECT COUNT(*) FROM games WHERE is_final = 1").fetchone()[0]
-    if table_exists(con, "players"):
+            f"SELECT COUNT(*) FROM {s.games} "
+            f"WHERE {s.is_final} = 1").fetchone()[0]
+    if table_exists(con, s.players):
         out["one_game_players"] = con.execute(
-            "SELECT COUNT(*) FROM players WHERE career_games = 1").fetchone()[0]
+            f"SELECT COUNT(*) FROM {s.players} "
+            f"WHERE {s.career_games} = 1").fetchone()[0]
         out["still_playing"] = con.execute(
-            "SELECT COUNT(*) FROM players WHERE final_season = "
-            "(SELECT MAX(season) FROM games)").fetchone()[0]
+            f"SELECT COUNT(*) FROM {s.players} WHERE {s.final_season} = "
+            f"(SELECT MAX({s.season}) FROM {s.games})").fetchone()[0]
     return out
 
 
-def per_season_rows(con: sqlite3.Connection) -> list[tuple]:
+def per_season_rows(con: sqlite3.Connection, schema=None) -> list[tuple]:
     """Player-games and distinct players per season, for a coverage chart."""
-    if not table_exists(con, "games"):
+    s = _schema(schema)
+    if not table_exists(con, s.games):
         return []
     return con.execute(
-        "SELECT season, COUNT(*), COUNT(DISTINCT player_id) "
-        "FROM games GROUP BY season ORDER BY season").fetchall()
+        f"SELECT {s.season}, COUNT(*), COUNT(DISTINCT {s.player_id}) "
+        f"FROM {s.games} GROUP BY {s.season} ORDER BY {s.season}").fetchall()
 
 
 def database_file(con: sqlite3.Connection) -> dict:
@@ -319,32 +361,87 @@ def database_file(con: sqlite3.Connection) -> dict:
     }
 
 
-def integrity_warnings(con: sqlite3.Connection) -> list[str]:
+def career_totals_reconcile(con: sqlite3.Connection, schema=None) -> list[str]:
+    """
+    The players table must agree with the games it was aggregated from.
+
+    Every career column is a groupby over `games`, so a duplicate row that
+    survived deduplication, a dropped row, or a rescore against a stale
+    frame shows up here and nowhere else -- the number still looks
+    plausible, it is just wrong. That is the failure mode worth failing a
+    build over, because a wrong career_games silently moves an obscurity
+    score and every star rating derived from it.
+
+    Sums are compared only where the games-side sum is non-NULL, so a stat
+    that predates its recording era is not reported as a disagreement.
+    """
+    s = _schema(schema)
+    out: list[str] = []
+    if not (table_exists(con, s.games) and table_exists(con, s.players)):
+        return out
+    player_cols = columns(con, s.players)
+
+    checks = [
+        (s.career_games, f"COUNT(*)", "career games"),
+        (s.career_score, f"SUM(g.{s.game_score})", "career " + s.game_score),
+        (s.career_postseason, f"SUM(g.{s.is_final})", "post-season games"),
+    ]
+    for column, expression, label in checks:
+        if column not in player_cols:
+            continue
+        try:
+            bad = con.execute(f"""
+                SELECT COUNT(*) FROM (
+                    SELECT p.{s.player_id}
+                    FROM {s.players} p
+                    JOIN {s.games} g ON g.{s.player_id} = p.{s.player_id}
+                    GROUP BY p.{s.player_id}, p.{column}
+                    HAVING {expression} IS NOT NULL
+                       AND p.{column} IS NOT NULL
+                       AND p.{column} != {expression})
+            """).fetchone()[0]
+        except sqlite3.Error:
+            continue
+        if bad:
+            out.append(f"{bad:,} player(s): stored {label} disagrees with "
+                       f"the {s.games} rows it was aggregated from")
+    return out
+
+
+def integrity_warnings(con: sqlite3.Connection, schema=None) -> list[str]:
     """Cheap checks that catch the failure modes seen in this project."""
     warnings = []
-    if not table_exists(con, "games"):
-        return ["core games table missing"]
+    s = _schema(schema)
+    if not table_exists(con, s.games):
+        return [f"core {s.games} table missing"]
 
-    game_cols = columns(con, "games")
-    key_cols = [c for c in ("player_id", "season", "round", "date", "club_hist")
-                if c in game_cols]
-    # Without a round or date column, several games in one season at one club
-    # are indistinguishable and every multi-game season looks like a duplicate.
-    if {"round", "date"} & set(key_cols) and len(key_cols) >= 3:
+    game_cols = columns(con, s.games)
+    # match_id first: it identifies the actual fixture, which is what a
+    # duplicate player-game means. Dates alone cannot separate the two legs
+    # of an NBA doubleheader, and the AFL build has no match_id on `games`
+    # until derive_matches has run, so both shapes have to work.
+    key_cols = [c for c in ("player_id", "match_id", "season", "round", "date",
+                            "club_hist") if c in game_cols]
+    # Without a match, round or date column, several games in one season at one
+    # club are indistinguishable and every multi-game season looks duplicated.
+    if {"match_id", "round", "date"} & set(key_cols) and len(key_cols) >= 3:
         keys = ", ".join(key_cols)
         dupes = con.execute(
-            f"SELECT COUNT(*) FROM (SELECT {keys} FROM games "
+            f"SELECT COUNT(*) FROM (SELECT {keys} FROM {s.games} "
             f"GROUP BY {keys} HAVING COUNT(*) > 1)"
         ).fetchone()[0]
         if dupes:
             warnings.append(f"{dupes:,} duplicate player-game keys")
 
     orphans = con.execute(
-        "SELECT COUNT(*) FROM games g LEFT JOIN players p "
-        "ON p.player_id = g.player_id WHERE p.player_id IS NULL"
+        f"SELECT COUNT(*) FROM {s.games} g LEFT JOIN {s.players} p "
+        f"ON p.{s.player_id} = g.{s.player_id} "
+        f"WHERE p.{s.player_id} IS NULL"
     ).fetchone()[0]
     if orphans:
         warnings.append(f"{orphans:,} game rows have no matching player")
+
+    warnings.extend(career_totals_reconcile(con, s))
 
     # Wooden-spoon integrity: the bug that needed repair_database.py.
     if table_exists(con, "team_seasons") and "ladder_pos" in columns(con, "team_seasons"):
@@ -393,21 +490,27 @@ def source_dates(con: sqlite3.Connection) -> list[tuple[str, str]]:
         return []
 
 
-def collect(con: sqlite3.Connection) -> dict:
-    """Everything, in one dict, for the UI and the CLI to share."""
+def collect(con: sqlite3.Connection, schema=None) -> dict:
+    """Everything, in one dict, for the UI and the CLI to share.
+
+    `schema` threads through the core probes so the same report works for a
+    second sport. The optional-layer probes below it are all AFL-shaped but
+    every one of them is table-gated, so on an NBA database they report
+    "not loaded", which is the honest answer rather than an error.
+    """
     return {
-        "core": core_summary(con),
+        "core": core_summary(con, schema),
         "tables": table_counts(con),
         "links": link_quality(con),
         "untrusted": untrusted_rows(con),
         "rising_star": rising_star_coverage(con),
-        "stat_eras": stat_era_starts(con),
+        "stat_eras": stat_era_starts(con, schema=schema),
         "stat_coverage": stat_coverage_rows(con),
         "match_coverage": match_coverage(con),
-        "inventory": inventory(con),
-        "per_season": per_season_rows(con),
+        "inventory": inventory(con, schema),
+        "per_season": per_season_rows(con, schema),
         "file": database_file(con),
-        "warnings": integrity_warnings(con),
+        "warnings": integrity_warnings(con, schema),
         "meta": source_dates(con),
     }
 
@@ -487,7 +590,7 @@ def health_page(SPORT, con) -> None:
     st.header("Database Health")
     st.caption("Read-only diagnostics: what is loaded, how good the optional "
                "link layers are, and where the data has known gaps.")
-    report = collect(con)
+    report = collect(con, SPORT.schema)
     core = report["core"]
     if "error" in core:
         st.error(core["error"])
@@ -628,30 +731,38 @@ def health_page(SPORT, con) -> None:
 
 # ------------------------------------------------------------------ CLI
 
-def default_db() -> str:
+def default_db(sport_key: str = "afl") -> str:
     try:
         from data_paths import sport_db
     except ImportError:      # data_paths sits beside this file; near-dead path
         from pathlib import Path
         return str(Path(__file__).resolve().parent / "gridley.db")
-    return sport_db("afl", "gridley.db")
+    return sport_db(sport_key)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--db", default=default_db())
+    parser.add_argument("--sport", default="afl",
+                        help="which sport's schema and database to check")
+    parser.add_argument("--db", default=None,
+                        help="database file; defaults to the sport's own")
     parser.add_argument("--json", action="store_true",
                         help="emit the report as JSON")
     parser.add_argument("--strict", action="store_true",
                         help="exit non-zero when any warning is raised")
     args = parser.parse_args(argv)
 
-    if not Path(args.db).exists():
-        print(f"No database at {args.db}. Run build_db.py first.", file=sys.stderr)
+    import sports
+    sport = sports.get(args.sport)
+    db = args.db or default_db(sport.key)
+
+    if not Path(db).exists():
+        print(f"No database at {db}. Run `{sport.build_cmd}` first.",
+              file=sys.stderr)
         return 2
-    con = sqlite3.connect(args.db)
+    con = sqlite3.connect(db)
     try:
-        report = collect(con)
+        report = collect(con, sport.schema)
     finally:
         con.close()
 

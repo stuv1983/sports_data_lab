@@ -37,6 +37,28 @@ def tmp():
 
 
 @pytest.fixture(scope="session")
+def nba_db(tmp_path_factory):
+    """A built NBA database from the synthetic CSV fixture.
+
+    Session-scoped because the build is the same for every consumer and
+    running it once per test would dominate the suite's runtime. Written
+    under a temporary root so it can never overwrite data/nba/, and in
+    particular so a five-player fixture never replaces the real reference
+    file that sports.py reads at import.
+    """
+    import build_nba_db
+    import nba_fixture
+    import nba_source
+
+    root = tmp_path_factory.mktemp("nba")
+    nba_fixture.write(root / "csv")
+    db = root / "nba.db"
+    build_nba_db.build(db, nba_source.CsvNbaSource(root / "csv"),
+                       verbose=False)
+    return db
+
+
+@pytest.fixture(scope="session")
 def con():
     """Connection to the clean-build integration database.
 

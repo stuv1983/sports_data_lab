@@ -43,7 +43,11 @@ The application reads the generated database locally. Database files and downloa
 | Rising Star nominations | Optional local import |
 | Family-draft relationships | Optional local import |
 | Club metadata and records | Optional local import |
-| NBA | Planned |
+| NBA player-game history | Supported (private local build) |
+| NBA Player Search, Advanced Search, Stats Explorer, Grid Solver | Supported |
+| NBA Club Explorer, Past Games, Awards, Game Lab, grid library | Not implemented |
+| NBA draft, awards, teammates, coaches | Not implemented |
+| Daily grid, practice grid, crowd rarity | Not implemented for either sport |
 
 Exact season coverage and row counts depend on the version of the upstream cached dataset used for the local build. The application displays live database counts in its **Database status** panel rather than relying on hard-coded numbers.
 
@@ -217,6 +221,63 @@ Match derivation can then be run separately:
 python derive_matches.py --db my_afl.db
 ```
 
+## Build the NBA database
+
+The NBA build is a **private, local prototype**. Read the licensing note
+under [NBA.com via nba_api](#nbacom-via-nba_api) before using that source.
+
+```bash
+python build_nba_db.py --source csv                      # from CSV exports
+python build_nba_db.py --source csv --seasons 2018-2023  # a subset
+python build_nba_db.py --source nba_api --seasons 1946-2026
+python health.py --sport nba --strict
+```
+
+The builder talks to a source adapter (`nba_source.NbaSource`) and never to
+a website, so the same build works from a CSV export, from NBA.com, or from
+a licensed provider added later. `--source csv` is the default because it is
+the one with no conditions attached.
+
+### NBA data layout
+
+```text
+data/nba/nba.db                            the database
+data/nba/raw/csv/                          CSV source exports
+data/nba/cache/nba_api/                    cached NBA.com responses
+data/nba/reference/nba_reference.json      team list, lineage, measured eras
+```
+
+`nba_reference.json` is written by the build and read back by `sports.py` at
+import time, because `core.Schema` is a frozen dataclass constructed before
+any database is open. `nba_reference.py` carries checked-in fallbacks so a
+clean clone imports and runs before anything is built.
+
+**Restart Streamlit after a build that changes the team list or the measured
+statistic eras.** The database-revision cache key invalidates queries, not a
+frozen dataclass.
+
+### NBA build behaviour
+
+- The build is idempotent. Running it twice produces the same database down
+  to the `player_id` values, which are assigned by sorting on the source's
+  own identifier rather than by row order.
+- `season` is the **start year**: `1996` means the 1996-97 season, and
+  `season_label` carries the display form. `played:2005` therefore means the
+  2005-06 season.
+- Strict health checks run before the build is declared good: duplicate
+  player-game keys, orphan rows, and career totals that disagree with the
+  games they were aggregated from all fail the build. Pass `--no-strict` to
+  keep a database anyway.
+- Every source retrieval is recorded in `source_manifest` with a digest of
+  the bytes as received, and anything the build reconciled rather than
+  trusted is recorded in `source_issues`.
+- `club_now` and `club_hist` are TEXT. The `franchises`, `teams` and
+  `team_aliases` tables are the normalised source of truth those columns are
+  derived from, and are what populate the team list and franchise lineage.
+- Franchise lineage expands one way. An Oklahoma City Thunder square
+  includes Seattle SuperSonics players; a Seattle SuperSonics square returns
+  only players who appeared under that name.
+
 ## Run the application
 
 ```bash
@@ -387,7 +448,58 @@ The source dataset is not equally detailed across every era.
 
 Search results should therefore be interpreted in the context of the statistic's recorded era.
 
+### NBA statistic eras
+
+Basketball statistics begin in different seasons, and the database records
+this rather than papering over it:
+
+| Statistic | First recorded |
+|---|---|
+| Points | 1946-47 |
+| Rebounds | 1950-51 |
+| Minutes | 1951-52 |
+| Steals, blocks, turnovers, offensive/defensive rebounds | 1973-74 |
+| Three-point field goals | 1979-80 |
+| Plus/minus | 1996-97 |
+
+Cells before a statistic's era are **NULL, never 0**, in `games` and in the
+career totals derived from them. A zero would be a claim about the players
+rather than about the records: it would make "recorded no steals" and
+"steals were not recorded" the same answer, and it would rank the entire
+early league as maximally obscure for a reason that is an artefact of
+record-keeping. The obscurity model drops a term it has no data for and
+renormalises the remaining weights instead of reading the gap as zero.
+
+The table above is the shape of the data, not the authority. The authority
+is the `stat_coverage` table, measured from the built database by
+`load_stat_coverage.py --sport nba` and read back through
+`data/nba/reference/nba_reference.json`.
+
 ## Data sources
+
+### NBA.com via nba_api
+
+`nba_source_api.py` reads NBA.com's statistics endpoints through the
+community `nba_api` package.
+
+**This adapter is for a private, local prototype only.** NBA.com's terms
+permit statistics to be used for private, non-commercial purposes and
+require attribution, but they do not clear offering a comprehensive,
+regularly updated NBA statistics database through a website or service
+without prior consent. A database built by this adapter is fine to hold and
+query on your own machine and is **not** cleared for redistribution or for
+backing a hosted application.
+
+`nba_api` is a community package and the endpoints it uses are undocumented
+and change without notice, so this adapter will break without warning. That
+is why `build_nba_db.py` is written against `nba_source.NbaSource` rather
+than against a website: when the endpoints move, or when a licensed source
+becomes available, only the adapter changes.
+
+Every response is cached under `data/nba/cache/nba_api/` and is never
+re-requested unless `--refresh` is passed, which keeps the request count to
+the minimum the data requires and lets the application work offline once the
+cache is warm.
 
 ### AFL Tables
 
@@ -430,6 +542,12 @@ Selected files:
 | `health.py` | Database health and integrity page |
 | `theme.py` | Dark, Light and Custom themes |
 | `build_db.py` | Base AFL SQLite database builder |
+| `obscurity.py` | Sport-agnostic, term-driven obscurity model |
+| `constraints_nba.py` | NBA-specific constraint builders |
+| `build_nba_db.py` | NBA SQLite database builder |
+| `nba_source.py` | NBA source-adapter contract and the CSV adapter |
+| `nba_source_api.py` | NBA.com adapter (private local prototype only) |
+| `nba_reference.py` | NBA team list, franchise lineage and measured eras |
 | `derive_matches.py` | Canonical match table and stable match IDs |
 | `repair_database.py` | Non-download database repair workflow |
 | `data_paths.py` | Single source of truth for every database and data path |
@@ -534,8 +652,19 @@ Build your own database from the documented sources and follow each source's ter
 
 ## Known limitations
 
-- AFL is currently the only complete sport implementation.
-- NBA support is architectural groundwork, not a finished dataset or user workflow.
+- The AFL is the more complete implementation. The NBA has a database and the
+  research pages; it has no Club Explorer, Past Games, Awards page, Game Lab,
+  captured grid library or criterion parser.
+- The NBA build is a private local prototype. It is not cleared for
+  redistribution or for backing a hosted application.
+- NBA seasons are stored as start years, so `played:2005` means 2005-06.
+- There is no NBA teammate constraint. `core.Generic.teammate_of_id` matches
+  on a shared team and season, which the NBA's trade window makes wrong often
+  enough to matter; answering it properly needs shared matches, which is not
+  built. It is absent rather than present and wrong.
+- Obscurity scores from the two sports are not comparable. They come from
+  different models with different terms, which is what the model version
+  stored alongside every score records.
 - Optional source coverage can be incomplete.
 - Name matching cannot safely resolve every historical record.
 - Some historical grids contain unsupported or partially captured criteria.

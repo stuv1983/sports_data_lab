@@ -12,7 +12,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 #: Legacy single-file databases that predate the data/<sport>/ layout.
-LEGACY = {"afl": "gridley.db", "nba": "nba.db"}
+#:
+#: The AFL entry is real history: gridley.db sat in the repository root
+#: before the reorganisation and some checkouts still have it. There is no
+#: NBA entry and there must not be one -- a root nba.db has never existed,
+#: and listing it made sport_db("nba") resolve *outside* data/nba/ for as
+#: long as the database was missing, which is exactly when the build is
+#: about to create it.
+LEGACY = {"afl": "gridley.db"}
 
 
 def sport_db(sport_key: str, legacy: str | None = None) -> str:
@@ -46,6 +53,19 @@ def cache_dir(sport_key: str, name: str | None = None) -> Path:
     """
     base = ROOT / "data" / sport_key.strip().lower() / "cache"
     return base / name if name else base
+
+
+def reference_dir(sport_key: str) -> Path:
+    """Checked-in and build-generated reference data for a sport.
+
+    Distinct from raw/ and cache/: these files are *outputs* of a build that
+    later become *inputs* to importing the app. nba_reference.json is the
+    working example -- the NBA team list and measured stat eras are
+    discovered by build_nba_db.py and then read back by sports.py at import
+    time, because core.Schema is a frozen dataclass built before any
+    database is open.
+    """
+    return ROOT / "data" / sport_key.strip().lower() / "reference"
 
 
 def captaincy_sources(sport_key: str = "afl") -> list[Path]:

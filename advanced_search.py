@@ -42,6 +42,9 @@ def _all_query_params(query_params) -> dict:
         return dict(query_params)
 
 
+#: Fallback examples, in AFL data. A sport declares its own in sports.py --
+#: showing an NBA user `club:Hawthorn` teaches them a query that returns
+#: nothing and reads as the search being broken.
 EXAMPLES = [
     'club:Hawthorn captain:true games>=100 sort:obscurity',
     'captain_club:Carlton captain_year:1995..2001',
@@ -54,13 +57,21 @@ EXAMPLES = [
 ]
 
 
+def _examples(sport):
+    return list(sport.search_examples) or EXAMPLES
+
+
 def search_page(sport, con):
     """Render the reusable, URL-addressable player search page."""
+    V = sport.vocab
+    examples = _examples(sport)
+    has_family = getattr(sport.C, "family_relationships_available", None)
+
     st.markdown("# Advanced Search")
     st.caption(
-        "Combine player, team, era, captaincy, family, match-stat, award and "
-        "draft filters. Values are parameterised; only known fields and "
-        "statistics can become SQL."
+        f"Combine player, {V.club}, era, match-stat and career filters. "
+        "Values are parameterised; only known fields and statistics can "
+        "become SQL."
     )
 
     initial = Q.query_from_params(_all_query_params(st.query_params))
@@ -73,25 +84,32 @@ def search_page(sport, con):
             "Query",
             key=state_key,
             height=90,
-            placeholder=EXAMPLES[0],
+            placeholder=examples[0],
         )
         st.form_submit_button("Search", type="primary")
 
     with st.expander("Query syntax and examples"):
-        for example in EXAMPLES:
+        for example in examples:
             st.code(example, language=None)
+        # The always-true half. Everything here is compiled from the sport's
+        # own schema, so it holds whichever database is loaded.
         st.write(
             "Repeat `club:` for AND. Use `club_any:` for OR. Supported stat "
-            "scopes are `game.`, `season.`, `career.` and `avg.`. Family "
-            "fields are `family:`, `family_relation:`, `related_to:` and "
-            "`relative_club:`. Valid family relations are `sibling`, "
-            "`brother`, `parent_child`, `father_son`, `extended` and "
-            "`spouse`. URL links may use `q=` or structured parameters such "
-            "as `club=`, `captain=1`, `family_relation=brother`, "
-            "`captain_from=`/`captain_to=`, `games_min=` and "
-            "`game_disposals_min=`. All game-scoped conditions apply to the "
-            "same match."
+            "scopes are `game.`, `season.`, `career.` and `avg.`. URL links "
+            "may use `q=` or structured parameters such as `club=`, "
+            "`games_min=` and `game_<stat>_min=`. All game-scoped conditions "
+            "apply to the same match."
         )
+        # The layer-specific half, only where the layer exists. Documenting
+        # `family_relation:` for a sport with no family data would advertise
+        # a filter whose only possible answer is "not loaded".
+        if has_family:
+            st.write(
+                "Family fields are `family:`, `family_relation:`, "
+                "`related_to:` and `relative_club:`. Valid family relations "
+                "are `sibling`, `brother`, `parent_child`, `father_son`, "
+                "`extended` and `spouse`."
+            )
 
     if not query.strip():
         st.info("Enter a query to search the complete player database.")

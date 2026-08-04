@@ -68,8 +68,10 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
         "date and ground."
     )
 
-    if sport.key != "afl":
-        st.info("Past Games is currently available for AFL only.")
+    if not sport.has_past_games:
+        st.info(f"Past {sport.vocab.title_case('games')} needs the "
+                f"club-history tables, which are not built for "
+                f"{sport.label} yet.")
         return
     if not CH.club_history_available(con):
         st.info(

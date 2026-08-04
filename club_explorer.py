@@ -260,8 +260,10 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
         "Current-club metadata, all-time player registers, career totals and "
         "season/game record leaderboards from locally cached source pages."
     )
-    if sport.key != "afl":
-        st.info("Club Explorer is currently available for AFL only.")
+    if not sport.has_club_explorer:
+        st.info(f"{sport.vocab.title_case('club')} Explorer needs the "
+                f"club-sources tables, which are not built for "
+                f"{sport.label} yet.")
         return
     if not club_data_available(con):
         st.info(

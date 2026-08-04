@@ -26,6 +26,7 @@ import sqlite3
 import urllib.request
 from pathlib import Path
 
+import obscurity
 from data_paths import default_db
 
 DATA_URL = (
@@ -387,136 +388,39 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
         repair_database.run(db_path)
 
 
-#: Obscurity weights, and the whole of the tuning surface. They are
-#: judgement, not a fit: the only ground truth available offline is a
-#: handful of rarity percentages read off finished puzzles, which is far
-#: too few to fit six coefficients against without inventing precision.
-#: Career games stays the single strongest fame proxy; career span is the
-#: term that separates "a whole career inside one season" from the same
-#: game count spread over a decade.
-OBSCURITY_WEIGHTS = {
-    "games": 0.30,
-    "span": 0.18,
-    "era": 0.15,
-    "goals": 0.14,
-    "finals": 0.13,
-    "brownlow": 0.10,
-}
+#: The AFL obscurity model. The machinery moved to obscurity.py so the NBA
+#: build could use it without copying it or inheriting AFL column names;
+#: only the term declaration is a sport decision, and that lives there too.
+#:
+#: These four names stay here because recompute_obscurity.py, the star
+#: disclaimer and tests/test_obscurity.py all import them from build_db,
+#: and there is no reason to make callers care where the code moved to.
+AFL_MODEL = obscurity.AFL_MODEL
+OBSCURITY_WEIGHTS = AFL_MODEL.weights
 
 #: Bumped whenever the formula changes, and stored alongside every score so
 #: a database can say which model produced it. Scores from different
-#: versions are not comparable.
-#:
-#: 1: original. Missing Brownlow data counted as zero votes; the era term
-#:    was clipped flat at 0 for every final season from 2000 on.
-#: 2: missing Brownlow data drops the term and renormalises instead of
-#:    being read as "never polled"; era ranks final seasons rather than
-#:    clipping, so the last 25 years separate again.
-OBSCURITY_MODEL_VERSION = 2
+#: versions are not comparable. The version history is on obscurity.AFL_MODEL.
+OBSCURITY_MODEL_VERSION = AFL_MODEL.version
 
 #: Terms that can be unavailable rather than zero. Everything else is
 #: derived from the games rows and is therefore always known.
-OBSCURITY_OPTIONAL_TERMS = ("brownlow",)
+OBSCURITY_OPTIONAL_TERMS = AFL_MODEL.optional_terms
 
 
 def obscurity_components(p):
+    """Per-term contributions, the blended score and its confidence.
+
+    The AFL binding of obscurity.components. The formula, its rationale and
+    the missing-is-not-zero rule all live in obscurity.py.
     """
-    Per-term obscurity contributions, the blended score, and its confidence.
-
-    Returns a DataFrame with one `<term>_component` column per weight, plus
-    `obscurity`, `obscurity_confidence` and `obscurity_model`. Storing the
-    parts rather than only the total is what makes a score auditable: it can
-    be explained in the UI, retuned, and compared against an older version.
-
-    Heuristic 0-100 proxy for how unlikely a player is to be picked, where
-    higher = more obscure. This is NOT Gridley's real pick data (which is
-    crowd-sourced and not public). It is a fame proxy built from career
-    footprint, and should never be presented as measured rarity.
-
-    TIES TAKE THE GROUP'S BEST RANK
-    -------------------------------
-    `method="min"` is the whole reason this scale reaches 100. With pandas'
-    default `method="average"`, every member of a tied group takes the
-    group's *midpoint* rank -- and these inputs are mostly ties: 82% of
-    players never polled a Brownlow vote, 65% never played a final, 26%
-    never kicked a goal. Averaging meant "never polled a vote" scored 58.8
-    out of 100 rather than 100, so the most anonymous career possible
-    topped out at 84.9 and the top sixth of the scale was unreachable.
-    Having none of a thing puts a player in the most anonymous tier for
-    that term; how many others share the tier is not evidence about them.
-
-    CAREER SPAN
-    -----------
-    Seasons between debut and final game, which nothing else here captures.
-    17 games all inside 1899 is a far more obscure career than 17 games
-    strung across a decade, and only this term can tell them apart.
-
-    MISSING IS NOT ZERO
-    -------------------
-    "Polled no Brownlow votes" and "no Brownlow data exists" are different
-    facts, and the first version of this formula read both as the maximum
-    obscurity contribution. Brownlow voting starts in 1931, so every one of
-    the 3,414 players who finished before it began was being credited for
-    failing to poll in a count that did not exist. Those players now drop
-    the term and have the remaining five weights renormalised to 1.0, and
-    carry a confidence below 1 recording that a term was unavailable.
-
-    ERA
-    ---
-    Ranked, not clipped. The old term was `(2000 - final_season)` scaled and
-    clipped at zero, which made every player who finished from 2000 onwards
-    equally contemporary -- one 2001 season and a career still running in
-    2026 scored the same. Ranking final seasons keeps the ordering (older
-    is more obscure) while restoring separation across the last 25 years,
-    and drops two arbitrary constants.
-    """
-    import pandas as pd
-
-    def pct_rank_low_is_obscure(s):
-        # Invert so small values score high, and give a tied group its best
-        # rank rather than the middle of the tie. See the docstring.
-        return (1 - s.rank(pct=True, method="min")) * 100
-
-    span = (p["final_season"].fillna(p["debut_season"])
-            - p["debut_season"] + 1).clip(lower=1)
-
-    terms = {
-        "games": pct_rank_low_is_obscure(p["career_games"].fillna(0)),
-        "span": pct_rank_low_is_obscure(span),
-        "goals": pct_rank_low_is_obscure(p["career_goals"].fillna(0)),
-        "finals": pct_rank_low_is_obscure(p["finals_played"].fillna(0)),
-        # Recency: modern players are far more familiar to today's solvers.
-        "era": pct_rank_low_is_obscure(p["final_season"]),
-        # Left NaN where the source has nothing to say, and dropped from
-        # the blend below rather than read as "never polled".
-        "brownlow": pct_rank_low_is_obscure(p["career_brownlow"]).where(
-            p["career_brownlow"].notna()),
-    }
-
-    # Renormalise over the terms each player actually has. A player missing
-    # the Brownlow term is scored on the other five at 1/0.90 their weight,
-    # which is the same as saying the missing term would have looked like
-    # their average -- the only neutral assumption available.
-    available = sum(
-        pd.Series(OBSCURITY_WEIGHTS[name], index=p.index).where(
-            terms[name].notna(), 0.0)
-        for name in terms
-    )
-    weighted = sum(OBSCURITY_WEIGHTS[name] * terms[name].fillna(0.0)
-                   for name in terms)
-
-    out = pd.DataFrame(
-        {f"{name}_component": value.round(1) for name, value in terms.items()},
-        index=p.index)
-    out["obscurity"] = (weighted / available).round(1)
-    out["obscurity_confidence"] = available.round(3)
-    out["obscurity_model"] = OBSCURITY_MODEL_VERSION
-    return out
+    return obscurity.components(p, AFL_MODEL)
 
 
 def obscurity_score(p):
     """The blended 0-100 score alone. See `obscurity_components`."""
-    return obscurity_components(p)["obscurity"]
+    return obscurity.score(p, AFL_MODEL)
+
 
 # ---------------------------------------------------------------- layers
 

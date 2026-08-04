@@ -107,6 +107,26 @@ class Schema:
             (f"p.{self.obscurity}", "Obscurity"),
         ]
 
+    def _header_for(self, column, fallback):
+        """The display header solve_columns() gave one column."""
+        expression = f"p.{column}"
+        for expr, header in self.solve_columns():
+            if expr == expression:
+                return header
+        return fallback
+
+    def clubs_hist_header(self):
+        """What the club-history column is called in a results table.
+
+        The AFL says "Clubs" and the NBA says "Teams", and app.py used to
+        test for the literal "Clubs" -- which silently stopped finding the
+        column the moment a second sport named it something else.
+        """
+        return self._header_for(self.clubs_hist, "Clubs")
+
+    def obscurity_header(self):
+        return self._header_for(self.obscurity, "Obscurity")
+
     def order_map(self):
         return {
             "obscurity": f"p.{self.obscurity} DESC, p.{self.career_games} ASC",

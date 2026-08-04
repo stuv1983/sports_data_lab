@@ -182,7 +182,9 @@ def home_page(sport, con, draft_ok, awards_ok):
                  f"database back to {s['season_min']}.")
         if note:
             st.write(note)
-        st.write(core.STAR_DISCLAIMER)
+        # This sport's model, not core's: core's names goals, finals and
+        # Brownlow votes, and the NBA model uses none of them.
+        st.write(sport.star_disclaimer)
 
 
 # ------------------------------------------------------------- filters
@@ -272,8 +274,10 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
     st.markdown(f"{heading_level} {p[0]}")
     st.caption(f"{p[1]}–{p[2]} · {p[6].replace('|', ', ')}")
 
-    # Show trusted captain appointments on the player profile.
-    if sport.key == "afl":
+    # Show trusted captain appointments on the player profile. Gated on the
+    # constraints module declaring the layer rather than on the sport's name,
+    # so a sport that later gains captaincy data gets this for free.
+    if getattr(sport.C, "captain_available", None):
         has_captains = con.execute(
             "SELECT 1 FROM main.sqlite_master "
             "WHERE type='table' AND name='captaincies'"
@@ -697,9 +701,11 @@ def game_lab_page(sport, con, player_picker):
     wording, so any other sport falls through to the generic three-clue
     prototype below rather than being served AFL questions.
     """
-    if sport.key == "afl":
-        import game_lab
-        game_lab.game_lab_page(sport, con, player_picker)
+    if sport.game_lab_module:
+        import importlib
+
+        module = importlib.import_module(sport.game_lab_module)
+        module.game_lab_page(sport, con, player_picker)
         return
 
     V, sc = sport.vocab, sport.schema

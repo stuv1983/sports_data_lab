@@ -240,6 +240,12 @@ BUILDERS = {
     "Drafted between years":      (drafted_between, ["from", "to"]),
 }
 
+#: Draft categories offered in the UI. Here rather than in app.py because
+#: they are a property of the Draftguru layer this module reads, and no
+#: other sport's draft has the same list.
+DRAFT_TYPES = ("National", "Rookie", "Pre-Season", "Mid-Season",
+               "Trade", "Free Agency", "Pre-Draft", "Post-Draft")
+
 DRAFT_BUILDERS = {"Draft pick between", "Draft type (National/Rookie…)",
                   "Drafted by club", "Drafted by club, never played there",
                   "Recruited from…", "Drafted between years"}

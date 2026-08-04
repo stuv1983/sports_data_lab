@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from typing import Sequence
 
 import core
+import nba_reference
+import obscurity
 
 
 # ------------------------------------------------------------ vocabulary
@@ -73,10 +75,77 @@ class Sport:
     #: its era must be declined, not silently answered from partial data.
     stat_eras: dict = field(default_factory=dict)
     enabled: bool = True
+    #: The obscurity.Model this sport's scores were produced by. Left None
+    #: rather than defaulting to the AFL model: silently rescoring an NBA
+    #: database against goals and Brownlow votes would produce a column of
+    #: plausible-looking numbers that mean nothing.
+    obscurity_model: object = None
     #: Optional imported club catalogue shown after the standard layers.
     club_data_table: str = ""
     #: Optional broad-family availability probe on the constraints module.
     family_probe: str = ""
+
+    # -- capabilities --------------------------------------------------
+    # Everything below exists so no page has to ask `sport.key == "afl"`.
+    # A page that branches on the key is a page that will answer an NBA
+    # question with an AFL assumption the first time somebody adds a third
+    # sport; a page that branches on a capability just gets the right
+    # answer. Defaults are all the "not available" value, so a new sport
+    # starts with nothing switched on and turns things on deliberately.
+
+    #: Dotted module name of a criterion-text parser, if one exists.
+    criterion_parser: str = ""
+    #: True when a library of captured historical grids exists.
+    grid_library: bool = False
+    #: Dotted module name of the full Game Lab, if one exists.
+    game_lab_module: str = ""
+    #: Pages needing sport-specific tables rather than the schema alone.
+    has_club_explorer: bool = False
+    has_awards_page: bool = False
+    has_past_games: bool = False
+    #: Probe name -> the shell command that loads that layer. Shown in the
+    #: status panel when the layer is missing, so the panel says how to fix
+    #: itself instead of only reporting that something is absent.
+    loader_hints: dict = field(default_factory=dict)
+    #: Tables the club catalogue needs, and what to run when they are gone.
+    club_data_tables: frozenset = frozenset()
+    club_data_hint: str = ""
+    family_hint: str = ""
+    #: Example queries for Advanced Search, in this sport's own data.
+    search_examples: tuple = ()
+    #: Opening axes for the grid builder, as (builder name, {arg: value}).
+    #: Without these an NBA board opens on an AFL club name, which
+    #: axis_widget silently coerces to clubs[0].
+    grid_defaults: tuple = ()
+    #: Display aliases for venues: stored name -> the name people use.
+    venue_display: dict = field(default_factory=dict)
+
+    @property
+    def star_disclaimer(self):
+        """
+        The provenance sentence shown wherever a star rating appears.
+
+        Generated from this sport's obscurity model rather than written
+        out, because the hand-written AFL version went stale: it claimed
+        the formula included club spread, which it never has. Telling NBA
+        users their rating comes from goals and Brownlow votes would be the
+        same failure with a bigger audience.
+        """
+        if self.obscurity_model is None:
+            return core.STAR_DISCLAIMER
+        return obscurity.disclaimer(self.obscurity_model, self.vocab)
+
+    def missing_layer_hints(self, con):
+        """(label, hint) for every declared layer that is not loaded.
+
+        Only layers with a hint are yielded: a layer nobody can install yet
+        should report "not loaded" in the status rows and say nothing more,
+        rather than pointing at a script that does not exist.
+        """
+        for label, probe in self.optional_layers.items():
+            hint = self.loader_hints.get(probe)
+            if hint and not self.layer_ready(probe, con):
+                yield label, hint
 
     # -- module access ------------------------------------------------
     @property
@@ -421,8 +490,63 @@ AFL = Sport(
                      "Award data": "awards_available",
                      "Captain data": "captain_available",
                      "Rising Star": "rising_star_available"},
+    obscurity_model=obscurity.AFL_MODEL,
     club_data_table="clubs",
     family_probe="family_relationships_available",
+    criterion_parser="parse_criteria",
+    grid_library=True,
+    game_lab_module="game_lab",
+    has_club_explorer=True,
+    has_awards_page=True,
+    has_past_games=True,
+    loader_hints={
+        "draft_available": "Run `load_draftguru.py`, then `link_draft.py`.",
+        "awards_available": "Run `load_draftguru.py`, then `link_people.py`.",
+        "captain_available": "Run `load_captains.py` for club-captain data.",
+        "rising_star_available": ("Run `fetch_footywire_rising_star.py`, "
+                                  "then `load_rising_star.py`."),
+    },
+    club_data_tables=frozenset({
+        "clubs", "club_source_snapshots", "club_wikipedia_fields",
+        "club_player_totals", "club_player_register", "club_player_records",
+    }),
+    club_data_hint=("Run `utils/fetch_club_sources.py`, then "
+                    "`utils/load_club_sources.py` for Club Explorer."),
+    family_hint=("Run `scrape_wikipedia_families.py`, then "
+                 "`load_family_relationships.py` for family links."),
+    # Every one of these is compiled by tests/test_sport_capabilities.py.
+    # An example that does not run teaches a query that does not work.
+    search_examples=(
+        'club:Hawthorn games>=200 sort:obscurity',
+        'game.disposals>=40 postseason:true',
+        'season.goals>=50 debut:1990..1999',
+        'career.marks>=1000 avg.disposals>=20',
+        'award:brownlow-medal',
+        'club:Fitzroy club_any:Carlton',
+    ),
+    # (columns, rows). Unchanged from the values app.py used to hold.
+    grid_defaults=(
+        (("Played for club", {"club": "St Kilda"}),
+         ("Played for club", {"club": "North Melbourne"}),
+         ("150+ / X+ career games", {"games": 150})),
+        (("X+ goals at 2+ clubs", {"goals": 30, "clubs": 2}),
+         ("Teammate of…", {"player": "Mason Wood"}),
+         ("No finals wins (played finals)", {})),
+    ),
+    venue_display={
+        "Docklands": "Marvel Stadium",
+        "Kardinia Park": "GMHBA Stadium",
+        "Perth Stadium": "Optus Stadium",
+        "Football Park": "AAMI Stadium",
+        "M.C.G.": "MCG",
+        "S.C.G.": "SCG",
+        "Western Oval": "Whitten Oval",
+        "Princes Park": "Optus Oval",
+        "Carrara": "People First Stadium",
+        "Sydney Showground": "ENGIE Stadium",
+        "York Park": "UTAS Stadium",
+        "Manuka Oval": "Manuka",
+    },
 )
 
 
@@ -431,24 +555,52 @@ AFL = Sport(
 # thing, so explore.py's pages work unchanged. Only the three names that
 # genuinely differ are overridden.
 
+#: `points` stays first: app.axis_widget offers stats[0] as the default, and
+#: a board that opens on "40+ fouls in a game" answers a question nobody
+#: asked.
 NBA_STATS = ["points", "rebounds", "assists", "steals", "blocks",
              "turnovers", "fgm", "fga", "fg3m", "fg3a", "ftm", "fta",
              "oreb", "dreb", "minutes", "plus_minus", "fouls"]
 
 NBA_SCHEMA = core.Schema(
     career_score="career_points",
+    # Not overriding this was a real bug: the schema kept the AFL default
+    # `finals_played` while build_nba_db.py writes `playoffs_played`, so
+    # core.require_schema would have rejected every NBA database ever built.
+    career_postseason="playoffs_played",
     game_score="points",
     is_final="is_playoff",
     stats=NBA_STATS,
-    clubs=[],                       # filled from the teams table at build
+    # Measured from the teams table once built; the fallback list is what
+    # lets a clean clone import. Previously [], which made axis_widget's
+    # clubs[0] an IndexError the moment the NBA became selectable.
+    clubs=nba_reference.teams(),
+    club_lineage=nba_reference.club_lineage(),
+    venue_aliases=nba_reference.venue_aliases(),
+    required_player_cols=("name_key", "career_minutes"),
     rebuild_cmd="python build_nba_db.py",
+    # app.py, fetch_grid.py and the tests index this tuple positionally, so
+    # the order is part of the contract and the eight-column shape is not
+    # optional -- core.Schema's six-column default would have shifted every
+    # positional read. Obscurity stays last: core.square() reads the final
+    # column as the rating.
+    solve_cols=(
+        ("p.player", "Player"),
+        ("p.debut_season", "From"),
+        ("p.final_season", "To"),
+        ("p.career_games", "Games"),
+        ("p.career_points", "Points"),
+        ("p.playoffs_played", "Playoffs"),
+        ("p.clubs_hist", "Teams"),
+        ("p.obscurity", "Obscurity"),
+    ),
 )
 
 NBA = Sport(
     key="nba",
     label="NBA Data Lab",
     icon="🏀",
-    db=sport_db("nba", "nba.db"),
+    db=sport_db("nba"),
     module="constraints_nba",
     schema=NBA_SCHEMA,
     vocab=Vocab(club="team", clubs="teams", game="game", games="games",
@@ -458,16 +610,45 @@ NBA = Sport(
                 grid_source="Immaculate Grid"),
     theme="nba",
     build_cmd="python build_nba_db.py",
-    missing_db_hint="No nba.db found. Run `python build_nba_db.py` first.",
+    missing_db_hint=(f"No NBA database found at {sport_db('nba')}. "
+                     "Run `python build_nba_db.py` first."),
     empty_hint=("Nothing satisfies both. Steals, blocks, turnovers and the "
                 "offensive/defensive rebound split are not recorded before "
                 "1973-74, and three-pointers not before 1979-80."),
-    stat_eras={"steals": 1974, "blocks": 1974, "turnovers": 1974,
-               "oreb": 1974, "dreb": 1974, "fg3m": 1980, "fg3a": 1980,
-               "minutes": 1952, "plus_minus": 1997},
+    # Measured from the built database's stat_coverage table, not written by
+    # hand. The AFL's era note learned this the hard way -- eight of its
+    # fifteen hand-written values were wrong. See nba_reference.py.
+    stat_eras=nba_reference.stat_eras(),
     optional_layers={"Draft data": "draft_available",
                      "Award data": "awards_available"},
-    enabled=False,      # flip once build_nba_db.py exists
+    obscurity_model=obscurity.NBA_MODEL,
+    # Every capability stays at its default. There is no NBA criterion
+    # parser, grid library, Game Lab, Club Explorer, Awards page or Past
+    # Games page, and saying so here is what keeps those pages from
+    # pretending. No loader_hints either: the draft and award layers have
+    # no NBA loader to point at yet, so the status panel says "not loaded"
+    # and stops, rather than naming a script that does not exist.
+    search_examples=(
+        'club:"Boston Celtics" games>=500 sort:obscurity',
+        'game.points>=50 postseason:true',
+        'season.points>=2000 debut:1980..1999',
+        'club:"Seattle SuperSonics" club_any:"Oklahoma City Thunder"',
+        'career.rebounds>=10000 avg.assists>=6',
+        'played:1996..2005 sort:fewest_games',
+    ),
+    grid_defaults=(
+        (("Played for club", {"club": "Boston Celtics"}),
+         ("Played for club", {"club": "Los Angeles Lakers"}),
+         ("150+ / X+ career games", {"games": 500})),
+        (("X+ goals at 2+ clubs", {"goals": 1000, "clubs": 2}),
+         ("X+ of a stat in one game", {"stat": "points", "x": 40}),
+         ("No finals wins (played finals)", {})),
+    ),
+    # No `enabled=False`. selectable() already requires exists(), which
+    # requires a readable players table at the path above, so the NBA stays
+    # out of the picker until it is genuinely built. A second hand-flipped
+    # switch only creates a state where the database is ready and the app
+    # still refuses to show it.
 )
 
 

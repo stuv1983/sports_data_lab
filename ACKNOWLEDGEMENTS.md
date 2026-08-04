@@ -63,10 +63,29 @@ project is an unaffiliated fan tool; it does not reproduce Gridley's puzzles
 or its crowd-sourced rarity percentages (the obscurity score here is an
 independent fame proxy, not Gridley's data).
 
+**NBA.com** — <https://www.nba.com/stats/>
+NBA statistics, read through the community `nba_api` package. NBA.com's terms
+permit statistics to be used for private, non-commercial purposes and require
+attribution to NBA.com, but they do not clear offering a comprehensive,
+regularly updated NBA statistics database through a website or service without
+prior consent. The NBA build in this repository is therefore a **private local
+prototype**: the database stays on the machine that built it, and neither the
+database nor an application backed by it is redistributed or hosted. Every
+retrieval is cached and recorded in the `source_manifest` table so what was
+taken, and when, is auditable. `nba_api` is an unofficial community package;
+NBA.com does not document these endpoints and does not announce changes to
+them.
+
+**Immaculate Grid** — <https://www.immaculategrid.com>
+The daily grid puzzle format the NBA solver answers questions in. This project
+is an unaffiliated fan tool; it does not reproduce Immaculate Grid's puzzles or
+its crowd-sourced rarity percentages.
+
 ## Libraries
 
 - **pandas** and **NumPy** — all the data reshaping
 - **pyreadr** — reading the R `.rda` dataset
+- **nba_api** — optional; the NBA.com adapter, see the note above
 - **Streamlit** — the entire UI
 - **SQLite** — via the Python standard library
 
@@ -75,4 +94,5 @@ independent fame proxy, not Gridley's data).
 The code in this repository is ours to license. The data is not. If you fork
 this, build your own database from the sources above and follow their terms.
 AFL, club names and the Brownlow, Coleman and Norm Smith medals are
-trademarks of their respective owners; this is an unaffiliated hobby project.
+trademarks of their respective owners, as are the NBA, its team names and
+its awards; this is an unaffiliated hobby project.

@@ -12,6 +12,8 @@ import re
 import shlex
 from typing import Any
 
+import core
+
 
 class QuerySyntaxError(ValueError):
     """Raised when an Advanced Search token cannot be interpreted safely."""
@@ -292,7 +294,11 @@ def compile_query(schema, query: str, con=None):
             f"EXISTS (SELECT 1 FROM {s.games} av "
             f"WHERE av.{s.player_id}=p.{s.player_id} "
             f"GROUP BY av.{s.player_id}, av.{s.season} "
-            "HAVING COUNT(*) >= 5 AND " + " AND ".join(avg_conditions) + ")"
+            # Read from core rather than repeated here: a season average
+            # means the same thing in a query as it does in a grid square,
+            # and two copies of the floor is how they stop meaning that.
+            f"HAVING COUNT(*) >= {core.Generic.SEASON_AVG_MIN_GAMES} AND "
+            + " AND ".join(avg_conditions) + ")"
         )
         params.extend(avg_params)
 

@@ -44,6 +44,14 @@ CREATE TABLE IF NOT EXISTS stat_coverage (
 """
 
 
+#: sport key -> (competition label, source description). The label is half
+#: the primary key above, so it has to be stable once rows exist.
+COMPETITIONS = {
+    "afl": ("AFL/VFL", "AFL Tables via build_db.py"),
+    "nba": ("NBA", "build_nba_db.py"),
+}
+
+
 def table_exists(con: sqlite3.Connection, name: str) -> bool:
     return con.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
@@ -62,7 +70,8 @@ def measure(con: sqlite3.Connection, stats: list[str]) -> list[tuple]:
     for stat in stats:
         if stat not in cols:
             out.append((stat, None, None, 0,
-                        "not a column on games -- check build_db.HEADER_MAP"))
+                        "not a column on games -- the sport declares this "
+                        "stat but the build never writes it"))
             continue
         first, last, non_null = con.execute(
             f"SELECT MIN(CASE WHEN {stat} IS NOT NULL AND {stat} != 0 "
@@ -73,8 +82,8 @@ def measure(con: sqlite3.Connection, stats: list[str]) -> list[tuple]:
         ).fetchone()
         non_null = non_null or 0
         if first is None:
-            note = ("column present but never populated -- mapped in "
-                    "HEADER_MAP yet carrying no value; do not advertise")
+            note = ("column present but never populated -- the build maps "
+                    "it yet it carries no value; do not advertise")
         else:
             pct = 100 * non_null / total if total else 0
             note = f"{non_null:,} of {total:,} player-games populated ({pct:.1f}%)"
@@ -122,12 +131,18 @@ def main() -> int:
     sport = sports.get(args.sport)
     stats = list(sport.schema.stats)
 
+    # The competition label is part of the primary key, so two sports in
+    # two databases stay distinguishable if their coverage tables are ever
+    # compared side by side.
+    competition, source = COMPETITIONS.get(
+        sport.key, (sport.label, f"{sport.build_cmd} (measured)"))
+
     if args.dry_run:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         rows = measure(con, stats)
     else:
         con = sqlite3.connect(db)
-        rows = load(con, stats, source="AFL Tables via build_db.py")
+        rows = load(con, stats, source=source, competition=competition)
 
     print(f"database: {db}")
     print(f"{'stat':<18} {'from':>6} {'to':>6}  notes")

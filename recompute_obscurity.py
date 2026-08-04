@@ -2,18 +2,21 @@
 """recompute_obscurity.py -- Rescore the obscurity column in place.
 
 Obscurity is derived entirely from columns the players table already holds
-(career games, span, goals, Brownlow votes, finals, final season), so a
-change to the formula does not need the multi-minute rebuild that
-build_db.py performs from the raw source. This reads the table, calls the
-one authoritative scorer in build_db.py, and writes the column back.
+(career games, span and whatever else the sport's model names), so a change
+to the formula does not need the multi-minute rebuild that build_db.py
+performs from the raw source. This reads the table, calls the one
+authoritative scorer, and writes the column back.
 
     python recompute_obscurity.py                 # rescore the AFL database
     python recompute_obscurity.py --dry-run       # report the change only
+    python recompute_obscurity.py --sport nba     # rescore the NBA database
     python recompute_obscurity.py --db other.db
 
-The formula itself lives in build_db.obscurity_score and is not duplicated
-here -- a second copy is how the rebuilt database and the rescored one
-start disagreeing.
+The formula itself lives in obscurity.py and is not duplicated here -- a
+second copy is how the rebuilt database and the rescored one start
+disagreeing. Which terms apply is a property of the sport, read from
+sports.Sport.obscurity_model, so this script never has to know that the AFL
+scores Brownlow votes and the NBA scores minutes.
 """
 
 import argparse
@@ -22,17 +25,26 @@ import sys
 
 import pandas as pd
 
-from build_db import obscurity_components
+import obscurity as obscurity_module
+import sports
 from data_paths import default_db
 
-#: Everything obscurity_score reads. Selected explicitly so a formula that
-#: grows a new input fails loudly here instead of scoring against NaN.
-NEEDED = ["player_id", "career_games", "career_goals", "career_brownlow",
-          "finals_played", "debut_season", "final_season"]
+
+def needed_columns(model):
+    """
+    Every column the model reads, plus the key.
+
+    Selected explicitly rather than with SELECT * so a formula that grows a
+    new input fails loudly here instead of quietly scoring against NaN.
+    """
+    return ["player_id", *model.required_columns()]
 
 
-def recompute(db, dry_run=False, verbose=True):
-    """Rescore `db`. Returns (rows, changed, biggest_move)."""
+def recompute(db, model=None, dry_run=False, verbose=True):
+    """Rescore `db` against `model`. Returns (rows, changed, biggest_move)."""
+    if model is None:
+        model = obscurity_module.AFL_MODEL
+    NEEDED = needed_columns(model)
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
     try:
@@ -40,15 +52,16 @@ def recompute(db, dry_run=False, verbose=True):
         missing = [c for c in NEEDED if c not in have]
         if missing:
             raise SystemExit(
-                f"players table is missing {', '.join(missing)} -- "
-                "this database predates the current schema.")
+                f"players table is missing {', '.join(missing)} -- either "
+                "this database predates the current schema, or it belongs "
+                "to a different sport than --sport says.")
 
         players = pd.read_sql(
             f"SELECT {', '.join(NEEDED)}, obscurity FROM players", con)
         if players.empty:
-            raise SystemExit("players table is empty -- run build_db.py first.")
+            raise SystemExit("players table is empty -- build it first.")
 
-        components = obscurity_components(players)
+        components = obscurity_module.components(players, model)
         players["new_obscurity"] = components["obscurity"]
         delta = (players.new_obscurity - players.obscurity.fillna(0)).abs()
         changed = int((delta > 0.05).sum())
@@ -97,11 +110,21 @@ def recompute(db, dry_run=False, verbose=True):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--db", default=default_db("afl"))
+    ap.add_argument("--sport", default="afl",
+                    choices=sorted(sports.SPORTS),
+                    help="Which sport's model and database to use.")
+    ap.add_argument("--db", default=None,
+                    help="Database file. Defaults to the sport's own.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Report what would change without writing.")
     a = ap.parse_args(argv)
-    recompute(a.db, dry_run=a.dry_run)
+    sport = sports.get(a.sport)
+    if sport.obscurity_model is None:
+        raise SystemExit(
+            f"{sport.label} declares no obscurity model, so there is "
+            "nothing to rescore against.")
+    recompute(a.db or default_db(a.sport), model=sport.obscurity_model,
+              dry_run=a.dry_run)
     return 0
 
 
