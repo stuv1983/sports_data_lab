@@ -32,6 +32,8 @@ _os.chdir(_ROOT)
 
 import json
 import sqlite3
+import time
+from pathlib import Path
 
 import pytest
 
@@ -306,7 +308,7 @@ def test_an_unrecognised_playoff_round_fails_the_build(tmp_path):
     path = root / "csv" / "matches_2009.csv"
     path.write_text(path.read_text(encoding="utf-8").replace(",F,", ",GF,"),
                     encoding="utf-8")
-    with pytest.raises(SystemExit):
+    with pytest.raises(build_nba_db.BuildError):
         build_nba_db.build(root / "nba.db",
                            nba_source.CsvNbaSource(root / "csv"),
                            verbose=False)
@@ -323,10 +325,173 @@ def test_an_unknown_team_is_recorded_as_an_error_issue(tmp_path):
     path = root / "csv" / "matches_2010.csv"
     path.write_text(path.read_text(encoding="utf-8").replace("okc", "nope"),
                     encoding="utf-8")
-    with pytest.raises(SystemExit):
+    with pytest.raises(build_nba_db.BuildError):
         build_nba_db.build(root / "nba.db",
                            nba_source.CsvNbaSource(root / "csv"),
                            verbose=False)
+    kinds = {r[0] for r in sqlite3.connect(root / "nba.db").execute(
+        "SELECT kind FROM source_issues")}
+    assert "unknown_team" in kinds
+
+
+def test_an_unresolved_match_team_takes_the_match_out_of_the_schedule(tmp_path):
+    """Keeping it left a fixture whose result counted for nobody and whose
+    player-games joined to a NULL club -- visible only in an issue row."""
+    root = tmp_path / "dropped"
+    nba_fixture.write(root / "csv")
+    path = root / "csv" / "matches_2010.csv"
+    path.write_text(path.read_text(encoding="utf-8").replace("okc", "nope"),
+                    encoding="utf-8")
+    with pytest.raises(build_nba_db.BuildError):
+        build_nba_db.build(root / "nba.db",
+                           nba_source.CsvNbaSource(root / "csv"),
+                           verbose=False)
+    con = sqlite3.connect(root / "nba.db")
+    assert con.execute("SELECT COUNT(*) FROM matches WHERE season=2010"
+                       ).fetchone()[0] == 0
+    assert con.execute(
+        "SELECT COUNT(*) FROM matches WHERE home_team IS NULL "
+        "OR away_team IS NULL").fetchone()[0] == 0
+    # And its box scores went with it, rather than surviving as rows whose
+    # club_now is NULL.
+    assert con.execute("SELECT COUNT(*) FROM games WHERE season=2010"
+                       ).fetchone()[0] == 0
+
+
+def test_a_match_named_twice_with_a_different_score_is_rejected(tmp_path):
+    """drop_duplicates(keep='first') resolved this by row order. The losing
+    copy's score decides a win, a standing and possibly a title."""
+    root = tmp_path / "conflict"
+    nba_fixture.write(root / "csv")
+    path = root / "csv" / "matches_2010.csv"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines.append(lines[1].replace(",121,118,", ",118,121,"))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(build_nba_db.BuildError):
+        build_nba_db.build(root / "nba.db",
+                           nba_source.CsvNbaSource(root / "csv"),
+                           verbose=False)
+    con = sqlite3.connect(root / "nba.db")
+    kinds = {r[0] for r in con.execute("SELECT kind FROM source_issues")}
+    assert "conflicting_match" in kinds
+    assert con.execute("SELECT COUNT(*) FROM matches WHERE match_id='g2010a'"
+                       ).fetchone()[0] == 0
+
+
+def test_an_exact_duplicate_match_row_is_collapsed_not_rejected(tmp_path):
+    """The same fixture arriving twice is the ordinary case and must not
+    cost the build a game."""
+    root = tmp_path / "twice"
+    nba_fixture.write(root / "csv")
+    path = root / "csv" / "matches_2010.csv"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines.append(lines[1])
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    db = root / "nba.db"
+    build_nba_db.build(db, nba_source.CsvNbaSource(root / "csv"),
+                       verbose=False)
+    con = sqlite3.connect(db)
+    assert con.execute("SELECT COUNT(*) FROM matches WHERE match_id='g2010a'"
+                       ).fetchone()[0] == 1
+    kinds = {r[0] for r in con.execute("SELECT kind FROM source_issues")}
+    assert "duplicate_match_collapsed" in kinds
+    assert "conflicting_match" not in kinds
+
+
+def test_a_player_game_for_a_team_not_in_its_match_is_rejected(tmp_path):
+    """The row would otherwise add a game and a season to a career at a team
+    that never played it."""
+    root = tmp_path / "wrongteam"
+    nba_fixture.write(root / "csv")
+    path = root / "csv" / "player_games_2010_regular.csv"
+    text = path.read_text(encoding="utf-8")
+    # p4 played this game for the Lakers. Refile him under Boston, who were
+    # not in it.
+    path.write_text(text.replace("g2010a,lal", "g2010a,bos"), encoding="utf-8")
+
+    with pytest.raises(build_nba_db.BuildError):
+        build_nba_db.build(root / "nba.db",
+                           nba_source.CsvNbaSource(root / "csv"),
+                           verbose=False)
+    con = sqlite3.connect(root / "nba.db")
+    kinds = {r[0] for r in con.execute("SELECT kind FROM source_issues")}
+    assert "team_not_in_match" in kinds
+    assert con.execute(
+        "SELECT COUNT(*) FROM games WHERE match_id='g2010a' "
+        "AND club_now='Boston Celtics'").fetchone()[0] == 0
+
+
+# ---------------------------------------------------------- atomic build
+
+def test_a_failed_build_leaves_the_live_database_untouched(tmp_path):
+    """The whole point. A source that has changed shape must not be able to
+    replace a database the application is serving."""
+    root = tmp_path / "atomic"
+    nba_fixture.write(root / "csv")
+    db = root / "nba.db"
+    build_nba_db.build_atomic(db, nba_source.CsvNbaSource(root / "csv"),
+                              verbose=False)
+    good = snapshot(db)
+
+    path = root / "csv" / "matches_2010.csv"
+    path.write_text(path.read_text(encoding="utf-8").replace("okc", "nope"),
+                    encoding="utf-8")
+    with pytest.raises(build_nba_db.BuildError):
+        build_nba_db.build_atomic(db, nba_source.CsvNbaSource(root / "csv"),
+                                  verbose=False)
+
+    assert snapshot(db) == good
+    # The failed attempt is kept where it can be inspected, with the reason.
+    assert (root / "nba.db.building").exists()
+    report = json.loads(
+        (root / "nba.db.build-report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert "Health checks failed" in report["reason"]
+
+
+def test_a_passing_build_is_promoted_and_the_previous_one_backed_up(tmp_path):
+    root = tmp_path / "promote"
+    nba_fixture.write(root / "csv")
+    db = root / "nba.db"
+
+    first = build_nba_db.build_atomic(
+        db, nba_source.CsvNbaSource(root / "csv"), verbose=False)
+    assert first["backup"] is None          # nothing to back up yet
+    assert not (root / "nba.db.building").exists()
+
+    second = build_nba_db.build_atomic(
+        db, nba_source.CsvNbaSource(root / "csv"), verbose=False)
+    backup = Path(second["backup"])
+    assert backup.exists() and backup.parent.name == "backups"
+    assert snapshot(backup) == snapshot(db)
+
+
+def test_backups_are_pruned_to_the_requested_depth(tmp_path):
+    root = tmp_path / "prune"
+    nba_fixture.write(root / "csv")
+    db = root / "nba.db"
+    for _ in range(4):
+        build_nba_db.build_atomic(db, nba_source.CsvNbaSource(root / "csv"),
+                                  keep_backups=2, verbose=False)
+        time.sleep(1.05)    # the backup stamp has one-second resolution
+    assert len(list((root / "backups").glob("nba-*.db"))) == 2
+
+
+def test_a_failed_build_writes_no_reference_file(tmp_path):
+    """load_reference writes into the shared reference directory. A build
+    that is never promoted must not leave its view of the teams there."""
+    root = tmp_path / "noref"
+    nba_fixture.write(root / "csv")
+    path = root / "csv" / "matches_2010.csv"
+    path.write_text(path.read_text(encoding="utf-8").replace("okc", "nope"),
+                    encoding="utf-8")
+    with pytest.raises(build_nba_db.BuildError):
+        build_nba_db.build_atomic(root / "nba.db",
+                                  nba_source.CsvNbaSource(root / "csv"),
+                                  verbose=False)
+    assert not (root / "reference" / "nba_reference.json").exists()
 
 
 # -------------------------------------------------------------- reference

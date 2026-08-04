@@ -238,10 +238,24 @@ a website, so the same build works from a CSV export, from NBA.com, or from
 a licensed provider added later. `--source csv` is the default because it is
 the one with no conditions attached.
 
+The build is atomic. It writes `data/nba/nba.db.building`, runs the schema,
+integrity and source checks against that file, copies the current database
+into `data/nba/backups/`, and only then renames the working file into place.
+A failed build leaves the live database untouched, keeps `nba.db.building`
+for inspection, and writes the reason to `nba.db.build-report.json`.
+
+```bash
+python build_nba_db.py --source csv --keep-backups 10   # deeper history
+python build_nba_db.py --source csv --in-place          # no temp, no backup
+```
+
 ### NBA data layout
 
 ```text
 data/nba/nba.db                            the database
+data/nba/nba.db.building                   a build in progress, or a failed one
+data/nba/nba.db.build-report.json          how the last build ended
+data/nba/backups/nba-YYYYmmdd-HHMMSS.db    the databases it replaced
 data/nba/raw/csv/                          CSV source exports
 data/nba/cache/nba_api/                    cached NBA.com responses
 data/nba/reference/nba_reference.json      team list, lineage, measured eras

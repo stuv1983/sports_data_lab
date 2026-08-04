@@ -203,7 +203,11 @@ BUILDERS = {
     # NBA-only. These need their own keys because the AFL has no equivalent
     # question -- a premiership is decided by one game, a championship by a
     # series, and "made the playoffs" is not a meaningful AFL square.
-    "Championship player":        (champion, []),
+    # Named for what the games can prove, not for what a grid square would
+    # like to say. See champion() -- "NBA champion" will be a different
+    # criterion once roster stints land, and reusing the label now would
+    # make the two indistinguishable in a saved board.
+    "Appeared for championship team": (champion, []),
     "Made the playoffs":          (made_playoffs_season, []),
     "Missed the playoffs":        (missed_playoffs_season, []),
     "Played in the Finals":       (played_in_the_finals, []),
@@ -223,7 +227,7 @@ AWARD_SLUGS = {}
 DRAFT_TYPES = ()
 
 #: Team-season criteria depend on team_seasons, which the core build writes.
-TEAM_SEASON_BUILDERS = {"Championship player", "Made the playoffs",
+TEAM_SEASON_BUILDERS = {"Appeared for championship team", "Made the playoffs",
                         "Missed the playoffs"}
 
 

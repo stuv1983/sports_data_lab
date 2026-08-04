@@ -1,6 +1,8 @@
 # Built databases and source datasets
 *.db
 *.db-journal
+*.db.building
+*.db.build-report.json
 *.sqlite
 *.sqlite3
 afldata.rda

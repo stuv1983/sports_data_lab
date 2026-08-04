@@ -56,12 +56,24 @@ Running this twice over the same source produces the same database, down to
 the player_id values: ids are assigned by sorting on the source's own id,
 not by row order. That is what makes a rebuild safe once anything else
 references a player.
+
+THE LIVE DATABASE IS REPLACED, NOT WRITTEN OVER
+-----------------------------------------------
+`build_atomic` builds into `nba.db.building`, runs every check against it,
+copies the current `nba.db` into `backups/`, and only then renames the
+working file into place. A build that fails leaves the live database exactly
+as it was, the working file where it can be inspected, and the reason in
+`nba.db.build-report.json`. `--in-place` restores the old behaviour of
+writing straight over the target, which is what the tests use.
 """
 
 import argparse
 import json
+import os
+import shutil
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 import data_paths
@@ -100,6 +112,16 @@ CONFERENCES = {
 
 SCHEMA = sports.NBA_SCHEMA
 STATS = list(sports.NBA_STATS)
+
+
+class BuildError(RuntimeError):
+    """The build cannot honestly continue.
+
+    Raised rather than exiting the process, because build_atomic() has to
+    catch it: a failed build still has to preserve its working database for
+    inspection and leave the live one untouched. main() turns it back into
+    an exit code.
+    """
 
 
 # --------------------------------------------------------------- schema
@@ -266,7 +288,8 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
     log(verbose, "teams...")
     teams = source.teams()
     if teams is None or teams.empty:
-        sys.exit("source returned no teams; nothing can be resolved without them")
+        raise BuildError(
+            "source returned no teams; nothing can be resolved without them")
     teams = teams.copy()
     teams["is_current"] = teams["is_current"].fillna(0).astype(int)
 
@@ -294,7 +317,7 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
     log(verbose, "players...")
     people = source.players()
     if people is None or people.empty:
-        sys.exit("source returned no players")
+        raise BuildError("source returned no players")
     people = people.copy()
     people["source_player_id"] = people["source_player_id"].astype(str)
     people = (people.drop_duplicates(subset=["source_player_id"])
@@ -315,7 +338,8 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
     # 3. Matches ---------------------------------------------------------
     wanted = sorted(seasons) if seasons else list(source.seasons())
     if not wanted:
-        sys.exit("no seasons to build; pass --seasons or check the source")
+        raise BuildError(
+            "no seasons to build; pass --seasons or check the source")
     log(verbose, f"matches for {len(wanted)} season(s) "
                  f"{wanted[0]}-{wanted[-1]}...")
     match_frames = []
@@ -328,20 +352,20 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
             continue
         match_frames.append(frame)
     if not match_frames:
-        sys.exit("no matches in any requested season")
+        raise BuildError("no matches in any requested season")
     matches = pd.concat(match_frames, ignore_index=True)
-    matches = matches.drop_duplicates(subset=["match_id"], keep="first")
     matches["match_id"] = matches["match_id"].astype(str)
+    for column in ("home_team_id", "away_team_id"):
+        matches[column] = matches[column].map(_text)
+
+    matches = _reconcile_matches(matches, issues, source.key, verbose)
+    matches = _validate_match_teams(matches, team_now, issues, source.key,
+                                    verbose)
+    if matches.empty:
+        raise BuildError("every match was rejected; check the source")
+
     matches["home_team"] = matches["home_team_id"].map(team_now)
     matches["away_team"] = matches["away_team_id"].map(team_now)
-
-    unknown = sorted(set(matches["home_team_id"].dropna())
-                     | set(matches["away_team_id"].dropna()))
-    unknown = [t for t in unknown if t not in team_now]
-    for team_id in unknown:
-        issue(issues, "unknown_team",
-              f"match references team_id {team_id!r}, which is not in teams",
-              severity="error", source_key=source.key)
 
     playoff_rounds = matches.loc[matches["phase"] == "playoff", "round"]
     seen = {str(r).strip().upper() for r in playoff_rounds.dropna()}
@@ -371,7 +395,7 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
             frame["phase"] = phase
             game_frames.append(frame)
     if not game_frames:
-        sys.exit("no player games in any requested season")
+        raise BuildError("no player games in any requested season")
     out = pd.concat(game_frames, ignore_index=True)
     out["source_player_id"] = out["source_player_id"].astype(str)
     out["match_id"] = out["match_id"].astype(str)
@@ -392,9 +416,14 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
               severity="error", source_key=source.key)
         out = out.loc[in_schedule]
     if out.empty:
-        sys.exit("every player-game row was rejected; check the source")
+        raise BuildError("every player-game row was rejected; check the source")
 
     out = out.reset_index(drop=True)
+    out = _validate_player_game_teams(out, by_match, team_now, issues,
+                                      source.key, verbose)
+    if out.empty:
+        raise BuildError("every player-game row was rejected; check the source")
+
     out["player_id"] = out["source_player_id"].map(pid_of)
     out["player"] = out["player_id"].map(
         dict(zip(people["player_id"], people["player"])))
@@ -548,9 +577,10 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
         con.close()
 
     if warnings and strict:
-        sys.exit("Health checks failed; the database was written but should "
-                 "not be trusted. Fix the source or re-run with --no-strict "
-                 "to keep it anyway.")
+        raise BuildError(
+            "Health checks failed:\n  " + "\n  ".join(warnings)
+            + "\nThe working database was kept for inspection but must not "
+              "be promoted. Fix the source or re-run with --no-strict.")
 
     if write_reference:
         load_reference(db_path, verbose=verbose)
@@ -563,6 +593,107 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
     log(verbose, f"\n{len(players):,} players, {len(out):,} player-games, "
                  f"{len(matches):,} matches, {len(teams):,} team identities")
     return summary
+
+
+# ---------------------------------------------------------- atomic build
+
+#: How many previous databases to keep beside the live one. Enough to walk
+#: back a bad build, few enough that a nightly rebuild does not fill a disk
+#: with copies of a file this size.
+KEEP_BACKUPS = 5
+
+
+def build_atomic(db_path, source, keep_backups=KEEP_BACKUPS, verbose=True,
+                 **kwargs):
+    """Build into a working file and replace `db_path` only once it passes.
+
+    The build used to write straight over the live database, which meant a
+    source that had changed shape, or a health check that failed halfway
+    through, left the application pointed at a half-written file. Streamlit
+    would happily serve it: the tables exist, the counts are just wrong.
+
+    So: build beside it, validate, back up, then rename. os.replace is
+    atomic on both platforms, so a reader either gets the whole old database
+    or the whole new one. On failure the working file stays put with a
+    report beside it and the live database is untouched.
+    """
+    final = Path(db_path)
+    working = final.with_name(final.name + ".building")
+    final.parent.mkdir(parents=True, exist_ok=True)
+    _discard(working)
+
+    started = nba_source.now()
+    try:
+        # write_reference is deliberately off: load_reference() writes into
+        # the shared data/nba/reference directory, and a build that never
+        # gets promoted must not leave its reference behind for the live
+        # database to read.
+        summary = build(working, source, write_reference=False,
+                        verbose=verbose, **kwargs)
+    except BuildError as exc:
+        _write_report(final, {"status": "failed", "started": started,
+                              "finished": nba_source.now(),
+                              "source": source.key, "reason": str(exc),
+                              "working_db": str(working)})
+        log(verbose, f"\nBUILD FAILED -- {final} is unchanged.\n"
+                     f"  working database kept at {working}\n"
+                     f"  report written to {_report_path(final)}")
+        raise
+
+    backup = _backup(final, keep_backups)
+    os.replace(working, final)
+    log(verbose, f"promoted {working.name} -> {final.name}"
+                 + (f" (previous kept as {backup.name})" if backup else ""))
+
+    summary["backup"] = str(backup) if backup else None
+    _write_report(final, {"status": "ok", "started": started,
+                          "finished": nba_source.now(), "source": source.key,
+                          "backup": summary["backup"],
+                          "summary": {k: v for k, v in summary.items()
+                                      if k != "warnings"}})
+    load_reference(final, verbose=verbose)
+    return summary
+
+
+def _backup(final, keep):
+    """Copy the live database aside. Returns the backup path, or None."""
+    if not final.exists() or keep <= 0:
+        return None
+    folder = final.parent / "backups"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+    backup = folder / f"{final.stem}-{stamp}{final.suffix}"
+    # Copied rather than moved: if the rename that follows fails, the live
+    # database is still where the application expects to find it.
+    shutil.copy2(final, backup)
+
+    existing = sorted(folder.glob(f"{final.stem}-*{final.suffix}"))
+    for stale in existing[:-keep]:
+        _discard(stale)
+    return backup
+
+
+def _report_path(final):
+    return final.with_name(final.name + ".build-report.json")
+
+
+def _write_report(final, payload):
+    try:
+        _report_path(final).write_text(json.dumps(payload, indent=2),
+                                       encoding="utf-8")
+    except OSError:
+        # A report that cannot be written is not a reason to fail a build
+        # that otherwise passed, or to mask the error that caused one.
+        pass
+
+
+def _discard(path):
+    """Remove a file and any sqlite sidecars, ignoring what is not there."""
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            Path(str(path) + suffix).unlink()
+        except OSError:
+            pass
 
 
 def _deduplicate(out, issues, source_key, strict, verbose):
@@ -621,11 +752,163 @@ def _deduplicate(out, issues, source_key, strict, verbose):
             issue(issues, "duplicate_unresolved", detail, severity="error",
                   source_key=source_key)
         if strict:
-            sys.exit(
+            raise BuildError(
                 f"{len(unresolved)} unresolved duplicate player-game key(s): "
                 "career totals built from this source would be wrong. "
                 "Re-run with --allow-duplicates to build anyway.")
     return out, unresolved
+
+
+#: Match fields a duplicate row is not allowed to disagree about. A second
+#: row for the same match_id that names a different date, phase, round or
+#: either team is not the same fixture recorded twice -- it is two fixtures
+#: sharing an id, and keeping either one is a coin toss. Venue, attendance
+#: and season_label are deliberately not here: they are descriptive, a
+#: disagreement is worth recording but not worth discarding a game over.
+MATCH_IDENTITY = ("season", "date", "phase", "round", "home_team_id",
+                  "away_team_id", "home_score", "away_score")
+
+
+def _reconcile_matches(matches, issues, source_key, verbose):
+    """Collapse duplicate match_ids, and reject the ones that disagree.
+
+    `drop_duplicates(subset=["match_id"], keep="first")` was here, and it
+    resolved a contradiction by row order: whichever copy pandas happened to
+    concatenate first won, silently. Two sources describing the same game
+    differently is exactly the case the build should refuse, because the
+    losing copy's score decides a win, a standing and possibly a title.
+    """
+    duplicated = matches.duplicated(subset=["match_id"], keep=False)
+    if not duplicated.any():
+        return matches.reset_index(drop=True)
+
+    conflicting = set()
+    identical = 0
+    descriptive = []
+    for match_id, group in matches.loc[duplicated].groupby("match_id"):
+        differing = [c for c in MATCH_IDENTITY
+                     if group[c].map(_text).nunique(dropna=False) > 1]
+        if differing:
+            conflicting.add(match_id)
+            detail = "; ".join(
+                f"{c}={sorted({str(v) for v in group[c].map(_text)})}"
+                for c in differing)
+            issue(issues, "conflicting_match",
+                  f"match_id {match_id!r} appears {len(group)} times with "
+                  f"disagreeing {', '.join(differing)} ({detail}); rejected "
+                  f"rather than resolved by row order",
+                  severity="error", season=_int(group["season"].iloc[0]),
+                  source_key=source_key)
+            continue
+        identical += len(group) - 1
+        soft = [c for c in ("season_label", "venue", "attendance")
+                if c in group and group[c].map(_text).nunique(dropna=False) > 1]
+        if soft:
+            descriptive.append((match_id, soft))
+
+    if identical:
+        log(verbose, f"  collapsed {identical:,} exact duplicate match row(s)")
+        issue(issues, "duplicate_match_collapsed",
+              f"{identical} duplicate match row(s) agreed on every identity "
+              f"field and were collapsed", source_key=source_key)
+    for match_id, soft in descriptive:
+        issue(issues, "match_detail_disagreement",
+              f"match_id {match_id!r} duplicates disagree on "
+              f"{', '.join(soft)}; the first row was kept",
+              source_key=source_key)
+    if conflicting:
+        log(verbose, f"  rejected {len(conflicting):,} match(es) whose "
+                     f"duplicates disagree")
+        matches = matches.loc[~matches["match_id"].isin(conflicting)]
+
+    return (matches.drop_duplicates(subset=["match_id"], keep="first")
+                   .reset_index(drop=True))
+
+
+def _validate_match_teams(matches, team_now, issues, source_key, verbose):
+    """Drop any match whose two sides are not two known, distinct teams.
+
+    A match with an unresolved team used to be kept with a NULL club_now.
+    Its player-games then joined to nothing, its result counted for nobody,
+    and the only trace was an issue row. A fixture the build cannot name
+    both sides of is not a fixture it can answer questions about.
+    """
+    home_ok = matches["home_team_id"].isin(team_now)
+    away_ok = matches["away_team_id"].isin(team_now)
+
+    unknown_ids = sorted(
+        {t for t in matches.loc[~home_ok, "home_team_id"] if t is not None}
+        | {t for t in matches.loc[~away_ok, "away_team_id"] if t is not None})
+    for team_id in unknown_ids:
+        issue(issues, "unknown_team",
+              f"match references team_id {team_id!r}, which is not in teams",
+              severity="error", source_key=source_key)
+
+    missing_side = (matches["home_team_id"].isna()
+                    | matches["away_team_id"].isna())
+    if missing_side.any():
+        issue(issues, "one_sided_match",
+              f"{int(missing_side.sum()):,} match(es) name only one team",
+              severity="error", source_key=source_key)
+
+    same = home_ok & away_ok & (matches["home_team_id"]
+                                == matches["away_team_id"])
+    if same.any():
+        for match_id in matches.loc[same, "match_id"]:
+            issue(issues, "self_match",
+                  f"match_id {match_id!r} names the same team on both sides",
+                  severity="error", source_key=source_key)
+
+    keep = home_ok & away_ok & ~same
+    if not keep.all():
+        log(verbose, f"  rejected {int((~keep).sum()):,} match(es) with an "
+                     f"unresolved, missing or duplicated team")
+    return matches.loc[keep].reset_index(drop=True)
+
+
+def _validate_player_game_teams(out, by_match, team_now, issues, source_key,
+                                verbose):
+    """Every player-game must be for a team that played in that match.
+
+    Three separate failures, kept separate because they mean different
+    things: a team the build has never heard of, a team that exists but did
+    not play that game, and a row filed under the wrong half of the season.
+    All three produce a career total that is wrong rather than missing, so
+    the rows go and the build fails strict.
+    """
+    known = out["team_id"].isin(team_now)
+    if not known.all():
+        unknown_ids = sorted(set(out.loc[~known, "team_id"]))
+        issue(issues, "unknown_player_game_team",
+              f"{int((~known).sum()):,} player-game row(s) name team_id(s) "
+              f"{', '.join(repr(t) for t in unknown_ids[:10])} which are not "
+              f"in teams; dropped", severity="error", source_key=source_key)
+
+    home = out["match_id"].map(by_match["home_team_id"])
+    away = out["match_id"].map(by_match["away_team_id"])
+    played = (out["team_id"] == home) | (out["team_id"] == away)
+    if not played.all():
+        sample = out.loc[known & ~played].head(3)
+        detail = "; ".join(f"{r.match_id}/{r.team_id}"
+                           for r in sample.itertuples())
+        issue(issues, "team_not_in_match",
+              f"{int((~played).sum()):,} player-game row(s) name a team that "
+              f"is neither side of their match ({detail}); dropped",
+              severity="error", source_key=source_key)
+
+    match_phase = out["match_id"].map(by_match["phase"])
+    consistent = out["phase"] == match_phase
+    if not consistent.all():
+        issue(issues, "phase_mismatch",
+              f"{int((~consistent).sum()):,} player-game row(s) were filed "
+              f"under a phase their match does not have; dropped",
+              severity="error", source_key=source_key)
+
+    keep = known & played & consistent
+    if not keep.all():
+        log(verbose, f"  rejected {int((~keep).sum()):,} player-game row(s) "
+                     f"with an unresolved or contradictory team")
+    return out.loc[keep].reset_index(drop=True)
 
 
 def _write_reference_tables(con, teams, franchise_name, matches):
@@ -848,6 +1131,26 @@ def _health_gate(con, verbose):
     return warnings
 
 
+def _text(value):
+    """None-preserving str, so a blank never becomes the string 'nan'.
+
+    Comparing two source rows for agreement means comparing them as the
+    values they are. float('nan') != float('nan'), so leaving NaN in place
+    would make every match with a missing venue look like it disagreed with
+    itself.
+    """
+    if value is None:
+        return None
+    try:
+        import math
+        if isinstance(value, float) and math.isnan(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    return text or None
+
+
 def _int(value):
     """None-preserving int, for columns a source may leave blank."""
     if value is None:
@@ -986,6 +1289,12 @@ def main(argv=None):
                     help="only rewrite data/nba/reference from an existing db")
     ap.add_argument("--no-strict", dest="strict", action="store_false",
                     help="keep the database even if health checks fail")
+    ap.add_argument("--in-place", action="store_true",
+                    help="write straight over --db instead of building into "
+                         "a working file and promoting it once it passes")
+    ap.add_argument("--keep-backups", type=int, default=KEEP_BACKUPS,
+                    help=f"previous databases to keep beside the live one "
+                         f"(default {KEEP_BACKUPS}; 0 disables backups)")
     ap.add_argument("--quiet", dest="verbose", action="store_false")
     args = ap.parse_args(argv)
 
@@ -1006,11 +1315,13 @@ def main(argv=None):
 
     seasons = (nba_source.parse_seasons(args.seasons)
                if args.seasons else None)
+    runner = build if args.in_place else build_atomic
+    kwargs = {} if args.in_place else {"keep_backups": args.keep_backups}
     try:
-        build(args.db, source, seasons=seasons,
-              strict=args.strict and not args.allow_duplicates,
-              verbose=args.verbose)
-    except nba_source.SourceError as exc:
+        runner(args.db, source, seasons=seasons,
+               strict=args.strict and not args.allow_duplicates,
+               verbose=args.verbose, **kwargs)
+    except (nba_source.SourceError, BuildError) as exc:
         return _fail(str(exc))
 
     if not args.core_only:
