@@ -53,6 +53,17 @@ PALETTES = {
         "chalk": "#21180F", "muted": "#6B5B47", "accent": "#C24E12",
         "hover": "#F2E9DC",
     },
+    # Turf green and white chalk, which is the field rather than any team.
+    ("nfl", "Dark"): {
+        "board": "#0B1710", "panel": "#132318", "line": "#2A3E30",
+        "chalk": "#EDF3EC", "muted": "#8CA394", "accent": "#3FA34D",
+        "hover": "#1B3122",
+    },
+    ("nfl", "Light"): {
+        "board": "#F3F7F2", "panel": "#FFFFFF", "line": "#D2DFD3",
+        "chalk": "#122116", "muted": "#5A6E60", "accent": "#1F7A34",
+        "hover": "#E7EFE6",
+    },
 }
 
 #: Gridley colours a solved cell by how rare the answer was. The same
@@ -60,11 +71,13 @@ PALETTES = {
 TILE_DEFAULTS = {
     "afl": {"tile_rare": "#005A9C", "tile_common": "#D71920"},
     "nba": {"tile_rare": "#3E2A93", "tile_common": "#C4451F"},
+    "nfl": {"tile_rare": "#1B5E9B", "tile_common": "#B8341F"},
 }
 
 MODES = {
     "afl": ["AFL", "Dark", "Light", "Custom"],
     "nba": ["Dark", "Light", "Custom"],
+    "nfl": ["Dark", "Light", "Custom"],
 }
 
 

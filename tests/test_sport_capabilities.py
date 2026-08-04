@@ -29,12 +29,28 @@ _os.chdir(_ROOT)
 # --- end test bootstrap ---
 
 
+import importlib.util
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 import sports
+
+#: Sports with a constraints module. A "coming soon" entry has a picker
+#: label and a schema sketch but no builders, no examples and no module, so
+#: the capability contract below is not yet something it can satisfy.
+def _has_module(sport):
+    # find_spec raises rather than returning None when the *package* is
+    # missing, which is the NFL case: there is no nfl/ directory at all.
+    try:
+        return importlib.util.find_spec(sport.module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+IMPLEMENTED = [s for s in sports.SPORTS.values() if _has_module(s)]
+IMPLEMENTED_IDS = [s.key for s in IMPLEMENTED]
 
 CAPABILITIES = ("criterion_parser", "grid_library", "game_lab_module",
                 "has_club_explorer", "has_awards_page", "has_past_games",
@@ -55,15 +71,13 @@ def test_every_sport_declares_every_capability(sport):
         assert hasattr(sport, field), f"{sport.key} is missing {field}"
 
 
-@pytest.mark.parametrize("sport", list(sports.SPORTS.values()),
-                         ids=list(sports.SPORTS))
+@pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
 def test_grid_defaults_are_three_columns_and_three_rows(sport):
     columns, rows = sport.grid_defaults
     assert len(columns) == 3 and len(rows) == 3, sport.key
 
 
-@pytest.mark.parametrize("sport", list(sports.SPORTS.values()),
-                         ids=list(sports.SPORTS))
+@pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
 def test_grid_defaults_name_builders_the_sport_actually_has(sport):
     """Otherwise the board opens on a KeyError."""
     builders = sport.C.BUILDERS
@@ -72,8 +86,7 @@ def test_grid_defaults_name_builders_the_sport_actually_has(sport):
             assert name in builders, f"{sport.key}: {name!r} is not a builder"
 
 
-@pytest.mark.parametrize("sport", list(sports.SPORTS.values()),
-                         ids=list(sports.SPORTS))
+@pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
 def test_grid_default_clubs_are_clubs_the_sport_has(sport):
     """An NBA board opening on "St Kilda" is silently coerced to clubs[0]."""
     clubs = set(sport.schema.clubs)
@@ -83,8 +96,7 @@ def test_grid_default_clubs_are_clubs_the_sport_has(sport):
                 assert args["club"] in clubs, f"{sport.key}: {args['club']}"
 
 
-@pytest.mark.parametrize("sport", list(sports.SPORTS.values()),
-                         ids=list(sports.SPORTS))
+@pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
 def test_grid_default_stats_are_stats_the_sport_has(sport):
     stats = set(sport.schema.stats)
     for axis in sport.grid_defaults:
@@ -94,15 +106,13 @@ def test_grid_default_stats_are_stats_the_sport_has(sport):
                     assert args[key] in stats, f"{sport.key}: {args[key]}"
 
 
-@pytest.mark.parametrize("sport", list(sports.SPORTS.values()),
-                         ids=list(sports.SPORTS))
+@pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
 def test_search_examples_are_present_and_non_empty(sport):
     assert sport.search_examples
     assert all(isinstance(e, str) and e.strip() for e in sport.search_examples)
 
 
-@pytest.mark.parametrize("sport", list(sports.SPORTS.values()),
-                         ids=list(sports.SPORTS))
+@pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
 def test_every_search_example_actually_compiles(sport, request):
     """An example that does not run teaches a query that does not work.
 
@@ -136,12 +146,49 @@ def test_every_search_example_actually_compiles(sport, request):
     assert not failures, "\n".join(failures)
 
 
-@pytest.mark.parametrize("sport", list(sports.SPORTS.values()),
-                         ids=list(sports.SPORTS))
+@pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
 def test_every_loader_hint_names_a_declared_layer(sport):
     """A hint for a layer nobody reports on is never shown."""
     probes = set(sport.optional_layers.values())
     assert set(sport.loader_hints) <= probes, sport.key
+
+
+# ------------------------------------------------------ announced sports
+
+def test_a_preview_sport_is_offered_but_never_loaded():
+    """The picker shows it; selectable() -- what a caller loads -- does not."""
+    for sport in sports.SPORTS.values():
+        if sport.preview and not sport.exists():
+            assert sport in sports.offerable(), sport.key
+            assert sport not in sports.selectable(), sport.key
+
+
+def test_offerable_includes_every_loadable_sport():
+    offered = {s.key for s in sports.offerable()}
+    assert {s.key for s in sports.selectable()} <= offered
+
+
+def test_a_preview_sport_explains_itself():
+    """Chosen from the picker, app.py shows this and stops."""
+    for sport in sports.SPORTS.values():
+        if sport.preview:
+            assert sport.missing_db_hint.strip(), sport.key
+
+
+def test_nfl_declares_the_population_its_scores_are_ranked_over():
+    """nflverse lists every known identity; most never played after 1999.
+
+    Without this predicate they are all scored, tie at the top of the
+    percentile rank, and push every player who did play down the scale.
+    """
+    assert sports.NFL.obscurity_population == "career_games >= 1"
+
+
+def test_nfl_stats_are_nflverse_column_names():
+    """`interceptions` and `sacks` are not columns; the split halves are."""
+    assert "interceptions" not in sports.NFL_STATS
+    assert "sacks" not in sports.NFL_STATS
+    assert "touchdowns" in sports.NFL_STATS      # derived by patch_nfl_db
 
 
 # --------------------------------------------------------------- the AFL

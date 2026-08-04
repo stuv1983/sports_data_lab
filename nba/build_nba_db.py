@@ -1344,6 +1344,10 @@ def main(argv=None):
                     help="start years, e.g. 1946-2026 or 2019,2021")
     ap.add_argument("--refresh", action="store_true",
                     help="re-request cached source responses")
+    ap.add_argument("--nba-api-key", default=None,
+                    help="nba_api: API key, overriding NBA_API_KEY and "
+                         ".streamlit/secrets.toml (see config.py). Not "
+                         "needed for NBA.com's own endpoints")
     ap.add_argument("--allow-duplicates", action="store_true",
                     help="build even with unresolved duplicate player-games")
     ap.add_argument("--core-only", action="store_true",
@@ -1378,6 +1382,8 @@ def main(argv=None):
             kwargs["leagues"] = None
     else:
         kwargs = {"refresh": args.refresh}
+        if args.nba_api_key:
+            kwargs["api_key"] = args.nba_api_key
     try:
         source = nba_source.get_source(args.source, **kwargs)
     except nba_source.SourceError as exc:

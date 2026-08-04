@@ -98,6 +98,17 @@ redistributed in this repository -- `mlb/build_mlb_db.py` reads a copy you
 supply under `data/mlb/raw/`. Lahman has no box scores, so the MLB database
 here is season-grain and says so; see the README.
 
+**nflverse** — <https://github.com/nflverse>, via **nflreadpy**
+The source for the entire NFL build: weekly player and team statistics,
+schedules, rosters, draft picks and the team catalogue. nflverse publishes its
+releases under a Creative Commons Attribution 4.0 licence, which asks for
+attribution; the data itself originates with the NFL and its statistics
+providers. Nothing is redistributed in this repository -- `build_nfl_db.py`
+downloads it, and the raw releases are gitignored. The weekly player
+statistics begin in 1999 even though the schedules and rosters reach back to
+1920, so every career total in the NFL database is a 1999-onward figure and
+the app says so rather than implying whole careers.
+
 **Immaculate Grid** — <https://www.immaculategrid.com>
 The daily grid puzzle format the NBA solver answers questions in. This project
 is an unaffiliated fan tool; it does not reproduce Immaculate Grid's puzzles or
@@ -108,6 +119,7 @@ its crowd-sourced rarity percentages.
 - **pandas** and **NumPy** — all the data reshaping
 - **pyreadr** — reading the R `.rda` dataset
 - **nba_api** — optional; the NBA.com adapter, see the note above
+- **nflreadpy** — the nflverse client the NFL build downloads through
 - **Streamlit** — the entire UI
 - **SQLite** — via the Python standard library
 
@@ -116,5 +128,5 @@ its crowd-sourced rarity percentages.
 The code in this repository is ours to license. The data is not. If you fork
 this, build your own database from the sources above and follow their terms.
 AFL, club names and the Brownlow, Coleman and Norm Smith medals are
-trademarks of their respective owners, as are the NBA, its team names and
-its awards; this is an unaffiliated hobby project.
+trademarks of their respective owners, as are the NBA and the NFL, their team
+names and their awards; this is an unaffiliated hobby project.

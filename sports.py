@@ -21,6 +21,7 @@ import core
 import obscurity
 from mlb import mlb_reference
 from nba import nba_reference
+from nfl import nfl_reference
 
 
 # ------------------------------------------------------------ vocabulary
@@ -65,17 +66,28 @@ class Sport:
     #: its era must be declined, not silently answered from partial data.
     stat_eras: dict = field(default_factory=dict)
     enabled: bool = True
+    #: Show in the sport picker before its database exists, labelled
+    #: "coming soon" and explained by missing_db_hint when chosen. Without
+    #: this a sport that is announced but not yet built is simply invisible,
+    #: which reads as "this app does not do that sport".
+    preview: bool = False
     #: The obscurity.Model this sport's scores were produced by.
     obscurity_model: object = None
+    #: SQL predicate naming the players an obscurity score is computed over,
+    #: empty for "all of them". Obscurity is a percentile rank, so who is in
+    #: the population changes every score: the NFL's `players` table holds
+    #: 13,669 identities with no game in the 1999-onward data, and scoring
+    #: them put 55% of the table at a tied 100 and pushed every player who
+    #: did play down the scale.
+    obscurity_population: str = ""
     #: Optional imported club catalogue shown after the standard layers.
     club_data_table: str = ""
     #: Optional broad-family availability probe on the constraints module.
     family_probe: str = ""
     #: What one row of the `games` table actually is, when it is not a
     #: player-game. Empty means it is, and the status panel says
-    #: "Player-<games>". The MLB build sets it because Lahman's finest
-    #: grain is a player's season with one team: labelling 147,199
-    #: season lines "Player-games" would state a number that is not true.
+    #: "Player-<games>". MLB sets it because Lahman's finest grain is a
+    #: player's season with one team, not a game.
     games_row_label: str = ""
 
     # -- capabilities --------------------------------------------------
@@ -155,7 +167,7 @@ class Sport:
             f"SELECT COUNT(*) FROM {s.games}").fetchone()[0]
         rows = [
             ("Seasons", f"{lo}–{hi}"),
-            ("Players", f"{players:,}"),
+            ("Players", self.player_count_value(con, players)),
             (self.games_row_label or f"Player-{self.vocab.games}",
              f"{appearances:,}"),
         ]
@@ -170,6 +182,26 @@ class Sport:
         if self.family_probe:
             rows.append(("Family links", self.family_links_value(con)))
         return rows
+
+    def player_count_value(self, con, total):
+        """How many players the database can actually answer for.
+
+        Where `obscurity_population` names a subset -- the NFL's player list
+        is every known identity, over half of them with no game in the data
+        -- reporting the table's row count alone states a number the app
+        cannot back up.
+        """
+        if not self.obscurity_population:
+            return f"{total:,}"
+        try:
+            played = con.execute(
+                f"SELECT COUNT(*) FROM {self.schema.players} "
+                f"WHERE {self.obscurity_population}").fetchone()[0]
+        except sqlite3.Error:
+            return f"{total:,}"
+        if played >= total:
+            return f"{total:,}"
+        return f"{played:,} with {self.vocab.games} ({total:,} listed)"
 
     def layer_value(self, probe, con):
         counter = getattr(self.C, probe.replace("_available", "_count"), None)
@@ -475,8 +507,11 @@ NBA = Sport(
                 grid_source="Immaculate Grid"),
     theme="nba",
     build_cmd="python -m nba.build_nba_db",
+    preview=True,
     missing_db_hint=(f"No NBA database found at {sport_db('nba')}. "
-                     "Run `python -m nba.build_nba_db` first."),
+                     "Build one with `python -m nba.build_nba_db --source csv`, "
+                     "or `--source nba_api` once an API key is configured "
+                     "(see config.py)."),
     empty_hint=("Nothing satisfies both. Steals, blocks, turnovers and the "
                 "offensive/defensive rebound split are not recorded before "
                 "1973-74, and three-pointers not before 1979-80."),
@@ -506,9 +541,8 @@ NBA = Sport(
 # ------------------------------------------------------------------ MLB
 #
 # A row of the MLB `games` table is a player's *season* with one team, not
-# a game: Lahman has no box scores. build_mlb_db.py's docstring has the
-# full account, and constraints_mlb.py declines the per-game squares
-# rather than answering them from season totals.
+# a game: Lahman has no box scores. constraints_mlb.py declines the
+# per-game squares rather than answering them from season totals.
 
 MLB_STATS = ["home_runs", "hits", "rbis", "stolen_bases", "walks",
              "strikeouts", "at_bats", "runs", "doubles", "triples",
@@ -588,9 +622,129 @@ MLB = Sport(
 )
 
 
+# ------------------------------------------------------------------ NFL
+#
+# The database is built by the standalone build_nfl_db.py from nflverse via
+# nflreadpy, and then adapted to this schema by nfl/patch_nfl_db.py, which
+# derives the columns core.py needs -- club names, venue, result, is_playoff,
+# career_game_no and a touchdown total -- and measures the statistic list
+# below. Until that patch has run, require_schema declines with the command
+# to run, rather than the app half-working.
+#
+# One row of `games` is a player's week, and the weekly data starts in 1999.
+# Matches and rosters reach back to 1920, so the database knows a player was
+# rostered in 1955 while having no game for him: every career total here is
+# a 1999-onward figure.
+
+NFL_STATS = nfl_reference.stats()
+
+NFL_CLUBS = nfl_reference.teams()
+
+NFL_SCHEMA = core.Schema(
+    #: Career columns build_nfl_db.py writes on `players`. It names the
+    #: club-history columns teams_hist / n_teams rather than reusing the
+    #: AFL's, so the schema maps them here rather than the build renaming
+    #: them.
+    career_score="career_touchdowns",
+    career_postseason="career_postseason_games",
+    clubs_hist="teams_hist",
+    n_clubs="n_teams",
+    game_score="touchdowns",
+    is_final="is_playoff",
+    opponent="opponent_team",
+    stats=NFL_STATS,
+    clubs=NFL_CLUBS,
+    club_lineage=nfl_reference.club_lineage(),
+    venue_aliases=nfl_reference.venue_aliases(),
+    rebuild_cmd="python .\\build_nfl_db.py --all-history, then "
+                "python -m nfl.patch_nfl_db",
+    solve_cols=(
+        ("p.player", "Player"),
+        ("p.debut_season", "From"),
+        ("p.final_season", "To"),
+        ("p.career_games", "Games"),
+        ("p.career_touchdowns", "Touchdowns"),
+        ("p.career_postseason_games", "Playoffs"),
+        ("p.teams_hist", "Teams"),
+        ("p.obscurity", "Obscurity"),
+    ),
+)
+
+NFL = Sport(
+    key="nfl",
+    label="NFL Data Lab",
+    icon="🏈",
+    db=sport_db("nfl"),
+    module="nfl.constraints_nfl",
+    schema=NFL_SCHEMA,
+    vocab=Vocab(club="team", clubs="teams", game="game", games="games",
+                season="season", venue="stadium", venues="stadiums",
+                score="touchdowns", postseason="playoffs",
+                postseason_one="playoff game", title="Super Bowl",
+                grid_source="Immaculate Grid"),
+    theme="nfl",
+    build_cmd="python .\\build_nfl_db.py --all-history",
+    preview=True,
+    missing_db_hint=("No NFL database found at "
+                     f"{sport_db('nfl')}. Build it with "
+                     "`python .\\build_nfl_db.py --all-history`, then run "
+                     "`python -m nfl.patch_nfl_db` to add the columns the "
+                     "app reads."),
+    empty_hint=("Nothing satisfies both. Note that nflverse's weekly player "
+                "statistics begin in 1999: no player has a game, a career "
+                "total or a touchdown here for a season before that, even "
+                "where the schedule and the rosters go back to 1920."),
+    stat_eras=nfl_reference.stat_eras(),
+    #: Every dataset the build imports gets a status row. The eight
+    #: `--extended` ones are optional in the builder -- one can fail and be
+    #: recorded in build_warnings while the build succeeds -- so "not
+    #: loaded" is a real answer the panel has to be able to give.
+    optional_layers={"Draft data": "draft_available",
+                     "Rosters (1920 on)": "rosters_available",
+                     "Weekly rosters (2002 on)": "rosters_weekly_available",
+                     "Snap counts (2012 on)": "snap_counts_available",
+                     "Injuries (2009 on)": "injuries_available",
+                     "Depth charts (2001 on)": "depth_charts_available",
+                     "Officials (2015 on)": "officials_available",
+                     "Combine": "combine_available",
+                     "Contracts": "contracts_available",
+                     "Trades": "trades_available"},
+    loader_hints={
+        probe: "Rebuild with `python build_nfl_db.py --all-history "
+               "--extended --replace`, then `python -m nfl.patch_nfl_db`."
+        for probe in ("rosters_weekly_available", "snap_counts_available",
+                      "injuries_available", "depth_charts_available",
+                      "officials_available", "combine_available",
+                      "contracts_available", "trades_available")
+    },
+    obscurity_model=obscurity.NFL_MODEL,
+    #: nflverse's player list is every known identity, most of whom retired
+    #: before the weekly statistics begin. A player with no game is not an
+    #: answer to any square, and scoring him is scoring an absence.
+    obscurity_population="career_games >= 1",
+    search_examples=(
+        'club:"Kansas City Chiefs" games>=100 sort:obscurity',
+        'game.passing_yards>=400 postseason:true',
+        'season.receiving_yards>=1500 debut:2000..2009',
+        'career.rushing_yards>=10000',
+        'club:"Las Vegas Raiders" club_any:"Los Angeles Chargers"',
+        'played:1999..2005 sort:fewest_games',
+    ),
+    grid_defaults=(
+        (("Played for club", {"club": "Kansas City Chiefs"}),
+         ("Played for club", {"club": "New England Patriots"}),
+         ("150+ / X+ career games", {"games": 100})),
+        (("X+ goals at 2+ clubs", {"goals": 10, "clubs": 2}),
+         ("X+ of a stat in one season", {"stat": "receiving_yards",
+                                         "x": 1000}),
+         ("Won a Super Bowl", {})),
+    ),
+)
+
+
 # -------------------------------------------------------------- registry
 
-SPORTS = {s.key: s for s in (AFL, NBA, MLB)}
+SPORTS = {s.key: s for s in (AFL, NBA, MLB, NFL)}
 DEFAULT = AFL.key
 
 
@@ -599,9 +753,18 @@ def get(key):
 
 
 def selectable():
-    """Sports worth offering: enabled, with a database actually present."""
+    """Sports worth loading: enabled, with a database actually present."""
     out = [s for s in SPORTS.values() if s.enabled and s.exists()]
     return out or [SPORTS[DEFAULT]]
+
+
+def offerable():
+    """Sports the picker shows: the loadable ones plus the announced ones."""
+    ready = selectable()
+    keys = {s.key for s in ready}
+    out = ready + [s for s in SPORTS.values()
+                   if s.enabled and s.preview and s.key not in keys]
+    return sorted(out, key=lambda s: list(SPORTS).index(s.key))
 
 
 def picker(st, key="sport"):
@@ -611,13 +774,19 @@ def picker(st, key="sport"):
     Call this before anything else touches the database. When the sport
     changes, every widget key belonging to the previous sport is dropped,
     which is what stops a stale AFL axis from leaking into an NBA board.
+
+    A sport without a database is still offered, marked "coming soon". The
+    caller is responsible for checking `exists()` before touching `.C` or
+    the database -- a preview sport may have neither.
     """
-    options = selectable()
+    options = offerable()
     if len(options) == 1:
         st.session_state[key] = options[0].key
         return options[0]
 
-    labels = {s.key: f"{s.icon}  {s.label}" for s in options}
+    labels = {s.key: f"{s.icon}  {s.label}" + ("" if s.exists()
+                                               else "  (coming soon)")
+              for s in options}
     chosen = st.sidebar.radio(
         "Sport", [s.key for s in options],
         format_func=lambda k: labels[k], key=key, horizontal=True)

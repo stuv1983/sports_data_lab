@@ -40,8 +40,25 @@ def needed_columns(model):
     return ["player_id", *model.required_columns()]
 
 
-def recompute(db, model=None, dry_run=False, verbose=True):
-    """Rescore `db` against `model`. Returns (rows, changed, biggest_move)."""
+def _key(player_id):
+    """A player_id as SQLite stores it.
+
+    The AFL, NBA and MLB builds number players; the NFL build keys them on
+    the nflverse gsis id ("00-0033873"), and coercing that to int raises.
+    """
+    if isinstance(player_id, str):
+        return player_id
+    return int(player_id)
+
+
+def recompute(db, model=None, dry_run=False, verbose=True, where=""):
+    """Rescore `db` against `model`. Returns (rows, changed, biggest_move).
+
+    `where` is a SQL predicate naming the players to score, from
+    sports.Sport.obscurity_population. Obscurity is a percentile rank, so
+    this is not a filter on the output but part of the formula: players
+    outside it are left unscored rather than ranked against.
+    """
     if model is None:
         model = obscurity_module.AFL_MODEL
     NEEDED = needed_columns(model)
@@ -56,10 +73,16 @@ def recompute(db, model=None, dry_run=False, verbose=True):
                 "this database predates the current schema, or it belongs "
                 "to a different sport than --sport says.")
 
+        predicate = f" WHERE {where}" if where else ""
         players = pd.read_sql(
-            f"SELECT {', '.join(NEEDED)}, obscurity FROM players", con)
+            f"SELECT {', '.join(NEEDED)}, obscurity FROM players{predicate}",
+            con)
         if players.empty:
             raise SystemExit("players table is empty -- build it first.")
+        if verbose and where:
+            total = con.execute("SELECT COUNT(*) FROM players").fetchone()[0]
+            print(f"scoring {where}: {len(players):,} of {total:,} players "
+                  f"({total - len(players):,} left unscored)")
 
         components = obscurity_module.components(players, model)
         players["new_obscurity"] = components["obscurity"]
@@ -95,7 +118,7 @@ def recompute(db, model=None, dry_run=False, verbose=True):
             f"UPDATE players SET {assignments} WHERE player_id = ?",
             [(float(row.obscurity),
               *(float(getattr(row, c)) for c in columns),
-              int(pid))
+              _key(pid))
              for pid, row in zip(players.player_id,
                                  components.itertuples(index=False))])
         con.commit()
@@ -124,7 +147,7 @@ def main(argv=None):
             f"{sport.label} declares no obscurity model, so there is "
             "nothing to rescore against.")
     recompute(a.db or default_db(a.sport), model=sport.obscurity_model,
-              dry_run=a.dry_run)
+              dry_run=a.dry_run, where=sport.obscurity_population)
     return 0
 
 

@@ -51,6 +51,12 @@ The application reads the generated database locally. Database files and downloa
 | MLB Player Search, Advanced Search, Stats Explorer, Grid Solver | Supported |
 | MLB single-game squares | Not possible from Lahman (see below) |
 | MLB Club Explorer, Past Games, Awards page, Game Lab, grid library | Not implemented |
+| NFL player-game history from nflverse, 1999 onward | Supported |
+| NFL Player Search, Advanced Search, Stats Explorer, Grid Solver | Supported |
+| NFL draft squares | Supported |
+| NFL pre-1999 careers | Not possible from the weekly data (see below) |
+| NFL snap counts, injuries, depth charts, contracts, trades | Imported with `--extended`; no squares read them yet |
+| NFL Club Explorer, Past Games, Awards page, Game Lab, grid library | Not implemented |
 | Daily grid, practice grid, crowd rarity | Not implemented for any sport |
 
 Exact season coverage and row counts depend on the version of the upstream cached dataset used for the local build. The application displays live database counts in its **Database status** panel rather than relying on hard-coded numbers.
@@ -433,6 +439,77 @@ strikeouts NULL even though the columns exist. An era cutoff cannot express
 "recorded, patchily", so the caveat is carried in the sport's empty-square
 hint instead.
 
+## Build the NFL database
+
+The NFL build downloads [nflverse](#nflverse) data through `nflreadpy`. It is
+a standalone script at the repository root, not a package module, and it is
+the one build in two steps: a builder that imports nflverse faithfully, then
+an adapter that derives the columns the application reads.
+
+```bash
+pip install nflreadpy
+python build_nfl_db.py --all-history --replace              # -> data/nfl/nfl.db
+python build_nfl_db.py --all-history --extended --replace   # + 8 more datasets
+python -m nfl.patch_nfl_db                                  # the adapter step
+python recompute_obscurity.py --sport nfl
+```
+
+`--replace` is not optional once a database exists. Without it the builder
+downloads everything, then refuses at the final step and deletes its own
+working file, which looks exactly like a crash after fifteen minutes of
+downloading.
+
+`--extended` adds weekly rosters, snap counts, injuries, depth charts,
+officials, combine results, contracts and trades. All eight are optional
+*inside* the build: one can fail without failing the build, recording the
+reason in `build_warnings`. The Database status panel lists every one of them
+with its row count or `not loaded`, so a skipped dataset is visible rather
+than silently absent.
+
+### The adapter step
+
+`build_nfl_db.py` writes nflverse's own tables. `nfl/patch_nfl_db.py` derives
+what `core.py` asks every sport for and nflverse does not carry: `club_hist`
+and `club_now` (from the team catalogue and the code map in
+`nfl/nfl_reference.py`), `date`, `venue`, `round` and `result` (from
+`matches`), `is_playoff`, `career_game_no`, and a `touchdowns` column. It also
+restates `teams_hist` and `n_teams` in franchise names, so a player who moved
+with the Raiders is one team rather than two.
+
+Everything it writes derives from `games`, so it is rerunnable, and
+`--dry-run` reports without writing. Run it after every build: a rebuild
+replaces the database file and takes the derived columns with it. Until it has
+run, the app declines to load the sport and says which command to run.
+
+### Weekly statistics begin in 1999
+
+nflverse's schedules and rosters reach back to 1920, but its weekly player
+statistics start in 1999, and `games` is built from those. So:
+
+- `career_games`, `career_touchdowns` and every other career total are
+  1999-onward figures, not whole NFL careers.
+- `career_game_no` counts from a player's first game *in that data*: a 1994
+  debut is numbered from 1999.
+- `rosters` knows a player was on a 1955 roster. That is not an appearance,
+  and no square treats it as one.
+- The player list holds 25,041 identities, of which 11,372 have a game.
+  Obscurity is a percentile rank, so scoring the other 13,669 would tie 55% of
+  the table at the top and push every player who did play down the scale;
+  `sports.NFL.obscurity_population` restricts scoring to players with a game,
+  and the status panel reports both counts.
+
+`touchdowns` and `career_touchdowns` are touchdowns *responsible for*,
+passing included -- which is not the usual "touchdowns scored".
+
+### NFL statistic names
+
+The stat list offered as grid axes is curated in `nfl/nfl_reference.py` from
+the ~130 numeric columns the weekly dataset carries, and it uses nflverse's
+own names. Those names change: `interceptions` and `sacks` no longer exist and
+are now `passing_interceptions` and `def_sacks`. After an `nflreadpy` upgrade,
+`nfl/patch_nfl_db.py` reports any declared statistic that the built `games`
+table no longer has.
+
 ## Run the application
 
 ```bash
@@ -707,6 +784,16 @@ Attribution-ShareAlike licence; the CSVs are not redistributed here. Put
 your own copy under `data/mlb/raw/` and see
 [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md) for the terms.
 
+### nflverse
+
+The NFL build downloads nflverse's released datasets through `nflreadpy`:
+weekly player and team statistics, schedules, rosters, draft picks, the team
+catalogue, and the eight optional `--extended` layers. nflverse publishes
+under a Creative Commons Attribution 4.0 licence and the data originates with
+the NFL and its statistics providers. Nothing is redistributed here -- the
+build downloads it, and `data/` is gitignored. See
+[`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md) for the terms.
+
 ### Gridley
 
 Gridley inspired the original grid-solving workflow. Sports Data Lab is an unaffiliated research and puzzle-support tool. It does not reproduce Gridley's live crowd selection percentages.
@@ -717,9 +804,11 @@ See [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md) for source credits, terms and r
 
 Each sport owns a package. Anything that is true of one sport and not the
 others -- its constraint set, its build, its loaders and scrapers, its
-sport-only pages -- lives in `afl/`, `nba/` or `mlb/`. The repository root
-holds only the multi-sport framework: the registry, the query engine, the
-pages that serve every sport, and the path policy.
+sport-only pages -- lives in `afl/`, `nba/`, `mlb/` or `nfl/`. The repository
+root holds only the multi-sport framework: the registry, the query engine, the
+pages that serve every sport, and the path policy. `build_nfl_db.py` is the
+exception and sits at the root: it is a standalone script maintained on its
+own, and `nfl/patch_nfl_db.py` is what adapts its output to the framework.
 
 ```
 app.py  core.py  sports.py  explore.py  ...   the sport-agnostic framework

@@ -12,13 +12,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 #: Legacy single-file databases that predate the data/<sport>/ layout.
-#:
-#: The AFL entry is real history: gridley.db sat in the repository root
-#: before the reorganisation and some checkouts still have it. There is no
-#: NBA entry and there must not be one -- a root nba.db has never existed,
-#: and listing it made sport_db("nba") resolve *outside* data/nba/ for as
-#: long as the database was missing, which is exactly when the build is
-#: about to create it.
+#: Only for a file that genuinely used to live at the repository root:
+#: listing a sport here makes sport_db() resolve outside data/<sport>/ for
+#: exactly as long as the modern database is missing.
 LEGACY = {"afl": "gridley.db"}
 
 
@@ -41,12 +37,9 @@ def default_db(sport_key: str) -> str:
 def staging_db(sport_key: str, name: str) -> Path:
     """A scratch database for an import that is not the app's database.
 
-    The Basketball-Reference ingestion writes leaderboard and award rows
-    that no page reads yet, and it wrote them straight into
-    ``data/nba/nba.db`` -- the path ``sport_db("nba")`` resolves. The
-    result was a file with a `players` table of the wrong shape, so
-    ``Sport.exists()`` said yes and every query then failed on a missing
-    column. Staging output belongs beside the real database, never in it.
+    Staging output belongs beside the real database, never in it: a file at
+    ``sport_db(...)`` with a `players` table of the wrong shape makes
+    ``Sport.exists()`` say yes and every query then fail on a missing column.
     """
     base = ROOT / "data" / sport_key.strip().lower() / "staging"
     base.mkdir(parents=True, exist_ok=True)

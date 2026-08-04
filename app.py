@@ -36,6 +36,16 @@ st.set_page_config(page_title=f"Sports Data Lab — {_pre.label.replace(' Data L
 
 # ------------------------------------------------------- sport and theme
 SPORT = sports.picker(st)
+
+# A sport can be offered before it has a database -- NFL has no constraints
+# module at all yet -- so stop here rather than importing one that is not
+# there. Everything below this line may assume a loadable sport.
+if not SPORT.exists():
+    st.title(f"{SPORT.icon}  {SPORT.label}")
+    st.info(SPORT.missing_db_hint or
+            f"{SPORT.label} is coming soon. Pick another sport in the sidebar.")
+    st.stop()
+
 C = SPORT.C
 SCHEMA = SPORT.schema
 V = SPORT.vocab

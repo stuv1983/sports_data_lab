@@ -21,6 +21,13 @@ becomes available, only this file changes.
 For those two reasons `--source csv` is the default and this adapter has to
 be asked for by name.
 
+AUTHENTICATION
+--------------
+NBA.com's endpoints take no key, so none is required and the adapter works
+with `api_key` empty. `config.nba_api_key()` (environment `NBA_API_KEY`, or
+`.streamlit/secrets.toml`) supplies one for a provider that does require it,
+and `_auth()` is the single place that decides how it is sent.
+
 CACHING
 -------
 Every response is written to data/nba/cache/nba_api/<endpoint>/<hash>.json
@@ -35,6 +42,7 @@ import json
 import time
 from pathlib import Path
 
+import config
 import data_paths
 from . import nba_source
 from .nba_source import (MATCH_COLUMNS, PLAYER_COLUMNS, PLAYER_GAME_COLUMNS,
@@ -57,10 +65,6 @@ def season_label(season):
     """1996 -> '1996-97'. The display form; `season` stays the start year."""
     return f"{int(season)}-{(int(season) + 1) % 100:02d}"
 
-
-#: `parse_minutes` and `numeric` are imported from nba_source and re-exported
-#: here, where they used to live. Every adapter has to give the same answer
-#: to "what is an empty cell", so there is one definition of it.
 
 
 def playoff_round(game_id):
@@ -91,13 +95,36 @@ class NbaApiSource:
     key = "nba_api"
 
     def __init__(self, cache=None, refresh=False, throttle=THROTTLE,
-                 verbose=True):
+                 verbose=True, api_key=None):
         self.cache = Path(cache) if cache else data_paths.cache_dir(
             "nba", "nba_api")
         self.refresh = refresh
         self.throttle = throttle
         self.verbose = verbose
+        #: Empty unless one is configured. NBA.com's own endpoints need no
+        #: key; this exists so a provider that does can be dropped in
+        #: without touching the request code. See config.py.
+        self.api_key = (api_key if api_key is not None
+                        else config.nba_api_key())
         self._fetches = []
+
+    # -- authentication ------------------------------------------------
+    def _auth(self):
+        """`headers=` kwarg for an nba_api endpoint, or {} with no key.
+
+        nba_api's `headers` argument replaces its defaults wholesale, and
+        those defaults (Referer, User-Agent, Origin) are what make the
+        request succeed at all -- so the key is merged into them rather
+        than sent on its own.
+        """
+        extra = config.nba_auth_headers(self.api_key)
+        if not extra:
+            return {}
+        from nba_api.stats.library import http
+        base = dict(getattr(http, "STATS_HEADERS", None)
+                    or getattr(http.NBAStatsHTTP, "headers", None) or {})
+        base.update(extra)
+        return {"headers": base}
 
     # -- caching ------------------------------------------------------
     def _cache_path(self, endpoint, params):
@@ -263,7 +290,8 @@ class NbaApiSource:
             lambda: leaguegamelog.LeagueGameLog(
                 season=season_label(season),
                 season_type_all_star=SEASON_TYPE[phase],
-                player_or_team_abbreviation="T").get_dict()))
+                player_or_team_abbreviation="T",
+                **self._auth()).get_dict()))
 
     def matches(self, season):
         """
@@ -315,7 +343,8 @@ class NbaApiSource:
             "playergamelogs", params,
             lambda: playergamelogs.PlayerGameLogs(
                 season_nullable=season_label(season),
-                season_type_nullable=SEASON_TYPE[phase]).get_dict())
+                season_type_nullable=SEASON_TYPE[phase],
+                **self._auth()).get_dict())
         log = self._frame(payload)
         if log.empty:
             return None
