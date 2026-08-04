@@ -229,14 +229,41 @@ under [NBA.com via nba_api](#nbacom-via-nba_api) before using that source.
 ```bash
 python build_nba_db.py --source csv                      # from CSV exports
 python build_nba_db.py --source csv --seasons 2018-2023  # a subset
+python build_nba_db.py --source bbr --source-root C:/nbaData/data
 python build_nba_db.py --source nba_api --seasons 1946-2026
 python health.py --sport nba --strict
 ```
 
 The builder talks to a source adapter (`nba_source.NbaSource`) and never to
-a website, so the same build works from a CSV export, from NBA.com, or from
-a licensed provider added later. `--source csv` is the default because it is
-the one with no conditions attached.
+a website, so the same build works from a CSV export, from a local scrape,
+from NBA.com, or from a licensed provider added later. `--source csv` is the
+default because it is the one with no conditions attached.
+
+### Build from the Basketball-Reference scrape
+
+`nba_source_bbr.py` reads the local scrape: `games.csv` and `players.csv`
+plus one JSON box score per game. Read the licensing note under
+[Basketball-Reference](#basketball-reference) first.
+
+```bash
+python check_nba_scrape.py --verbose        # how far has the scrape got?
+python build_nba_db.py --source bbr --source-root C:/nbaData/data
+python build_nba_db.py --source bbr --complete-only   # skip unscraped games
+```
+
+Set `NBA_SCRAPE_ROOT` and `--source-root` can be dropped. `data/nba/sample`
+works as a root as-is, which is what the adapter's tests run against.
+
+A scrape in progress is a legitimate input: the index lists every game long
+before the box scores land, so a game with no JSON builds as a fixture
+nobody has stats for. `--complete-only` narrows the schedule to games whose
+box score has arrived, which is the honest way to build a partial database —
+without it, career totals are short by however much has not been scraped
+yet, and nothing in the database says so.
+
+The ABA is excluded by default. Its nine championships are not NBA
+championships, and folding them in would make "champion" wrong for nine
+seasons; `--include-aba` builds them anyway.
 
 The build is atomic. It writes `data/nba/nba.db.building`, runs the schema,
 integrity and source checks against that file, copies the current database
@@ -257,6 +284,9 @@ data/nba/nba.db.building                   a build in progress, or a failed one
 data/nba/nba.db.build-report.json          how the last build ended
 data/nba/backups/nba-YYYYmmdd-HHMMSS.db    the databases it replaced
 data/nba/raw/csv/                          CSV source exports
+data/nba/raw/bbr/                          the Basketball-Reference scrape,
+                                           or $NBA_SCRAPE_ROOT
+data/nba/sample/                           a slice of the scrape, checked in
 data/nba/cache/nba_api/                    cached NBA.com responses
 data/nba/output/                           saved reference pages, as retrieved
 data/nba/reference/nba_reference.json      team list, lineage, measured eras
@@ -528,6 +558,30 @@ is the `stat_coverage` table, measured from the built database by
 `data/nba/reference/nba_reference.json`.
 
 ## Data sources
+
+### Basketball-Reference
+
+`nba_source_bbr.py` reads a local scrape of Basketball-Reference: two index
+CSVs and one JSON box score per game.
+
+**This adapter is for a private, local prototype only.** Sports Reference
+permits its data to be used for personal, non-commercial research. It does
+not clear republishing a comprehensive copy of the site's data, or using it
+to back a public service, without permission. A database built from the
+scrape is fine to hold and query locally and is **not** cleared for
+redistribution or for backing a hosted application — the same standing as
+the NBA.com adapter below.
+
+The scrape records a sha256 for every page it read; the adapter carries
+those digests into `source_manifest`, so two disagreeing builds can be
+traced to a page that changed rather than argued about.
+
+Two things the adapter reconciles rather than trusts, both documented at
+the top of the module: the scrape's `game_date` column currently repeats
+the game key, so dates are parsed from the key's first eight digits; and a
+Basketball-Reference team key is era-specific (`PHW`, `SFW` and `GSW` are
+one franchise), so the key is treated as the historical identity and the
+franchise comes from `nba_reference.club_lineage()`.
 
 ### NBA.com via nba_api
 

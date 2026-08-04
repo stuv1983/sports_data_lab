@@ -39,7 +39,8 @@ import data_paths
 import nba_source
 from nba_source import (MATCH_COLUMNS, PLAYER_COLUMNS, PLAYER_GAME_COLUMNS,
                         PHASES, STAT_COLUMNS, TEAM_COLUMNS, Fetch, SourceError,
-                        canonical_params, digest_bytes, now, validate)
+                        canonical_params, digest_bytes, now, numeric,
+                        parse_minutes, validate)
 
 #: Seconds between requests. NBA.com throttles aggressively and a build over
 #: the full history is thousands of calls; this is politeness, not tuning.
@@ -57,29 +58,9 @@ def season_label(season):
     return f"{int(season)}-{(int(season) + 1) % 100:02d}"
 
 
-def parse_minutes(value):
-    """
-    'MM:SS' or '34' or '' -> float minutes, or None.
-
-    Blank returns None, never 0.0. Minutes are not recorded before 1951-52
-    and a zero there would be a claim that a player was on the roster and
-    did not play, which is a different and unsupported fact.
-    """
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text or text.lower() in ("nan", "none", "null"):
-        return None
-    if ":" in text:
-        mins, _, secs = text.partition(":")
-        try:
-            return int(mins) + int(float(secs or 0)) / 60.0
-        except ValueError:
-            return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
+#: `parse_minutes` and `numeric` are imported from nba_source and re-exported
+#: here, where they used to live. Every adapter has to give the same answer
+#: to "what is an empty cell", so there is one definition of it.
 
 
 def playoff_round(game_id):
@@ -102,19 +83,6 @@ def playoff_round(game_id):
     if len(text) != 10 or not text.isdigit() or not text.startswith("004"):
         return None
     return {"1": "R1", "2": "CSF", "3": "CF", "4": "F"}.get(text[7])
-
-
-def numeric(value):
-    """A stat cell as float, or None. A blank is unrecorded, not zero."""
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text or text.lower() in ("nan", "none", "null"):
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
 
 
 class NbaApiSource:

@@ -63,6 +63,17 @@ project is an unaffiliated fan tool; it does not reproduce Gridley's puzzles
 or its crowd-sourced rarity percentages (the obscurity score here is an
 independent fame proxy, not Gridley's data).
 
+**Basketball-Reference** — <https://www.basketball-reference.com>
+The NBA player-game, schedule and biographical data behind the local NBA
+build. Sports Reference permits its data to be used for personal,
+non-commercial research; it does not clear republishing a comprehensive copy
+of the site's data or using it to back a public service without permission.
+The NBA build in this repository is therefore a **private local prototype**:
+the database stays on the machine that built it, and neither it nor an
+application backed by it is redistributed or hosted. Every page read is
+digested and recorded in the `source_manifest` table so what was taken, and
+when, is auditable.
+
 **NBA.com** — <https://www.nba.com/stats/>
 NBA statistics, read through the community `nba_api` package. NBA.com's terms
 permit statistics to be used for private, non-commercial purposes and require

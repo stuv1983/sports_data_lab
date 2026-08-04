@@ -55,6 +55,24 @@ def cache_dir(sport_key: str, name: str | None = None) -> Path:
     return base / name if name else base
 
 
+def nba_scrape_root() -> Path:
+    """Where the Basketball-Reference scrape writes its data.
+
+    The scrape runs outside the repository -- it is tens of gigabytes of
+    JSON and must not land in git -- so the location is configuration, not
+    layout. ``NBA_SCRAPE_ROOT`` wins; otherwise ``data/nba/raw/bbr``, which
+    is where a symlink or a copied export belongs.
+
+    ``nba_source_bbr.BbrNbaSource`` resolves through here, and
+    ``build_nba_db.py --source-root`` overrides it for one run.
+    """
+    import os
+    configured = os.environ.get("NBA_SCRAPE_ROOT", "").strip()
+    if configured:
+        return Path(configured)
+    return raw_dir("nba") / "bbr"
+
+
 def reference_dir(sport_key: str) -> Path:
     """Checked-in and build-generated reference data for a sport.
 

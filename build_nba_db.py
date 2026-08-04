@@ -4,14 +4,20 @@ build_nba_db.py -- Build data/nba/nba.db from any NBA source adapter.
 
     python build_nba_db.py --source csv
     python build_nba_db.py --source csv --seasons 2018-2023
+    python build_nba_db.py --source bbr --source-root C:/nbaData/data
     python build_nba_db.py --source nba_api --seasons 1946-2026
     python build_nba_db.py --reference-only
 
 The build talks to nba_source.NbaSource and never to a website. Adapters
-live in nba_source.py (CSV, the canonical one) and nba_source_api.py
-(NBA.com, private prototype only -- read its licensing note first).
-`--source csv` is the default because it is the one with no conditions
-attached.
+live in nba_source.py (CSV, the canonical one), nba_source_bbr.py (the
+local Basketball-Reference scrape) and nba_source_api.py (NBA.com). The
+last two carry licensing conditions -- read the note at the top of each
+before using it. `--source csv` is the default because it is the one with
+no conditions attached.
+
+Before a long `--source bbr` build, `python check_nba_scrape.py` reports
+how much of the scrape has landed and whether the playoff-series reference
+covers it, without building anything.
 
 WHAT COMES OUT
 --------------
@@ -1320,11 +1326,20 @@ def main(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--db", default=data_paths.default_db("nba"))
     ap.add_argument("--source", default="csv",
-                    help="csv (default) or nba_api; see nba_source_api.py "
-                         "for the licensing conditions on nba_api")
-    ap.add_argument("--csv-root", default=None,
-                    help="where the csv source reads from "
-                         "(default: data/nba/raw/csv)")
+                    help="csv (default), bbr or nba_api; see the licensing "
+                         "notes in nba_source_bbr.py and nba_source_api.py "
+                         "before using either of the last two")
+    ap.add_argument("--csv-root", "--source-root", dest="source_root",
+                    default=None,
+                    help="where a file-backed source reads from (default: "
+                         "data/nba/raw/csv for csv, $NBA_SCRAPE_ROOT or "
+                         "data/nba/raw/bbr for bbr)")
+    ap.add_argument("--complete-only", action="store_true",
+                    help="bbr: build only games whose box score has been "
+                         "scraped, for a trial build mid-scrape")
+    ap.add_argument("--include-aba", action="store_true",
+                    help="bbr: include ABA seasons; off by default because "
+                         "ABA titles are not NBA championships")
     ap.add_argument("--seasons", default=None,
                     help="start years, e.g. 1946-2026 or 2019,2021")
     ap.add_argument("--refresh", action="store_true",
@@ -1353,7 +1368,14 @@ def main(argv=None):
         return 0
 
     if args.source == "csv":
-        kwargs = {"root": args.csv_root} if args.csv_root else {}
+        kwargs = {"root": args.source_root} if args.source_root else {}
+    elif args.source in ("bbr", "basketball_reference", "basketball-reference"):
+        kwargs = {"complete_only": args.complete_only,
+                  "verbose": args.verbose}
+        if args.source_root:
+            kwargs["root"] = args.source_root
+        if args.include_aba:
+            kwargs["leagues"] = None
     else:
         kwargs = {"refresh": args.refresh}
     try:

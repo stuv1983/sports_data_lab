@@ -124,8 +124,11 @@ def test_canonical_params_is_order_independent():
 def test_get_source_defaults_to_csv_and_rejects_the_unknown():
     assert nba_source.get_source("csv").key == "csv"
     assert nba_source.get_source(None).key == "csv"
+    # 'basketball-reference' used to be the example of an unknown name here.
+    # It is a real adapter now, so the assertion moved to one that is not.
+    assert nba_source.get_source("basketball-reference").key == "bbr"
     with pytest.raises(nba_source.SourceError, match="unknown source"):
-        nba_source.get_source("basketball-reference")
+        nba_source.get_source("espn")
 
 
 # ------------------------------------------------------------- manifest

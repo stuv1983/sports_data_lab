@@ -144,6 +144,49 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def numeric(value):
+    """A stat cell as float, or None. A blank is unrecorded, not zero.
+
+    Lives here rather than in an adapter because every adapter needs the
+    same answer to "what is an empty cell", and two of them disagreeing is
+    exactly the bug the note at the top of this module is about.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in ("nan", "none", "null"):
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def parse_minutes(value):
+    """
+    'MM:SS' or '34' or '' -> float minutes, or None.
+
+    Blank returns None, never 0.0. Minutes are not recorded before 1951-52
+    and a zero there would be a claim that a player was on the roster and
+    did not play, which is a different and unsupported fact.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in ("nan", "none", "null"):
+        return None
+    if ":" in text:
+        mins, _, secs = text.partition(":")
+        try:
+            return int(mins) + int(float(secs or 0)) / 60.0
+        except ValueError:
+            return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 def parse_seasons(text):
     """'1996-2005' or '2019' or '1996,1999' -> a sorted list of start years.
 
@@ -259,4 +302,8 @@ def get_source(name, **kwargs):
     if name in ("nba_api", "nba-api", "nbaapi"):
         import nba_source_api
         return nba_source_api.NbaApiSource(**kwargs)
-    raise SourceError(f"unknown source {name!r}; expected csv or nba_api")
+    if name in ("bbr", "basketball_reference", "basketball-reference"):
+        import nba_source_bbr
+        return nba_source_bbr.BbrNbaSource(**kwargs)
+    raise SourceError(
+        f"unknown source {name!r}; expected csv, bbr or nba_api")
