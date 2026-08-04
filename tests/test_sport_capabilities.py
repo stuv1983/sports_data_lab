@@ -147,6 +147,28 @@ def test_every_search_example_actually_compiles(sport, request):
 
 
 @pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
+def test_layer_gated_builders_exist_and_name_a_real_probe(sport):
+    """app.py hides a builder when its probe says the layer is missing.
+
+    A typo either way is silent: an unknown builder name gates nothing, and
+    an unknown probe name gates the builder off forever.
+    """
+    gated = getattr(sport.C, "LAYER_BUILDERS", {})
+    for builder, probe in gated.items():
+        assert builder in sport.C.BUILDERS, f"{sport.key}: {builder!r}"
+        assert callable(getattr(sport.C, probe, None)), \
+            f"{sport.key}: {probe!r} is not a probe on {sport.module}"
+
+
+@pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
+def test_every_optional_layer_probe_exists(sport):
+    """A status row whose probe is missing always reads "not loaded"."""
+    for label, probe in sport.optional_layers.items():
+        assert callable(getattr(sport.C, probe, None)), \
+            f"{sport.key}: {label} names {probe!r}, which does not exist"
+
+
+@pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
 def test_every_loader_hint_names_a_declared_layer(sport):
     """A hint for a layer nobody reports on is never shown."""
     probes = set(sport.optional_layers.values())

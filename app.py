@@ -214,13 +214,24 @@ FAMILY_RELATIONSHIPS_OK = getattr(
 FAMILY_RELATIONSHIP_BUILDERS = getattr(
     C, "FAMILY_RELATIONSHIP_BUILDER_NAMES", set()
 )
+# Builders gated on an optional source layer, as {builder: probe name}. The
+# named sets above each needed a flag here; this needs none, so a sport that
+# imports a new layer declares the pairing in its own module and nothing in
+# this file changes. The NFL's snap counts, depth charts and weekly rosters
+# come through here.
+LAYER_BUILDERS = getattr(C, "LAYER_BUILDERS", {})
+LAYER_OK = {
+    builder: bool(getattr(C, probe, lambda _con: False)(con))
+    for builder, probe in LAYER_BUILDERS.items()
+}
 AVAILABLE = [k for k in C.BUILDERS
              if (DRAFT_OK or k not in C.DRAFT_BUILDERS)
              and (AWARDS_OK or k not in C.AWARD_BUILDER_NAMES)
              and (CAPTAIN_OK or k not in CAPTAIN_BUILDERS)
              and (RISING_STAR_OK or k not in RISING_STAR_BUILDERS)
              and (FAMILY_RELATIONSHIPS_OK
-                  or k not in FAMILY_RELATIONSHIP_BUILDERS)]
+                  or k not in FAMILY_RELATIONSHIP_BUILDERS)
+             and LAYER_OK.get(k, True)]
 
 st.sidebar.markdown(
     f"<div class='brand'>{SPORT.label}</div>"

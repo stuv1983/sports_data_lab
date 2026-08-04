@@ -170,6 +170,109 @@ def undrafted():
             "WHERE draft_year IS NULL AND career_games >= 1", [])
 
 
+# --------------------------------------------------- extended layers
+#
+# Squares over the datasets `--extended` imports. Each is gated in
+# LAYER_BUILDERS below, so a build without that dataset does not offer it
+# rather than failing on a missing table.
+#
+# Two player keys are in play. depth_charts, rosters_weekly, injuries and
+# contracts carry `gsis_id`, which is our player_id. snap_counts, combine
+# and trades carry Pro-Football-Reference ids, which reach players through
+# `players.pfr_id` -- 22,554 of 25,041 players have one, and the join
+# resolves 324,384 of 324,611 snap rows.
+
+_BY_PFR = ("JOIN players p ON p.pfr_id = {table}.{column}")
+
+
+def offensive_snaps_in_a_game(n):
+    """Took this many offensive snaps in one game. 2012 onward."""
+    return (f"""SELECT DISTINCT p.player_id FROM snap_counts s
+                {_BY_PFR.format(table='s', column='pfr_player_id')}
+                WHERE s.offense_snaps >= ?""", [n])
+
+
+def defensive_snaps_in_a_game(n):
+    """Took this many defensive snaps in one game. 2012 onward."""
+    return (f"""SELECT DISTINCT p.player_id FROM snap_counts s
+                {_BY_PFR.format(table='s', column='pfr_player_id')}
+                WHERE s.defense_snaps >= ?""", [n])
+
+
+def special_teams_snaps_in_a_season(n):
+    """Accumulated this many special-teams snaps within one season."""
+    return (f"""SELECT player_id FROM (
+                  SELECT p.player_id AS player_id, s.season AS season,
+                         SUM(s.st_snaps) AS total
+                  FROM snap_counts s
+                  {_BY_PFR.format(table='s', column='pfr_player_id')}
+                  GROUP BY p.player_id, s.season
+                  HAVING total >= ?)""", [n])
+
+
+def listed_as_a_starter():
+    """Named first on a published depth chart. 2001 onward.
+
+    Depth charts are published weekly and are not the same as starting the
+    game: this is the club's stated intention, which is the only starter
+    evidence nflverse carries.
+    """
+    return ("SELECT DISTINCT gsis_id FROM depth_charts "
+            "WHERE TRIM(depth_team) = '1' AND gsis_id IS NOT NULL", [])
+
+
+def listed_as_a_starter_for(club):
+    """Named first on a depth chart for this franchise."""
+    codes = nfl_reference.codes_for(club)
+    marks = ",".join("?" for _ in codes) or "NULL"
+    return (f"""SELECT DISTINCT gsis_id FROM depth_charts
+                WHERE TRIM(depth_team) = '1' AND gsis_id IS NOT NULL
+                  AND COALESCE(team, club_code) IN ({marks})""", codes)
+
+
+def on_the_weekly_roster_for(club):
+    """Held a place on this franchise's weekly roster. 2002 onward.
+
+    Wider than "played for": a player can be rostered all season and never
+    take a snap, and `games` cannot see him. That is the whole point of
+    this square, and it is why it is worded as roster membership.
+    """
+    codes = nfl_reference.codes_for(club)
+    marks = ",".join("?" for _ in codes) or "NULL"
+    return (f"""SELECT DISTINCT gsis_id FROM rosters_weekly
+                WHERE gsis_id IS NOT NULL AND team IN ({marks})""", codes)
+
+
+def bench_press_at_the_combine(n):
+    """Put up this many bench-press reps at the NFL combine."""
+    return (f"""SELECT DISTINCT p.player_id FROM combine c
+                {_BY_PFR.format(table='c', column='pfr_id')}
+                WHERE c.bench >= ?""", [n])
+
+
+def attended_the_combine():
+    return (f"""SELECT DISTINCT p.player_id FROM combine c
+                {_BY_PFR.format(table='c', column='pfr_id')}""", [])
+
+
+def contract_worth_at_least(millions):
+    """Signed a contract of this total value, in millions of dollars."""
+    return ("SELECT DISTINCT gsis_id FROM contracts "
+            "WHERE gsis_id IS NOT NULL AND value >= ?", [millions])
+
+
+def was_traded():
+    """Named in a trade. Over the Cap's trade history, keyed on PFR id."""
+    return (f"""SELECT DISTINCT p.player_id FROM trades t
+                {_BY_PFR.format(table='t', column='pfr_id')}""", [])
+
+
+def listed_out_on_an_injury_report():
+    """Ruled out on a weekly injury report. 2009 onward."""
+    return ("SELECT DISTINCT gsis_id FROM injuries "
+            "WHERE gsis_id IS NOT NULL AND report_status = 'Out'", [])
+
+
 # ---------------------------------------------------------------- registry
 
 BUILDERS = {
@@ -223,6 +326,37 @@ BUILDERS = {
     "Drafted by club":            (drafted_by, ["club"]),
     "Drafted between years":      (drafted_between, ["from", "to"]),
     "Undrafted (no draft record)": (undrafted, []),
+    # Extended layers. Each is hidden unless its table was imported.
+    "X+ offensive snaps in a game":   (offensive_snaps_in_a_game, ["x"]),
+    "X+ defensive snaps in a game":   (defensive_snaps_in_a_game, ["x"]),
+    "X+ special-teams snaps in a season":
+        (special_teams_snaps_in_a_season, ["x"]),
+    "Listed as a starter":            (listed_as_a_starter, []),
+    "Listed as a starter for club":   (listed_as_a_starter_for, ["club"]),
+    "On a club's weekly roster":      (on_the_weekly_roster_for, ["club"]),
+    "X+ bench-press reps at the combine":
+        (bench_press_at_the_combine, ["x"]),
+    "Attended the NFL combine":       (attended_the_combine, []),
+    "Contract worth $X million+":     (contract_worth_at_least, ["x"]),
+    "Named in a trade":               (was_traded, []),
+    "Ruled out on an injury report":  (listed_out_on_an_injury_report, []),
+}
+
+#: Builder -> the availability probe app.py gates it on. A build without
+#: `--extended` simply does not offer these; nothing here fails on a
+#: missing table.
+LAYER_BUILDERS = {
+    "X+ offensive snaps in a game": "snap_counts_available",
+    "X+ defensive snaps in a game": "snap_counts_available",
+    "X+ special-teams snaps in a season": "snap_counts_available",
+    "Listed as a starter": "depth_charts_available",
+    "Listed as a starter for club": "depth_charts_available",
+    "On a club's weekly roster": "rosters_weekly_available",
+    "X+ bench-press reps at the combine": "combine_available",
+    "Attended the NFL combine": "combine_available",
+    "Contract worth $X million+": "contracts_available",
+    "Named in a trade": "trades_available",
+    "Ruled out on an injury report": "injuries_available",
 }
 
 #: Builders app.py hides when their layer is missing.
