@@ -277,10 +277,15 @@ def test_afl_criterion_parser_and_game_lab_modules_import():
 # --------------------------------------------------------------- the NBA
 
 def test_nba_declares_none_of_the_afl_only_pages():
+    """Club Explorer is no longer one of them.
+
+    It reads six tables that utils/derive_club_tables.py now builds from
+    the match database itself, so it is not tied to the AFL scrape. The
+    rest still are.
+    """
     assert sports.NBA.grid_library is False
     assert sports.NBA.criterion_parser == ""
     assert sports.NBA.game_lab_module == ""
-    assert sports.NBA.has_club_explorer is False
     assert sports.NBA.has_awards_page is False
     assert sports.NBA.has_past_games is False
 
@@ -288,13 +293,36 @@ def test_nba_declares_none_of_the_afl_only_pages():
 def test_nba_has_no_loader_hints_because_it_has_no_loaders():
     """Naming a script that does not exist is worse than saying nothing."""
     assert sports.NBA.loader_hints == {}
-    assert sports.NBA.club_data_tables == frozenset()
+
+
+@pytest.mark.parametrize("sport", [sports.NBA, sports.MLB, sports.NFL])
+def test_a_derived_club_hint_names_a_script_that_exists(sport):
+    """The hint is the only instruction a stuck user gets."""
+    assert sport.has_club_explorer is True
+    assert sport.club_data_tables
+    hint = sport.club_data_hint
+    assert "derive_club_tables.py" in hint
+    assert f"--sport {sport.key}" in hint
+    assert (Path(_ROOT) / "utils" / "derive_club_tables.py").exists()
 
 
 def test_an_empty_club_data_table_set_is_trivially_satisfied():
     """app.py computes CLUB_DATA_OK for every sport; it must not be False
-    for a sport that simply has no Club Explorer."""
-    assert sports.NBA.club_data_tables <= {"anything"}
+    for a sport that simply declares no club tables.
+
+    Tested on a copy rather than on a real sport, because every sport now
+    declares some -- and the guard still has to hold for the next one that
+    does not.
+    """
+    import dataclasses
+
+    bare = dataclasses.replace(sports.NBA, club_data_tables=frozenset())
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE players (player_id INTEGER)")
+    try:
+        assert bare.layers(con).club_data is True
+    finally:
+        con.close()
 
 
 def test_missing_layer_hints_yields_nothing_for_a_sport_without_hints(nba_db):

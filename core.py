@@ -50,6 +50,7 @@ class Schema:
     career_score: str = "career_goals"      # NBA: career_points
     career_postseason: str = "finals_played"  # NBA: playoffs_played
     birth_year: str = "birth_year"
+    birth_country: str = "birth_country"
     n_clubs: str = "n_clubs"
     clubs_hist: str = "clubs_hist"
     obscurity: str = "obscurity"

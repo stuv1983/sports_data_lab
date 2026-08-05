@@ -55,6 +55,7 @@ def nba_db(tmp_path_factory):
     db = root / "nba.db"
     build_nba_db.build(db, nba_source.CsvNbaSource(root / "csv"),
                        verbose=False)
+    nba_fixture.write_all_nba(db)
     return db
 
 

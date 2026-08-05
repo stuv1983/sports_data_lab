@@ -409,6 +409,11 @@ class BbrNbaSource:
                 "position": (row.get("position") or "").strip() or None,
                 "height_cm": height_cm(row.get("height_text")),
                 "weight_kg": weight_kg(row.get("weight_lb")),
+                # The scrape's index does not carry a birthplace. NULL
+                # rather than absent, so the column exists and the
+                # born-outside-the-US square hides instead of erroring.
+                "birth_country": (row.get("birth_country") or "").strip()
+                                 or None,
             })
         if not out:
             raise SourceError(f"players: {path} carries no usable rows")

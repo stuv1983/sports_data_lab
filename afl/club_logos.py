@@ -1,6 +1,7 @@
 """Resolve club logo files to club_ids.
 
-Logos live in ``resources/teams/logos``. Filenames come from wherever the
+Logos live in ``resources/teams/afl``, one folder per sport alongside
+``nba``, ``mlb`` and ``nfl``. Filenames come from wherever the
 image came from and are not consistent -- ``Brisbane_Lions.svg`` next to
 ``GCSuns_2024.svg`` next to ``Collingwood_Football_Club_Logo_(2017-present)
 .svg`` -- so this module matches them to clubs rather than requiring them
@@ -16,7 +17,7 @@ newer file for a club that already has one simply replaces it -- delete the
 old file, or list the one you want in the override file below.
 
 When automatic matching gets it wrong or a filename is too cryptic, add a
-line to ``resources/teams/logos/logos.csv``::
+line to ``resources/teams/afl/logos.csv``::
 
     club_id,filename
     gold_coast,GCSuns_2024.svg
@@ -40,7 +41,12 @@ from pathlib import Path
 
 from data_paths import ROOT
 
-LOGO_DIR = ROOT / "resources" / "teams" / "logos"
+def logo_dir(sport_key: str = "afl") -> Path:
+    """One folder per sport under resources/teams."""
+    return ROOT / "resources" / "teams" / sport_key.strip().lower()
+
+
+LOGO_DIR = logo_dir("afl")
 OVERRIDE_FILE = "logos.csv"
 SUFFIXES = (".svg", ".png", ".webp", ".jpg", ".jpeg", ".gif")
 

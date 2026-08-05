@@ -43,7 +43,23 @@ PLAYERS = [
     ("p6", "Jonah Kirkbride", 1988),    # Thunder only, never Seattle
 ]
 
+#: Enough of each to exercise the squares that read them. Tomas Ilves is
+#: the born-outside case and Slick Watkins the unrecorded one, so the
+#: criterion has to distinguish a foreign birthplace from a missing.
+COUNTRIES = {"p2": "USA", "p3": "USA", "p4": "USA",
+             "p5": "Estonia", "p6": "Canada"}
+
+POSITIONS = {"p1": "G", "p2": "G", "p3": "GF", "p4": "F", "p5": "C",
+             "p6": "FC"}
+
 SEASONS = (1971, 2006, 2009, 2010)
+
+#: (source_player_id, season, league, tier). Marcus Oyelaran is selected in
+#: a Thunder season (2009) and a Sonics one (2006); Ray Bellhouse only in
+#: a Celtics season (2009), never in his 2010 Lakers one -- which is what
+#: "All-NBA with club" has to tell apart.
+ALL_NBA = [("p3", 2009, "NBA", "1st"), ("p3", 2006, "NBA", "2nd"),
+           ("p4", 2009, "NBA", "3rd")]
 
 
 def _rows_for(season):
@@ -147,7 +163,8 @@ def write(root):
 
     dump("players.csv", nba_source.PLAYER_COLUMNS, [
         {"source_player_id": pid, "player": name, "birth_year": born,
-         "position": None, "height_cm": None, "weight_kg": None}
+         "position": POSITIONS.get(pid), "height_cm": None,
+         "weight_kg": None, "birth_country": COUNTRIES.get(pid)}
         for pid, name, born in PLAYERS])
 
     for season in SEASONS:
@@ -162,6 +179,37 @@ def write(root):
             dump(f"player_games_{season}_{phase}.csv",
                  nba_source.PLAYER_GAME_COLUMNS, rows)
     return root
+
+
+def write_all_nba(db):
+    """Load the fixture's All-NBA selections into a built database.
+
+    Separate from write() because the selections are keyed on player_id,
+    which only exists once nba/build_nba_db.py has assigned it.
+    """
+    import sqlite3
+
+    from nba import scrape_all_nba
+
+    con = sqlite3.connect(db)
+    try:
+        con.executescript(scrape_all_nba.DDL)
+        con.execute("DELETE FROM nba_all_nba")
+        ids = dict(con.execute(
+            "SELECT source_player_id, player_id FROM players"))
+        con.executemany(
+            "INSERT INTO nba_all_nba (player_id, season, season_label, "
+            "league, tier, player_name, player_ref, position, match_status) "
+            "VALUES (?,?,?,?,?,?,?,?,'exact name, in season')",
+            [(ids[pid], season, f"{season}-{(season + 1) % 100:02d}",
+              league, tier, dict((p, n) for p, n, _ in PLAYERS)[pid],
+              None, None)
+             for pid, season, league, tier in ALL_NBA if pid in ids])
+        for statement in scrape_all_nba.INDEXES:
+            con.execute(statement)
+        con.commit()
+    finally:
+        con.close()
 
 
 if __name__ == "__main__":

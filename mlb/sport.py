@@ -84,6 +84,14 @@ SPORT = Sport(
     optional_layers={"Awards data": "awards_available",
                      "Hall of Fame": "hall_of_fame_available"},
     obscurity_model=MODEL,
+    has_club_explorer=True,
+    club_data_table="clubs",
+    club_data_tables=frozenset({
+        "clubs", "club_source_snapshots", "club_wikipedia_fields",
+        "club_player_totals", "club_player_register", "club_player_records",
+    }),
+    club_data_hint=("Run `python utils/derive_club_tables.py --sport mlb` "
+                    "for Team Explorer."),
     search_examples=(
         'club:"New York Yankees" games>=1000 sort:obscurity',
         'season.home_runs>=40 debut:1990..1999',

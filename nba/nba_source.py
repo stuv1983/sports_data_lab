@@ -45,8 +45,12 @@ STAT_COLUMNS = ("points", "rebounds", "assists", "steals", "blocks",
 TEAM_COLUMNS = ("team_id", "franchise_id", "name", "city", "nickname",
                 "abbreviation", "first_season", "last_season", "is_current")
 
+#: `birth_country` is the country as the source names it, not a flag.
+#: "born outside the 50 states and DC" is then a question the data can
+#: answer -- Puerto Rico and the US Virgin Islands are named in full and
+#: are correctly outside, which a bare is_american boolean would lose.
 PLAYER_COLUMNS = ("source_player_id", "player", "birth_year", "position",
-                  "height_cm", "weight_kg")
+                  "height_cm", "weight_kg", "birth_country")
 
 #: `season` is the START year: 1996 means the 1996-97 season. Every builder
 #: in core.Generic compares season numerically, so it has to be an integer,

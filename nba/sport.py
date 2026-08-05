@@ -65,6 +65,14 @@ SPORT = Sport(
     optional_layers={"Draft data": "draft_available",
                      "Award data": "awards_available"},
     obscurity_model=MODEL,
+    has_club_explorer=True,
+    club_data_table="clubs",
+    club_data_tables=frozenset({
+        "clubs", "club_source_snapshots", "club_wikipedia_fields",
+        "club_player_totals", "club_player_register", "club_player_records",
+    }),
+    club_data_hint=("Run `python utils/derive_club_tables.py --sport nba` "
+                    "for Team Explorer."),
     search_examples=(
         'club:"Boston Celtics" games>=500 sort:obscurity',
         'game.points>=50 postseason:true',

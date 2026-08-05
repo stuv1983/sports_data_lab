@@ -222,13 +222,12 @@ def test_a_career_with_no_postseason_at_all_carries_lower_confidence(con):
 # ---------------------------------------------------- honesty about grain
 
 #: Squares core.Generic can build but this data cannot honestly answer.
-#: A per-season total behind a per-game label is worse than a gap.
+#: A per-season total behind a per-game label is worse than a gap. These
+#: ask about a single game, which a season row genuinely cannot answer.
 PER_GAME_SQUARES = (
     "X+ of a stat in one game",
     "Two stats in the same game",
     "X+ games with Y+ of a stat",
-    "Season average of a stat",
-    "Career average of a stat",
     "Teammate of…",
 )
 
@@ -236,6 +235,33 @@ PER_GAME_SQUARES = (
 @pytest.mark.parametrize("name", PER_GAME_SQUARES)
 def test_mlb_does_not_offer_a_square_a_season_row_cannot_answer(name):
     assert name not in constraints_mlb.BUILDERS
+
+
+def test_per_game_averages_divide_by_games_not_by_rows():
+    """The averages are offered, but only because they use SUM(games).
+
+    core.Generic's average builders divide by COUNT(*), which for MLB is a
+    count of seasons -- that is the reason these were absent, and using the
+    generic builder here would put a per-season rate under a per-game name.
+    """
+    for label in ("Career average of a stat", "Season average of a stat"):
+        assert label in constraints_mlb.BUILDERS
+        builder = constraints_mlb.BUILDERS[label][0]
+        sql, _ = builder("home_runs", 0.2)
+        assert "SUM(games)" in sql
+        assert "COUNT(*)" not in sql
+        assert "AVG(" not in sql
+
+
+def test_a_per_game_average_is_a_rate_not_a_season_total(con):
+    """0.2 home runs a game is routine; 0.2 a season is nobody."""
+    builder = constraints_mlb.BUILDERS["Career average of a stat"][0]
+    sql, params = builder("home_runs", 0.2, 1)
+    rate = con.execute(f"SELECT COUNT(*) FROM ({sql})", params).fetchone()[0]
+    total = con.execute(
+        "SELECT COUNT(DISTINCT player_id) FROM games "
+        "WHERE home_runs IS NOT NULL AND games > 0").fetchone()[0]
+    assert 0 < rate <= total
 
 
 def test_a_fixture_build_writes_its_reference_beside_itself(db):
@@ -279,7 +305,7 @@ def test_every_builder_actually_runs(con):
                  "rivalry": "yankees_redsox", "award_axis": "Gold Glove",
                  "position": "Left Field", "average": 0.300,
                  "min_plate_appearances": 1, "stat_a": "home_runs", "x_a": 1,
-                 "stat_b": "hits", "x_b": 1}
+                 "stat_b": "hits", "x_b": 1, "avg": 0.2, "min_games": 1}
     gates = getattr(constraints_mlb, "LAYER_BUILDERS", {})
     for name, (builder, argnames) in constraints_mlb.BUILDERS.items():
         probe = gates.get(name)

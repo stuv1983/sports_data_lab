@@ -580,7 +580,8 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
 
         player_columns = [
             "player_id", "source_player_id", "player", "name_key",
-            "birth_year", "position", "height_cm", "weight_kg",
+            "birth_year", "birth_country", "position", "height_cm",
+            "weight_kg",
             "debut_season", "final_season", "career_games", "career_points",
             "career_minutes", "playoffs_played", "career_rebounds",
             "career_assists", "career_steals", "career_blocks",

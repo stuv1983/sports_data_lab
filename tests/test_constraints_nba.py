@@ -48,6 +48,7 @@ ARGUMENTS = {
     "avg": 5.0, "min_games": 1,
     "from": 1971, "to": 2010,
     "player_id": 1, "kind": "National", "source": "", "award": "",
+    "position": "Guard",
 }
 
 
@@ -204,6 +205,64 @@ def test_no_builder_needs_a_layer_that_is_not_loaded():
 def test_team_season_builders_are_declared_and_backed(con):
     assert C.TEAM_SEASON_BUILDERS <= set(C.BUILDERS)
     assert C.team_seasons_available(con) is True
+
+
+# ------------------------------------------------------- the new categories
+
+def test_born_outside_the_us_excludes_the_unrecorded(con):
+    """A missing birthplace is not evidence of a foreign one."""
+    found = names(con, C.born_outside_the_us())
+    assert "Tomas Ilves" in found         # Estonia
+    assert "Jonah Kirkbride" in found     # Canada
+    assert "Ray Bellhouse" not in found   # USA
+    assert "Slick Watkins" not in found   # no country recorded
+
+
+def test_listed_at_position_matches_combination_codes(con):
+    """A swingman listed 'GF' is both a guard and a forward."""
+    guards = names(con, C.listed_at_position("Guard"))
+    forwards = names(con, C.listed_at_position("Forward"))
+    assert "Marcus Oyelaran" in guards      # GF
+    assert "Marcus Oyelaran" in forwards    # GF
+    assert "Tomas Ilves" not in guards      # C
+    assert "Tomas Ilves" in names(con, C.listed_at_position("Center"))
+
+
+def test_all_nba_with_club_is_the_same_season(con):
+    """The strict pairing: selected *while* at the club, not ever-and-ever.
+
+    Ray Bellhouse is All-NBA in his 2009 Celtics season and also played
+    for the Lakers in 2010. He answers a Celtics square and must not answer
+    a Lakers one, even though he is in the plain All-NBA set and did play
+    for the Lakers.
+    """
+    assert "Ray Bellhouse" in names(con, C.all_nba_selection())
+
+    celtics = names(con, C.all_nba_with_club("Boston Celtics"))
+    assert celtics == ["Ray Bellhouse"]
+
+    lakers = names(con, C.all_nba_with_club("Los Angeles Lakers"))
+    assert "Ray Bellhouse" not in lakers
+
+
+def test_all_nba_club_lineage_expands_one_way(con):
+    """A Thunder square includes the Sonics season; Seattle stays Seattle.
+
+    Marcus Oyelaran is All-NBA as a Sonic in 2006 and as a Thunder player
+    in 2009. Jonah Kirkbride never wore Seattle at all and is the control.
+    """
+    seattle = names(con, C.all_nba_with_club("Seattle SuperSonics"))
+    thunder = names(con, C.all_nba_with_club("Oklahoma City Thunder"))
+    assert "Marcus Oyelaran" in seattle
+    assert "Marcus Oyelaran" in thunder
+    assert "Jonah Kirkbride" not in seattle
+
+
+def test_new_layer_probes_are_declared(con):
+    assert C.all_nba_available(con) is True
+    assert C.birthplace_available(con) is True
+    assert C.positions_available(con) is True
+    assert set(C.LAYER_BUILDERS) <= set(C.BUILDERS)
 
 
 def main():

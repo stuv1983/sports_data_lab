@@ -23,8 +23,10 @@ and wrong:
     game", "X+ games with Y+ of a stat". A per-season total answered under
     a per-game label would silently turn "40 home runs in a game" into a
     routine season.
-  * per-game averages -- core.Generic's average builders divide a total by
-    a row count, and a row here is a season.
+  * per-game averages via core.Generic, whose average builders divide a
+    total by a row count -- a season here. The per-game squares below
+    divide by SUM(games) instead, which is the real denominator and is a
+    column Lahman does give us.
   * teammates -- core.Generic.teammate_of_id matches players sharing a
     (club, season), which in baseball's trade market means two players who
     were never in the same clubhouse. The NBA module declines this for the
@@ -276,6 +278,44 @@ def born_outside_the_us():
             [])
 
 
+#: Games a career must cover before a per-game rate is offered, so a
+#: three-game call-up cannot top a rate leaderboard.
+CAREER_PER_GAME_MIN_GAMES = core.Generic.CAREER_AVG_MIN_GAMES
+
+
+def career_stat_per_game_min(stat, avg, min_games=None):
+    """Averaged `avg` or more of `stat` per game across a career.
+
+    Divides by SUM(games), not by row count: a row is a season with one
+    team, so core.Generic's average builder would return a per-season rate
+    under a per-game label. Seasons where the stat was not recorded are
+    excluded from both halves of the fraction.
+    """
+    floor = (CAREER_PER_GAME_MIN_GAMES if min_games is None
+             else int(min_games))
+    return (f"""SELECT player_id FROM games
+                WHERE {stat} IS NOT NULL AND games > 0
+                GROUP BY player_id
+                HAVING SUM(games) >= ?
+                   AND CAST(SUM({stat}) AS REAL) / SUM(games) >= ?""",
+            [floor, avg])
+
+
+def season_stat_per_game_min(stat, avg, min_games=1):
+    """A single season averaging `avg` or more of `stat` per game.
+
+    Grouped by season rather than by row so a player traded mid-year is
+    judged on the whole season, not on each stint separately.
+    """
+    return (f"""SELECT player_id FROM games
+                WHERE {stat} IS NOT NULL AND games > 0
+                  AND is_postseason = 0
+                GROUP BY player_id, season
+                HAVING SUM(games) >= ?
+                   AND CAST(SUM({stat}) AS REAL) / SUM(games) >= ?""",
+            [int(min_games), avg])
+
+
 def season_batting_average_min(average, min_plate_appearances=502):
     """A qualifying season batting at least this average.
 
@@ -362,6 +402,10 @@ BUILDERS = {
                                      ["average", "min_plate_appearances"]),
     "Two stats in the same season": (season_two_stats_min,
                                      ["stat_a", "x_a", "stat_b", "x_b"]),
+    "Career average of a stat":   (career_stat_per_game_min,
+                                   ["stat", "avg", "min_games"]),
+    "Season average of a stat":   (season_stat_per_game_min,
+                                   ["stat", "avg", "min_games"]),
 }
 
 #: Builders needing an optional layer. app.py filters BUILDERS by these

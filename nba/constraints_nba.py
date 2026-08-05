@@ -161,6 +161,76 @@ def missed_playoffs_season():
                WHERE t.made_playoffs = 0""", [])
 
 
+#: Listed positions offered as an axis. The source records a career label
+#: on the player, not a position per game, so these read "listed as" and
+#: not the MLB layer's "min. 1 game" -- a swingman is both a guard and a
+#: forward, and the combination codes ('GF') are matched as such.
+POSITIONS = ("Guard", "Forward", "Center")
+
+POSITION_CODES = {"Guard": "G", "Forward": "F", "Center": "C"}
+
+
+def listed_at_position(position):
+    """Listed at this position, alone or in a combination."""
+    code = POSITION_CODES.get(position, position)
+    return ("SELECT player_id FROM players "
+            "WHERE position IS NOT NULL AND position LIKE ?", [f"%{code}%"])
+
+
+def all_nba_selection():
+    """Named to an All-NBA team, in any season and at any tier.
+
+    All-ABA and the two All-BAA years count, which is how the puzzle's own
+    category reads them -- the source lists all three on one page and the
+    BAA is the NBA's own first two seasons.
+    """
+    return ("SELECT DISTINCT player_id FROM nba_all_nba "
+            "WHERE player_id IS NOT NULL", [])
+
+
+def all_nba_with_club(club):
+    """Named to an All-NBA team in a season played for this club.
+
+    The strict pairing: the selection and the club have to be the same
+    season, which intersecting a plain All-NBA square with a plain club
+    square does not give you -- that returns anyone who was ever All-NBA
+    and ever played for the club.
+
+    The season's club comes from `games`, since the awards page names no
+    team. Both club_now and club_hist are matched, as played_for does, so
+    the franchise lineage expands the same one-directional way: a Thunder
+    square includes a Sonics season, a Seattle square does not become a
+    question about Oklahoma City. player_seasons would be the smaller scan
+    but carries only club_now, which cannot tell those two apart.
+
+    A player traded mid-season counts for both clubs he turned out for
+    that year, which is the only reading the data supports.
+    """
+    identities = SCHEMA.club_identities(club)
+    marks = ",".join("?" for _ in identities)
+    return (f"""SELECT DISTINCT a.player_id FROM nba_all_nba a
+                JOIN games g
+                  ON g.player_id = a.player_id AND g.season = a.season
+                WHERE a.player_id IS NOT NULL
+                  AND (g.club_now IN ({marks})
+                       OR g.club_hist IN ({marks}))""",
+            [*identities, *identities])
+
+
+def born_outside_the_us():
+    """Born outside the 50 states and DC.
+
+    The source names Puerto Rico and the US Virgin Islands as their own
+    country, so they fall outside on this test -- correctly, given the
+    wording. An unrecorded birthplace is excluded rather than assumed
+    foreign.
+    """
+    return ("SELECT player_id FROM players "
+            "WHERE birth_country IS NOT NULL AND TRIM(birth_country) <> '' "
+            "AND UPPER(TRIM(birth_country)) NOT IN ('USA', 'US', 'U.S.A.')",
+            [])
+
+
 # ---------------------------------------------------------------- registry
 
 BUILDERS = {
@@ -213,6 +283,10 @@ BUILDERS = {
     "Played in the Finals":       (played_in_the_finals, []),
     "Won a Finals game":          (won_the_finals, []),
     "Never played in the Finals": (never_made_the_finals, []),
+    "Listed at a position":       (listed_at_position, ["position"]),
+    "Born outside the US":        (born_outside_the_us, []),
+    "All-NBA selection":          (all_nba_selection, []),
+    "All-NBA with club":          (all_nba_with_club, ["club"]),
 }
 
 #: Builders needing an optional layer. Both empty for these milestones --
@@ -230,6 +304,15 @@ DRAFT_TYPES = ()
 TEAM_SEASON_BUILDERS = {"Appeared for championship team", "Made the playoffs",
                         "Missed the playoffs"}
 
+#: Builders gated on a column the build only started writing recently.
+#: registry.Sport.layers() reads this as {builder_name: probe_function}.
+LAYER_BUILDERS = {
+    "Listed at a position": "positions_available",
+    "Born outside the US": "birthplace_available",
+    "All-NBA selection": "all_nba_available",
+    "All-NBA with club": "all_nba_available",
+}
+
 
 def draft_available(con):
     """True when an NBA draft layer has been imported. Not in this build."""
@@ -239,6 +322,40 @@ def draft_available(con):
 def awards_available(con):
     """True when an NBA award layer has been imported. Not in this build."""
     return core.have_tables(con, "nba_awards")
+
+
+def _has_player_column(con, column):
+    try:
+        return any(row[1] == column
+                   for row in con.execute("PRAGMA table_info(players)"))
+    except Exception:
+        return False
+
+
+def positions_available(con):
+    """True when `players` carries the listed position."""
+    return _has_player_column(con, "position")
+
+
+def birthplace_available(con):
+    """True when `players` carries birth_country.
+
+    A database built before it existed has the table but not the column,
+    and the square would fail on execution rather than be hidden.
+    """
+    return _has_player_column(con, "birth_country")
+
+
+def all_nba_available(con):
+    """True once nba/scrape_all_nba.py has loaded the selections."""
+    if not core.have_tables(con, "nba_all_nba"):
+        return False
+    try:
+        return bool(con.execute(
+            "SELECT 1 FROM nba_all_nba WHERE player_id IS NOT NULL "
+            "LIMIT 1").fetchone())
+    except Exception:
+        return False
 
 
 def team_seasons_available(con):

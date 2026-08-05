@@ -106,6 +106,14 @@ SPORT = Sport(
                       "contracts_available", "trades_available")
     },
     obscurity_model=MODEL,
+    has_club_explorer=True,
+    club_data_table="clubs",
+    club_data_tables=frozenset({
+        "clubs", "club_source_snapshots", "club_wikipedia_fields",
+        "club_player_totals", "club_player_register", "club_player_records",
+    }),
+    club_data_hint=("Run `python utils/derive_club_tables.py --sport nfl` "
+                    "for Team Explorer."),
     #: nflverse's player list is every known identity, most of whom retired
     #: before the weekly statistics begin. A player with no game is not an
     #: answer to any square, and scoring him is scoring an absence.

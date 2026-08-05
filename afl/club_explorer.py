@@ -34,6 +34,60 @@ def _read(con, sql: str, params=()) -> pd.DataFrame:
     return pd.read_sql_query(sql, con, params=params)
 
 
+#: Bookkeeping columns, never shown as a statistic.
+_PLUMBING = {
+    "row_id", "club_id", "player_name_source", "player_name", "player_url",
+    "player_id", "match_status", "candidate_count", "raw_row_json",
+    "imported_at",
+}
+
+
+#: Words .title() gets wrong. 'rbis' becomes 'Rbis' and 'tds' 'Tds'.
+_ACRONYMS = {
+    "rbis": "RBIs", "tds": "TDs", "td": "TD", "fgm": "FGM", "fga": "FGA",
+    "fg3m": "3PM", "fg3a": "3PA", "ftm": "FTM", "fta": "FTA",
+    "oreb": "OREB", "dreb": "DREB", "era": "ERA", "i50": "I50",
+    "fg": "FG", "def": "Def",
+}
+
+
+def _label(column: str) -> str:
+    return " ".join(_ACRONYMS.get(word, word.title())
+                    for word in column.split("_"))
+
+
+def _columns(con, table: str) -> list:
+    return [row[1] for row in con.execute(f"PRAGMA table_info({table})")]
+
+
+def _stat_selection(con, table: str) -> str:
+    """The SELECT list for a club table, from whatever columns it has.
+
+    The AFL's are kicks, marks and Brownlow votes; the NBA's are points and
+    rebounds. Reading them off the table keeps one page serving every
+    sport instead of one page per sport, each with its stats spelled out.
+    """
+    parts = ['player_name AS Player']
+    for column in _columns(con, table):
+        if column in _PLUMBING or column == "player_name":
+            continue
+        parts.append(f'{column} AS "{_label(column)}"')
+    parts.append("match_status AS Link")
+    return ", ".join(parts)
+
+
+def _drop_empty(frame: pd.DataFrame, keep=("Player",)) -> pd.DataFrame:
+    """Hide columns no row filled in.
+
+    The register carries cap numbers, jumper numbers and heights because
+    the AFL scrape supplies them. A derived sport has none of that, and an
+    all-blank column reads as missing data rather than as inapplicable.
+    """
+    empty = [c for c in frame.columns
+             if c not in keep and frame[c].isna().all()]
+    return frame.drop(columns=empty)
+
+
 def _field_map(con, club_id: str) -> dict[str, str]:
     if "club_wikipedia_fields" not in _tables(con):
         return {}
@@ -84,8 +138,8 @@ def _past_games_tab(con, club_id: str, club_name: str) -> None:
     """
     if not CH.club_history_available(con):
         st.info(
-            "Past game data is not loaded. Run "
-            "`python utils/fetch_club_sources.py`, then "
+            "Past game data is not loaded. It comes from the AFL club "
+            "scrape -- run `python utils/fetch_club_sources.py`, then "
             "`python utils/load_club_all_games.py`."
         )
         return
@@ -209,20 +263,21 @@ def _past_games_tab(con, club_id: str, club_name: str) -> None:
 
 
 @st.cache_data(show_spinner=False)
-def _logo_map(_con, folder_stamp) -> dict:
+def _logo_map(_con, sport_key: str, folder_stamp) -> dict:
     """club_id -> logo file path, cached against the folder's contents.
 
     The cache key is a stamp over the folder rather than the connection, so
     dropping a new logo in refreshes it without restarting the app.
     """
     return {k: str(v) for k, v in
-            CL.resolve(CL.clubs_from_db(_con)).items()}
+            CL.resolve(CL.clubs_from_db(_con),
+                       CL.logo_dir(sport_key)).items()}
 
 
-def _logo_stamp() -> tuple:
+def _logo_stamp(sport_key: str) -> tuple:
     """Cheap fingerprint of the logo folder: names and modification times."""
     return tuple(sorted((p.name, p.stat().st_mtime_ns)
-                        for p in CL.logo_files()))
+                        for p in CL.logo_files(CL.logo_dir(sport_key))))
 
 
 def _logo_html(path: str, height: int = 72) -> str:
@@ -266,11 +321,8 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
                 f"{sport.label} yet.")
         return
     if not club_data_available(con):
-        st.info(
-            "Club data is not loaded. Run `python utils/fetch_club_sources.py "
-            "--report`, then `python utils/load_club_sources.py --report "
-            "--details`."
-        )
+        st.info(sport.club_data_hint or
+                "Club data is not loaded for this sport.")
         return
 
     clubs = _read(con, """
@@ -284,7 +336,7 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
     club = clubs.loc[clubs.club_id == club_id].iloc[0]
     fields = _field_map(con, club_id)
 
-    logos = _logo_map(con, _logo_stamp())
+    logos = _logo_map(con, sport.key, _logo_stamp(sport.key))
     logo = logos.get(club_id)
     if logo:
         badge, title = st.columns([1, 9])
@@ -344,17 +396,15 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
         _past_games_tab(con, club_id, club["name"])
 
     with tabs[2]:
-        totals = _read(con, """
-            SELECT player_name AS Player, games AS Games, goals AS Goals,
-                   disposals AS Disposals, kicks AS Kicks, marks AS Marks,
-                   handballs AS Handballs, tackles AS Tackles,
-                   brownlow AS "Brownlow votes", match_status AS Link
+        totals = _read(con, f"""
+            SELECT {_stat_selection(con, 'club_player_totals')}
             FROM club_player_totals
             WHERE club_id=?
             ORDER BY games DESC, player_name
         """, (club_id,))
+        totals = _drop_empty(totals)
         if totals.empty:
-            st.info("Player Totals HTML has not been loaded for this club.")
+            st.info("Player totals have not been loaded for this club.")
         else:
             st.caption(f"{len(totals):,} player-club career rows")
             st.dataframe(totals, hide_index=True, width="stretch")
@@ -375,8 +425,10 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
             WHERE club_id=?
             ORDER BY games DESC, cap_number
         """, (club_id,))
+        register = _drop_empty(register)
         if register.empty:
-            st.info("All-Time Player List HTML has not been loaded for this club.")
+            st.info("The all-time player list has not been loaded for "
+                    "this club.")
         else:
             st.caption(f"{len(register):,} all-time club players")
             st.dataframe(register, hide_index=True, width="stretch")
@@ -397,7 +449,7 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
             scope = st.radio("Record scope", scopes, horizontal=True)
             stats = [stat for row_scope, stat in options if row_scope == scope]
             stat = st.selectbox("Statistic", stats,
-                                format_func=lambda value: value.replace("_", " ").title())
+                                format_func=_label)
             records = _read(con, """
                 SELECT source_rank AS Rank, player_name AS Player,
                        value AS Value, games AS Games, average AS Average,
