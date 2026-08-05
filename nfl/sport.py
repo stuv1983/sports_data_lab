@@ -81,6 +81,8 @@ SPORT = Sport(
                 "total or a touchdown here for a season before that, even "
                 "where the schedule and the rosters go back to 1920."),
     stat_eras=nfl_reference.stat_eras(),
+    #: A Super Bowl is one game, so a win in it is the championship.
+    title_round="SB",
     #: Every dataset the build imports gets a status row. The eight
     #: `--extended` ones are optional in the builder -- one can fail and be
     #: recorded in build_warnings while the build succeeds -- so "not

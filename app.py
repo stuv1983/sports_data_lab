@@ -137,10 +137,36 @@ def player_options(sport_key, db, revision):
         f"SELECT {s.player_id}, {s.player}, {s.debut_season}, "
         f"{s.final_season}, {s.career_games}, {s.clubs_hist} "
         f"FROM {s.players} ORDER BY {s.player}").fetchall()
-    return [(pid, nm,
-             f"{nm} ({d}-{f}, {g}g, {cl.replace('|', '/')})",
+    return [(pid, nm, _player_label(nm, d, f, g, cl),
              _player_search_key(nm))
             for pid, nm, d, f, g, cl in rows]
+
+
+def _player_label(name, debut, final, games, clubs):
+    """'Tom Brady (2000-2022, 335g, NE/TB)', with the gaps left out.
+
+    Every part is optional because for one sport most of them are missing:
+    13,670 of the NFL's 25,041 players have no teams_hist and no
+    career_games, being known to the rosters and depth charts without ever
+    appearing in a game row. Calling .replace() on that NULL took the
+    entire Player Search page down with 'NoneType' has no attribute
+    'replace' -- for every query, since the label is built for the whole
+    list before any of it is filtered.
+
+    A player with nothing to add is still listed, under their bare name:
+    they are in the database, and a search that cannot find them is worse
+    than one that finds them with no detail beside them.
+    """
+    parts = []
+    if debut and final:
+        parts.append(f"{debut}-{final}")
+    elif debut or final:
+        parts.append(str(debut or final))
+    if games:
+        parts.append(f"{games}g")
+    if clubs:
+        parts.append(str(clubs).replace("|", "/"))
+    return f"{name} ({', '.join(parts)})" if parts else str(name)
 
 
 def player_matches(query, limit=PLAYER_MATCH_LIMIT):
@@ -522,8 +548,15 @@ if PAGE != "Grid Solver":
         from afl import past_games
         past_games.past_games_page(SPORT, con)
     elif PAGE == "Awards":
-        from afl import awards_page
-        awards_page.awards_page(SPORT, con)
+        # Each sport names its own awards module: the AFL's page reads the
+        # Draftguru shape and the MLB's reads Lahman's, and they share no
+        # columns. A sport that declares none still gets the AFL page,
+        # which says so rather than failing.
+        import importlib
+
+        module = importlib.import_module(
+            SPORT.awards_page_module or "afl.awards_page")
+        module.awards_page(SPORT, con)
     elif PAGE == "Advanced Search":
         import advanced_search
         advanced_search.search_page(SPORT, con)

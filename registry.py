@@ -88,9 +88,25 @@ class Sport:
     criterion_parser: str = ""
     grid_library: bool = False
     game_lab_module: str = ""
+    #: Which module renders the Awards page. The AFL's is built for the
+    #: Draftguru shape and the MLB's for Lahman's, and the two have no
+    #: columns in common, so the sport names its own rather than one page
+    #: branching on which tables it happens to find.
+    awards_page_module: str = ""
     has_club_explorer: bool = False
     has_awards_page: bool = False
     has_past_games: bool = False
+    #: The `games.round` value whose win means the sport's title -- 'GF' for
+    #: the AFL, 'WS' for the MLB, 'SB' for the NFL. The player profile counts
+    #: distinct seasons won to show a premiership/World Series/Super Bowl
+    #: tally.
+    #:
+    #: Left unset where a title-round win is not a title. The NBA Finals is a
+    #: best-of-seven and its rows are per-game with no series result, so a
+    #: side that lost 4-3 would still be credited -- which is why
+    #: constraints_nba.won_the_finals() is careful to call itself "won a
+    #: Finals game". A sport declares this only when the data can answer it.
+    title_round: str = ""
     loader_hints: dict = field(default_factory=dict)
     club_data_tables: frozenset = frozenset()
     club_data_hint: str = ""

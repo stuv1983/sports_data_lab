@@ -104,7 +104,10 @@ SPORT = Sport(
     game_lab_module="afl.game_lab",
     has_club_explorer=True,
     has_awards_page=True,
+    awards_page_module="afl.awards_page",
     has_past_games=True,
+    #: A grand final is one match, so a win in it is a premiership.
+    title_round="GF",
     loader_hints={
         "draft_available": "Run `afl/load_draftguru.py`, then `afl/link_draft.py`.",
         "awards_available": "Run `afl/load_draftguru.py`, then `afl/link_people.py`.",

@@ -75,6 +75,12 @@ SPORT = Sport(
     #: is a player-season, so the match-level rows the page lists exist only
     #: because the Retrosheet game logs are loaded alongside.
     has_past_games=True,
+    #: `result` on a postseason row is the *series* outcome from SeriesPost,
+    #: one row per player per round, so a 'WS' win is the title itself
+    #: rather than one win inside a seven-game series.
+    title_round="WS",
+    has_awards_page=True,
+    awards_page_module="mlb.awards_page",
     optional_layers={"Awards data": "awards_available",
                      "Hall of Fame": "hall_of_fame_available"},
     obscurity_model=MODEL,

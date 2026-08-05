@@ -18,6 +18,7 @@ raw 0-100 score appears only where the exact number is the point.
 
 import os
 import random
+import sqlite3
 
 import pandas as pd
 import streamlit as st
@@ -247,6 +248,50 @@ def _player_profile(sport, con, player_picker):
     render_player_profile(sport, con, pid, key_prefix="explore")
 
 
+def _title_label(title: str) -> str:
+    """'premiership' -> 'Premierships', 'World Series' -> 'World Series'.
+
+    Vocab.title is singular, and the tile counts them. Anything already
+    ending in 's' is left alone, which is what keeps 'World Series' from
+    becoming 'World Seriess'.
+    """
+    label = title.strip()
+    if not label:
+        return "Titles"
+    label = label[0].upper() + label[1:]
+    return label if label.endswith("s") else label + "s"
+
+
+def _titles_won(sport, con, pid, revision):
+    """How many titles this player won, or None if the sport cannot say.
+
+    Counts *distinct seasons* rather than rows. For the AFL and the NFL a
+    title is decided in one match so the two are the same, but counting
+    seasons is what keeps the number a title count rather than a
+    matches-won count if a sport's rows ever become per-game within the
+    deciding series.
+
+    Sports that do not declare a title_round return None and show no tile
+    at all -- see registry.Sport.title_round for why the NBA is one of
+    them. A sport whose database has no `round` or `result` column also
+    returns None rather than raising, so this can never take a profile
+    page down.
+    """
+    round_value = getattr(sport, "title_round", "")
+    if not round_value:
+        return None
+    sc = sport.schema
+    try:
+        row = _fetchone(
+            f"SELECT COUNT(DISTINCT {sc.season}) FROM {sc.games} "
+            f"WHERE {sc.player_id} = ? AND UPPER(TRIM({sc.round})) = ? "
+            f"AND {sc.result} = 'W'",
+            (pid, round_value.upper()), revision, con)
+    except sqlite3.Error:
+        return None
+    return row[0] if row else 0
+
+
 def render_player_profile(sport, con, pid, key_prefix="explore",
                           heading_level="##"):
     """One player's career, rendered wherever it is asked for.
@@ -300,20 +345,27 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                     )
                 st.caption("Club captain: " + " · ".join(appointments))
 
-    cols = st.columns(5)
     tiles = [
         (V.games.capitalize(), f"{p[3]:,}"),
         (V.score.capitalize(), f"{int(p[4] or 0):,}"),
         (V.postseason.capitalize(), p[5]),
-        ("Born", int(p[7]) if p[7] else "—"),
     ]
+    # Premierships / World Series / Super Bowls, for the sports whose data
+    # can actually answer it. Inserted before Born so the career numbers
+    # stay together.
+    titles = _titles_won(sport, con, pid, revision)
+    if titles is not None:
+        tiles.append((_title_label(V.title), titles))
+    tiles.append(("Born", int(p[7]) if p[7] else "—"))
+
+    cols = st.columns(len(tiles) + 1)
     for col, (lab, val) in zip(cols, tiles):
         col.markdown(f"<div class='count'>{val}</div>"
                      f"<div class='count-label'>{lab}</div>",
                      unsafe_allow_html=True)
-    cols[4].markdown(f"<div>{core.stars_html(p[8])}</div>"
-                     f"<div class='count-label'>Obscurity</div>",
-                     unsafe_allow_html=True)
+    cols[-1].markdown(f"<div>{core.stars_html(p[8])}</div>"
+                      f"<div class='count-label'>Obscurity</div>",
+                      unsafe_allow_html=True)
 
     st.markdown("### Season by season")
     seasons_sql = f"""
