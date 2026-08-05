@@ -260,14 +260,64 @@ def test_the_status_panel_does_not_call_a_season_a_game():
 
 
 def test_every_builder_actually_runs(con):
-    """A registry entry that throws is a square that breaks the board."""
+    """A registry entry that throws is a square that breaks the board.
+
+    Executed through core.count rather than by running the fragment
+    directly. Since the Immaculate Grid pairing rule landed, a builder may
+    return a *row-scoped predicate* ("@row:team@g.club_now IN (?)") that is
+    only valid once core._where has wrapped it in an EXISTS -- running it
+    raw fails with 'near "@row": syntax error', which says nothing about
+    whether the square works.
+
+    Builders gated on an optional layer are skipped when the layer is
+    absent, exactly as app.py hides them, so this asserts what a solver
+    could actually click.
+    """
     arguments = {"club": "Los Angeles Dodgers", "games": 10, "goals": 1,
                  "clubs": 2, "stat": "home_runs", "x": 1, "from": 1950,
                  "to": 1960, "venue": "Ebbets Field",
-                 "rivalry": "yankees_redsox"}
+                 "rivalry": "yankees_redsox", "award_axis": "Gold Glove",
+                 "position": "Left Field", "average": 0.300,
+                 "min_plate_appearances": 1, "stat_a": "home_runs", "x_a": 1,
+                 "stat_b": "hits", "x_b": 1}
+    gates = getattr(constraints_mlb, "LAYER_BUILDERS", {})
     for name, (builder, argnames) in constraints_mlb.BUILDERS.items():
-        sql, params = builder(*[arguments[a] for a in argnames])
-        con.execute(sql, params).fetchall()
+        probe = gates.get(name)
+        if probe and not getattr(constraints_mlb, probe)(con):
+            continue
+        built = builder(*[arguments[a] for a in argnames])
+        core.count(con, [built], constraints_mlb.SCHEMA)
+
+
+def test_a_team_square_pairs_with_a_season_stat_on_one_row(con):
+    """The Immaculate Grid rule: 100 RBI must be *with that team*.
+
+    Intersecting two independent player_id sets answered "played here at
+    some point AND had such a season for anyone", which on the real
+    database accepted 113 players for a square with 42 answers.
+    """
+    club = "Los Angeles Dodgers"
+    paired = core.count(
+        con, [constraints_mlb.played_for(club),
+              constraints_mlb.season_stat_total_min("home_runs", 1)],
+        constraints_mlb.SCHEMA)
+    same_row = con.execute(
+        "SELECT COUNT(DISTINCT player_id) FROM games "
+        "WHERE club_now = ? AND home_runs >= 1", (club,)).fetchone()[0]
+    assert paired == same_row
+
+    # Two teams must NOT merge: one row cannot be two clubs, so merging
+    # would empty every "played for both" square on the board.
+    both = core.count(
+        con, [constraints_mlb.played_for(club),
+              constraints_mlb.played_for("Boston Red Sox")],
+        constraints_mlb.SCHEMA)
+    assert both == len(
+        {r[0] for r in con.execute(
+            "SELECT player_id FROM games WHERE club_now = ?", (club,))}
+        & {r[0] for r in con.execute(
+            "SELECT player_id FROM games WHERE club_now = ?",
+            ("Boston Red Sox",))})
 
 
 def main():

@@ -554,11 +554,89 @@ def require_schema(con, schema: Schema):
 
 # ------------------------------------------------------------- the engine
 
+#: Marker for a constraint that is a predicate over ONE row of `games`
+#: rather than a subquery returning player_ids. A fragment reading
+#: "@row:team@club_now = ?" says "this row is for that club".
+#:
+#: It exists to express the Immaculate Grid pairing rule: when a team axis
+#: meets a season-stat axis, the stat must have been achieved *with that
+#: team, in one season*. Intersecting two independent player_id sets gives
+#: "played for Cleveland at some point" AND "had a 100-RBI season for
+#: anyone", which accepted 113 players for a square with 42 real answers --
+#: Bobby Bonds drove in 102 for the Giants in 1971 and played Cleveland in
+#: 1979, and the square took him.
+#:
+#: Only the MLB uses this: its `games` row already *is* a
+#: (player, season, team), so one row carries both halves of the question.
+#: A sport whose row is a single game cannot answer it this way and its
+#: builders keep returning ordinary subqueries.
+ROW_MARKER = "@row:"
+
+
+def _row_parts(sql):
+    """('team'|'stat', predicate) for a row-scoped fragment, else None."""
+    if not sql.startswith(ROW_MARKER):
+        return None
+    kind, _, predicate = sql[len(ROW_MARKER):].partition("@")
+    return kind, predicate
+
+
+def _group_constraints(constraints):
+    """Split into (combined row predicates, standalone fragments).
+
+    The team is what ties a stat to a season, so predicates are merged only
+    when exactly one team is involved:
+
+      team x season-stat  -> merged; same row, so same team and season.
+      team x team         -> NOT merged. "Played for both" is two different
+                             rows, and one row cannot be two clubs at once,
+                             so merging would make every such square empty.
+      stat x stat         -> NOT merged, per the rule that two non-team
+                             categories need not fall in the same season.
+    """
+    teams, stats, plain = [], [], []
+    for sql, params in constraints:
+        parts = _row_parts(sql)
+        if parts is None:
+            plain.append((sql, params))
+            continue
+        kind, predicate = parts
+        (teams if kind == "team" else stats).append((predicate, params))
+
+    if len(teams) == 1 and stats:
+        return [teams[0]] + stats, plain
+    # Nothing to tie together: every row predicate stands on its own, which
+    # is exactly the old "played for X at any time" behaviour.
+    return [], plain + [(f"@solo@{p}", pr) for p, pr in teams + stats]
+
+
+def _row_exists(predicates, schema: Schema):
+    """One EXISTS over `games` carrying every predicate at once."""
+    where = " AND ".join(p for p, _ in predicates)
+    params = [v for _, values in predicates for v in values]
+    return (f"EXISTS (SELECT 1 FROM {schema.games} g "
+            f"WHERE g.{schema.player_id} = p.{schema.player_id} "
+            f"AND {where})"), params
+
+
+def _standalone(sql, params, schema: Schema):
+    """A single fragment as its own WHERE clause."""
+    if sql.startswith("@solo@"):
+        return _row_exists([(sql[len("@solo@"):], params)], schema)
+    return f"p.{schema.player_id} IN ({sql})", list(params)
+
+
 def _where(constraints, schema: Schema):
+    merged, plain = _group_constraints(constraints)
     frags, params = [], []
-    for sql, p in constraints:
-        frags.append(f"p.{schema.player_id} IN ({sql})")
-        params.extend(p)
+    if merged:
+        sql, values = _row_exists(merged, schema)
+        frags.append(sql)
+        params.extend(values)
+    for sql, p in plain:
+        clause, values = _standalone(sql, p, schema)
+        frags.append(clause)
+        params.extend(values)
     return (" AND ".join(frags) if frags else "1=1"), params
 
 
@@ -656,14 +734,32 @@ def _sql_literal(value):
     return str(value)
 
 
+def _inline(sql, params):
+    for value in params:
+        sql = sql.replace("?", _sql_literal(value), 1)
+    return sql
+
+
 def to_standalone_sql(constraints, schema: Schema, limit=25):
-    """Render an intersection as a single pasteable SQL statement."""
+    """Render an intersection as a single pasteable SQL statement.
+
+    Groups exactly as _where does. The pasteable SQL is the page's evidence
+    for its own answer, so a merged team-and-season square has to show the
+    single EXISTS that produced it rather than two innocent-looking IN
+    clauses that would return a different set.
+    """
+    merged, plain = _group_constraints(constraints)
     frags = []
-    for sql, p in constraints:
-        for value in p:
-            sql = sql.replace("?", _sql_literal(value), 1)
-        frags.append(f"  p.{schema.player_id} IN (\n    "
-                     + "\n    ".join(sql.split("\n")) + "\n  )")
+    if merged:
+        sql, values = _row_exists(merged, schema)
+        frags.append("  " + _inline(sql, values))
+    for sql, p in plain:
+        clause, values = _standalone(sql, p, schema)
+        if clause.startswith("EXISTS"):
+            frags.append("  " + _inline(clause, values))
+        else:
+            frags.append(f"  p.{schema.player_id} IN (\n    "
+                         + "\n    ".join(_inline(sql, p).split("\n")) + "\n  )")
     where = "\n  AND ".join(frags) if frags else "1=1"
     select = ",\n       ".join(expr for expr, _ in schema.solve_columns())
     return (f"SELECT {select}\n"

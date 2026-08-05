@@ -51,9 +51,45 @@ VENUE_ALIASES = SCHEMA.venue_aliases
 _G = core.Generic(SCHEMA)
 
 
+# --------------------------------------- the Immaculate Grid pairing rule
+#
+# "When paired with a team, 100 RBI must be achieved with that team in a
+# single season. When paired with a non-team category, it does not need to
+# be in the same season."
+#
+# A row of this sport's `games` is a (player, season, team) carrying that
+# season's totals, so both halves of "100 RBI for Cleveland in one season"
+# live on one row. These two builders emit core's row-scoped fragments so
+# that core._where can merge them into a single EXISTS when a team square
+# meets a season-stat square; every other pairing is left alone, which is
+# what the second sentence of the rule asks for.
+#
+# The predicates are written against the `g` alias core._row_exists opens.
+
+def played_for(club):
+    """Played at least one season for this club, predecessors included."""
+    names = SCHEMA.club_identities(club)
+    marks = ",".join("?" for _ in names)
+    return (f"{core.ROW_MARKER}team@g.{SCHEMA.club_now} IN ({marks})",
+            list(names))
+
+
+def season_stat_total_min(stat, n):
+    """Accumulated `n` or more of `stat` in a single season.
+
+    No GROUP BY, unlike the generic builder: a row is already one player's
+    season with one team, so the row's own value is the season total. That
+    is also what makes it mergeable with a team predicate -- the season and
+    the team are the same fact here.
+    """
+    if stat not in SCHEMA.stats:
+        raise ValueError(f"unknown statistic: {stat!r}")
+    return (f"{core.ROW_MARKER}stat@g.{stat} >= ?", [n])
+
+
 # ------------------------------------------------- generic, bound to MLB
 
-played_for = _G.played_for
+_played_for_any_season = _G.played_for
 debut_club = _G.debut_club
 one_club_player = _G.one_club_player
 played_for_n_clubs = _G.played_for_n_clubs
@@ -65,7 +101,6 @@ career_home_runs_min = _G.career_score_min
 career_home_runs_max = _G.career_score_max
 career_home_runs_between = _G.career_score_between
 
-season_stat_total_min = _G.season_stat_total_min
 career_stat_total_min = _G.career_stat_total_min
 CAREER_AVG_MIN_GAMES = _G.CAREER_AVG_MIN_GAMES
 SEASON_AVG_MIN_GAMES = _G.SEASON_AVG_MIN_GAMES
@@ -167,6 +202,119 @@ def rivalry_games_min(rivalry, games):
     """, [rivalry, games])
 
 
+# ------------------------------------------------ Immaculate Grid categories
+#
+# The non-team, non-stat axes the real puzzle uses. Each is gated on the
+# table behind it (see LAYER_BUILDERS), so a database built before the
+# layer existed offers the square not at all rather than answering it "no".
+
+#: Awards that appear as their own grid axis, label -> the `awards.award`
+#: value. Lahman names them exactly as the puzzle does.
+AWARD_AXES = {
+    "Gold Glove": "Gold Glove",
+    "Silver Slugger": "Silver Slugger",
+    "MVP": "Most Valuable Player",
+    "Cy Young": "Cy Young Award",
+    "Rookie of the Year": "Rookie of the Year",
+}
+AWARD_AXIS_CHOICES = list(AWARD_AXES.items())
+
+#: Fielding positions offered as an axis, from `player_positions`.
+POSITIONS = ("Pitcher", "Catcher", "First Base", "Second Base", "Third Base",
+             "Shortstop", "Left Field", "Center Field", "Right Field",
+             "Designated Hitter")
+
+
+def won_award(award):
+    """Won this award at least once, in any season."""
+    return ("SELECT DISTINCT player_id FROM awards WHERE award = ?",
+            [AWARD_AXES.get(award, award)])
+
+
+def selected_all_star():
+    """Named to an All-Star team.
+
+    Selection, not appearance: Lahman records GP=0 for a player picked who
+    did not get into the game, and the puzzle counts him as an All-Star.
+    """
+    return ("SELECT DISTINCT player_id FROM all_star", [])
+
+
+def in_the_hall_of_fame():
+    """Inducted into the Hall of Fame.
+
+    `hall_of_fame` is a ballot table -- most of its rows are a player
+    appearing on a ballot and missing out -- so this filters on the
+    induction rather than on being listed.
+    """
+    return ("SELECT DISTINCT player_id FROM hall_of_fame "
+            "WHERE UPPER(TRIM(inducted)) = 'Y'", [])
+
+
+def played_position(position):
+    """Appeared at this position at least once.
+
+    'min. 1 game', as the puzzle's own subtitle says: player_positions
+    holds career totals per position and only rows above zero are written.
+    """
+    return ("SELECT DISTINCT player_id FROM player_positions "
+            "WHERE position = ? AND games >= 1", [position])
+
+
+def born_outside_the_us():
+    """Born outside the 50 states and DC.
+
+    Not the same as "born outside the USA", which is why this reads both
+    columns. Lahman files Puerto Rico, the US Virgin Islands and Guam as
+    their own birthCountry, so they fall outside by that test -- correctly,
+    since the puzzle's wording is "50 states and DC". A player with no
+    recorded birth country is excluded rather than assumed foreign.
+    """
+    return ("SELECT player_id FROM players "
+            "WHERE birth_country IS NOT NULL AND TRIM(birth_country) <> '' "
+            "AND UPPER(TRIM(birth_country)) NOT IN ('USA', 'US', 'U.S.A.')",
+            [])
+
+
+def season_batting_average_min(average, min_plate_appearances=502):
+    """A qualifying season batting at least this average.
+
+    A rate, not a total, so it needs a floor: without one a 1-for-2
+    September call-up bats .500 for the season. The floor is 502 *plate
+    appearances*, the modern qualification rule, estimated as at-bats plus
+    walks.
+
+    Not at-bats alone, which is the obvious shortcut and is wrong in the
+    one case everybody checks: Ted Williams hit .406 in 1941 from 456
+    at-bats, because he also walked 147 times. An at-bats floor of 502
+    threw out the most famous batting season in the sport. AB+BB puts him
+    at 603 and comfortably in.
+
+    Still an estimate -- hit-by-pitch and sacrifices are plate appearances
+    too and this build does not import them -- so it errs a little strict
+    at the margin rather than letting a short season in.
+    """
+    return ("SELECT player_id FROM games "
+            "WHERE at_bats > 0 "
+            "AND (at_bats + COALESCE(walks, 0)) >= ? "
+            "AND (CAST(hits AS REAL) / at_bats) >= ?",
+            [min_plate_appearances, average])
+
+
+def season_two_stats_min(stat_a, x_a, stat_b, x_b):
+    """Both thresholds reached in the *same* season -- the 30/30 square.
+
+    One row is one player's season with one team, so this is a single-row
+    test. It is the one place a season square is conjunctive on its own,
+    independent of whether a team is on the other axis.
+    """
+    for stat in (stat_a, stat_b):
+        if stat not in SCHEMA.stats:
+            raise ValueError(f"unknown statistic: {stat!r}")
+    return (f"SELECT player_id FROM games "
+            f"WHERE {stat_a} >= ? AND {stat_b} >= ?", [x_a, x_b])
+
+
 # ---------------------------------------------------------------- registry
 
 BUILDERS = {
@@ -204,6 +352,16 @@ BUILDERS = {
     "X+ career hits":             (career_hits_min, ["x"]),
     "Winning record in a rivalry": (rivalry_winning_record, ["rivalry"]),
     "X+ games in a rivalry":      (rivalry_games_min, ["rivalry", "games"]),
+    # Immaculate Grid's own non-team categories.
+    "Won an award":               (won_award, ["award_axis"]),
+    "All-Star selection":         (selected_all_star, []),
+    "Hall of Fame":               (in_the_hall_of_fame, []),
+    "Played a position":          (played_position, ["position"]),
+    "Born outside the US":        (born_outside_the_us, []),
+    ".300+ batting average season": (season_batting_average_min,
+                                     ["average", "min_plate_appearances"]),
+    "Two stats in the same season": (season_two_stats_min,
+                                     ["stat_a", "x_a", "stat_b", "x_b"]),
 }
 
 #: Builders needing an optional layer. app.py filters BUILDERS by these
@@ -259,6 +417,29 @@ def family_relationships_available(con):
     return False
 
 
+def all_star_available(con):
+    """True once build_mlb_db.write_layers has written AllstarFull.csv."""
+    return core.have_tables(con, "all_star")
+
+
+def positions_available(con):
+    """True once the per-position appearance totals are built."""
+    return core.have_tables(con, "player_positions")
+
+
+def birthplace_available(con):
+    """True when `players` carries the birth columns the build now writes.
+
+    A database built before they existed has the table but not the column,
+    and the square would fail on execution rather than be hidden.
+    """
+    try:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(players)")}
+    except Exception:                                       # noqa: BLE001
+        return False
+    return "birth_country" in columns
+
+
 def rivalry_available(con):
     """True once mlb/load_retrosheet.py has populated the rivalry table."""
     if not core.have_tables(con, "mlb_player_rivalry_games"):
@@ -273,6 +454,11 @@ def rivalry_available(con):
 LAYER_BUILDERS = {
     "Winning record in a rivalry": "rivalry_available",
     "X+ games in a rivalry": "rivalry_available",
+    "Won an award": "awards_available",
+    "All-Star selection": "all_star_available",
+    "Hall of Fame": "hall_of_fame_available",
+    "Played a position": "positions_available",
+    "Born outside the US": "birthplace_available",
 }
 
 

@@ -389,9 +389,21 @@ def build_players(people, games, postseason_seasons):
         people["nameFirst"].fillna("").astype(str).str.strip() + " "
         + people["nameLast"].fillna("").astype(str).str.strip()).str.strip()
     people = people.rename(columns={"playerID": "player_id",
-                                    "birthYear": "birth_year"})
-    players = career.merge(people[["player_id", "player", "birth_year"]],
-                           on="player_id", how="left")
+                                    "birthYear": "birth_year",
+                                    "birthCountry": "birth_country",
+                                    "birthState": "birth_state"})
+    # birth_country/birth_state carry the "born outside the US 50 states and
+    # DC" square. Kept as the source's own values rather than a computed
+    # flag: Lahman writes 'USA' with a state, and Puerto Rico as its own
+    # country, so the flag is a question about both columns and belongs
+    # where the question is asked rather than baked in here.
+    for column in ("birth_country", "birth_state"):
+        if column not in people.columns:
+            people[column] = pd.NA
+    players = career.merge(
+        people[["player_id", "player", "birth_year",
+                "birth_country", "birth_state"]],
+        on="player_id", how="left")
     players["player"] = players["player"].replace("", pd.NA)\
         .fillna(players["player_id"])
     players["name_key"] = [names.normalise_name(n) for n in players["player"]]
@@ -465,6 +477,7 @@ def write(db, players, games, awards, hall_of_fame, verbose):
         "player_id", "player", "name_key", "birth_year", "debut_season",
         "final_season", "career_games", "career_hits", "career_home_runs",
         "postseason_played", "clubs_hist", "n_clubs",
+        "birth_country", "birth_state",
     ] + [c for c in players.columns if c.endswith("_component")]
         + ["obscurity", "obscurity_confidence", "obscurity_model"])
 
@@ -507,6 +520,75 @@ def write(db, players, games, awards, hall_of_fame, verbose):
     db.unlink(missing_ok=True)
     building.replace(db)
     log(verbose, f"wrote {db}")
+
+
+#: Lahman Appearances column -> the position name a square asks about.
+#: Only the ones Immaculate Grid actually uses as categories.
+POSITION_COLUMNS = {
+    "G_p": "Pitcher", "G_c": "Catcher", "G_1b": "First Base",
+    "G_2b": "Second Base", "G_3b": "Third Base", "G_ss": "Shortstop",
+    "G_lf": "Left Field", "G_cf": "Center Field", "G_rf": "Right Field",
+    "G_dh": "Designated Hitter",
+}
+
+
+def write_layers(db, allstar, appearances, verbose):
+    """The two extra tables the position and All-Star squares read.
+
+    Kept out of `games` deliberately. A position is a property of a
+    player-season that `games` has no column for, and an All-Star selection
+    is not an appearance in the Lahman sense at all -- folding either into
+    the per-season rows would change what a `games` row means, which the
+    module docstring is at pains to pin down.
+
+    `all_star(player_id, season, team_id, games_played)` -- one row per
+    selection. GP is 0 for a player selected but who did not play, and both
+    count as being an All-Star, which is how the puzzle reads it.
+
+    `player_positions(player_id, position, games)` -- games at each
+    position, summed over a career. The squares ask "played left field,
+    min. 1 game", so only the total matters.
+    """
+    rows_allstar = pd.DataFrame()
+    if not allstar.empty:
+        rows_allstar = allstar.rename(columns={
+            "playerID": "player_id", "yearID": "season",
+            "teamID": "team_id", "GP": "games_played"})
+        keep = [c for c in ("player_id", "season", "team_id", "games_played")
+                if c in rows_allstar.columns]
+        rows_allstar = rows_allstar[keep]
+
+    rows_positions = pd.DataFrame()
+    if not appearances.empty:
+        present = {c: n for c, n in POSITION_COLUMNS.items()
+                   if c in appearances.columns}
+        if present:
+            totals = (appearances.rename(columns={"playerID": "player_id"})
+                      .groupby("player_id")[list(present)].sum())
+            stacked = totals.rename(columns=present).stack()
+            stacked = stacked[stacked > 0].astype(int)
+            rows_positions = stacked.reset_index()
+            rows_positions.columns = ["player_id", "position", "games"]
+
+    con = sqlite3.connect(db)
+    try:
+        if not rows_allstar.empty:
+            rows_allstar.to_sql("all_star", con, index=False,
+                                if_exists="replace")
+            con.execute("CREATE INDEX IF NOT EXISTS ix_allstar_player "
+                        "ON all_star(player_id)")
+            log(verbose, f"all_star: {len(rows_allstar):,} selections")
+        if not rows_positions.empty:
+            rows_positions.to_sql("player_positions", con, index=False,
+                                  if_exists="replace")
+            con.execute("CREATE INDEX IF NOT EXISTS ix_positions_player "
+                        "ON player_positions(player_id)")
+            con.execute("CREATE INDEX IF NOT EXISTS ix_positions_pos "
+                        "ON player_positions(position)")
+            log(verbose, f"player_positions: {len(rows_positions):,} rows")
+        con.commit()
+    finally:
+        con.close()
 
 
 def load_rivalries(db, people, people_teams, verbose, refresh=False):
@@ -604,6 +686,7 @@ def build(db=None, raw=None, verbose=True, retrosheet=True,
     series_post = read_csv(source, kind, "SeriesPost.csv", required=False)
     awards = read_csv(source, kind, "AwardsPlayers.csv", required=False)
     hall_of_fame = read_csv(source, kind, "HallOfFame.csv", required=False)
+    allstar = read_csv(source, kind, "AllstarFull.csv", required=False)
 
     season_name, current_name = franchise_map(teams, franchises)
     parks = {(int(y), t): (None if pd.isna(p) else str(p))
@@ -642,6 +725,7 @@ def build(db=None, raw=None, verbose=True, retrosheet=True,
 
     write(db, players, games, awards, hall_of_fame, verbose)
     write_reference(db, teams, franchises, games, verbose)
+    write_layers(db, allstar, appearances, verbose)
     if retrosheet:
         log(verbose, "game logs (Retrosheet)...")
         load_rivalries(db, people, teams, verbose, refresh=refresh_retrosheet)

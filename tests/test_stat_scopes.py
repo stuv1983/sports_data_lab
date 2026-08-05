@@ -232,7 +232,9 @@ def test_every_scope_is_in_the_manual_builder():
 #: sport must be one or the other.
 UI_HANDLED_ARGS = {"club", "venue", "player_id", "kind", "source", "award",
                    "times", "avg", "player", "stat", "stat_a", "stat_b",
-                   "min_games", "derby", "event", "rivalry"}
+                   "min_games", "derby", "event", "rivalry",
+                   "award_axis", "position", "average",
+                   "min_plate_appearances"}
 UI_NUMERIC_ARGS = {"x", "y", "x_a", "x_b", "games", "goals", "clubs", "from",
                    "to", "season", "times", "points", "people", "round"}
 

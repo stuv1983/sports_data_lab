@@ -392,6 +392,33 @@ def axis_widget(key, default_type, defaults=None):
         elif a == "player":
             args.append(st.text_input("Player", defaults.get("player", ""),
                                       key=wk))
+        elif a == "award_axis":
+            choices = list(getattr(C, "AWARD_AXIS_CHOICES", ()))
+            keys = [k for k, _ in choices]
+            want = defaults.get("award_axis")
+            idx = keys.index(want) if want in keys else 0
+            pick = st.selectbox("Award", range(len(choices)), index=idx,
+                                format_func=lambda i: choices[i][0], key=wk)
+            args.append(choices[pick][0] if choices else None)
+        elif a == "position":
+            positions = list(getattr(C, "POSITIONS", ()))
+            want = defaults.get("position")
+            idx = positions.index(want) if want in positions else 0
+            args.append(st.selectbox("Position", positions, index=idx, key=wk)
+                        if positions else None)
+        elif a == "average":
+            args.append(st.number_input(
+                "Batting average", min_value=0.0, max_value=1.0,
+                value=float(defaults.get("average", 0.300)),
+                step=0.005, format="%.3f", key=wk))
+        elif a == "min_plate_appearances":
+            args.append(st.number_input(
+                "Minimum plate appearances", min_value=1, step=1,
+                value=int(defaults.get("min_plate_appearances", 502)), key=wk,
+                help="A rate needs a floor: without one a September "
+                     "call-up going 1-for-2 bats .500 for the season. "
+                     "Estimated as at-bats plus walks — an at-bats floor "
+                     "would exclude Ted Williams's .406 in 1941."))
         elif a == "derby":
             choices = list(getattr(C, "DERBY_CHOICES", ()))
             keys = [k for k, _ in choices]
