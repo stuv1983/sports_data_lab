@@ -30,7 +30,21 @@ _NAME_FIXES = {"gws": "GWS"}
 
 
 def _label(club_id: str) -> str:
-    return _NAME_FIXES.get(club_id, club_id.replace("_", " ").title())
+    """Display name for a source_club_id.
+
+    The AFL's ids are slugs ('brisbane_bears') and need title-casing. The
+    MLB's are already display names, because Retrosheet's team codes are
+    opaque and load_retrosheet.py resolves them to the club's name in that
+    season. Title-casing those damages them -- "Brooklyn Ward's Wonders"
+    became "Ward'S Wonders" and "Angels of Anaheim" became "Of Anaheim" --
+    so only a slug is transformed and anything already in display form is
+    passed through untouched.
+    """
+    if club_id in _NAME_FIXES:
+        return _NAME_FIXES[club_id]
+    if club_id.islower():
+        return club_id.replace("_", " ").title()
+    return club_id
 
 
 def _match_table(matches, two_sided: bool) -> pd.DataFrame:
@@ -48,14 +62,14 @@ def _match_table(matches, two_sided: bool) -> pd.DataFrame:
     """
     if two_sided:
         return pd.DataFrame([{
-            "Season": m.season, "Round": m.round, "Date": m.match_date,
+            "Season": m.season, "Round": m.round or "", "Date": m.match_date,
             "Home": _label(m.club_id), "Away": _label(m.opponent_id),
             "Score": m.score, "Margin": abs(m.margin),
             "Venue": m.venue, "Crowd": m.attendance,
             "Final": "Yes" if m.is_final else "",
         } for m in matches])
     return pd.DataFrame([{
-        "Season": m.season, "Round": m.round, "Date": m.match_date,
+        "Season": m.season, "Round": m.round or "", "Date": m.match_date,
         "Opponent": _label(m.opponent_id), "H/A": m.where.title(),
         "Result": m.result, "Score": m.score, "Margin": m.margin,
         "Venue": m.venue, "Crowd": m.attendance,
@@ -215,7 +229,12 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
     st.caption(summary)
 
     table = _match_table(matches, two_sided=club_id is None)
-    if club_id is None and any(m.is_final for m in matches):
+    # Keyed on there actually being home-less rows, not merely on there
+    # being finals. AFL finals are played at neutral grounds and carry
+    # team_position 'F'; MLB postseason games have a real home side, and
+    # showing this note there told the reader the Home column was
+    # meaningless when it was the one thing holding the series together.
+    if club_id is None and any(m.team_position == "F" for m in matches):
         st.caption(
             "Finals have no home side in the source, so for rows marked "
             "Final the two columns are simply the two clubs, in a fixed "

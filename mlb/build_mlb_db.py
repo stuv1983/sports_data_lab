@@ -509,8 +509,11 @@ def write(db, players, games, awards, hall_of_fame, verbose):
     log(verbose, f"wrote {db}")
 
 
-def load_rivalries(db, people, verbose, refresh=False):
-    """Augment the finished database with Retrosheet's rivalry game log.
+def load_rivalries(db, people, people_teams, verbose, refresh=False):
+    """Augment the finished database with the Retrosheet game logs.
+
+    Two tables, one download: the rivalry appearances the grid squares
+    read, and the match history the Past Games page reads.
 
     Runs after write()'s atomic swap rather than inside it, because this is
     the one step that needs the network: a Retrosheet outage must not throw
@@ -519,9 +522,10 @@ def load_rivalries(db, people, verbose, refresh=False):
     loaded" and which hides the rivalry squares -- the same state as a
     database built before this step existed.
 
-    The crosswalk comes from the People frame the build already parsed,
-    rather than load_retrosheet re-reading People.csv: `raw` may have been
-    a ZIP, or a fixture folder that is not data/mlb/raw at all.
+    The crosswalk and the team-name lookup both come from frames the build
+    already parsed, rather than load_retrosheet re-reading the CSVs: `raw`
+    may have been a ZIP, or a fixture folder that is not data/mlb/raw at
+    all.
     """
     from . import load_retrosheet
 
@@ -529,10 +533,18 @@ def load_rivalries(db, people, verbose, refresh=False):
                  for retro, player in zip(people["retroID"],
                                           people["playerID"])
                  if pd.notna(retro) and pd.notna(player)}
+    names = {(int(year), code): str(name)
+             for year, code, name in zip(people_teams["yearID"],
+                                         people_teams["teamIDretro"],
+                                         people_teams["name"])
+             if pd.notna(code) and pd.notna(name)}
     con = sqlite3.connect(db)
     try:
         rows = load_retrosheet.load(con, refresh=refresh, crosswalk=crosswalk)
         log(verbose, f"rivalry games: {rows:,} rows")
+        matches = load_retrosheet.load_matches(con, refresh=refresh,
+                                               team_names=names)
+        log(verbose, f"match history: {matches:,} matches")
     except Exception as error:                                  # noqa: BLE001
         # Never silent, even under --quiet: the build otherwise looks
         # complete while two squares are missing from the board.
@@ -631,8 +643,8 @@ def build(db=None, raw=None, verbose=True, retrosheet=True,
     write(db, players, games, awards, hall_of_fame, verbose)
     write_reference(db, teams, franchises, games, verbose)
     if retrosheet:
-        log(verbose, "rivalry game logs (Retrosheet)...")
-        load_rivalries(db, people, verbose, refresh=refresh_retrosheet)
+        log(verbose, "game logs (Retrosheet)...")
+        load_rivalries(db, people, teams, verbose, refresh=refresh_retrosheet)
     log(verbose, f"{len(players):,} players, {len(games):,} player-seasons "
                  f"({int(games['is_postseason'].sum()):,} postseason)")
     return db

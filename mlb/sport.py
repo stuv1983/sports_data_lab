@@ -71,6 +71,10 @@ SPORT = Sport(
                 "base and strikeout lines even though the columns exist."),
     stat_eras=mlb_reference.stat_eras(),
     games_row_label="Player-seasons",
+    #: Fed by mlb/load_retrosheet.py, not by the Lahman build: `games` here
+    #: is a player-season, so the match-level rows the page lists exist only
+    #: because the Retrosheet game logs are loaded alongside.
+    has_past_games=True,
     optional_layers={"Awards data": "awards_available",
                      "Hall of Fame": "hall_of_fame_available"},
     obscurity_model=MODEL,
