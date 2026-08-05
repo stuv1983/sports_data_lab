@@ -156,7 +156,7 @@ def main() -> int:
     if empty:
         print(f"\nNOT POPULATED -- keep out of the UI: {', '.join(empty)}")
 
-    # The UI caption reads sports.Sport.stat_eras, so a drift between the
+    # The UI caption reads registry.Sport.stat_eras, so a drift between the
     # in-code dict and the measured table is a caption that lies.
     drift = [(s, sport.stat_eras.get(s), f)
              for s, f, _l, _n, _note in rows

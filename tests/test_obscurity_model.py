@@ -39,6 +39,8 @@ import pandas as pd
 import pytest
 
 from afl import build_db
+from afl.obscurity_model import MODEL as AFL_MODEL
+from nba.obscurity_model import MODEL as NBA_MODEL
 import obscurity
 
 GOLDEN = _os.path.join(_ROOT, "tests", "fixtures", "obscurity_afl_golden.csv")
@@ -65,7 +67,7 @@ def test_afl_components_are_identical_to_the_pre_refactor_implementation():
                 if c.endswith("_component") or c in OUTPUT_COLUMNS]
     inputs = [c for c in g.columns if c not in expected]
 
-    out = obscurity.components(g[inputs], obscurity.AFL_MODEL)
+    out = obscurity.components(g[inputs], AFL_MODEL)
 
     assert list(out.columns) == expected
     for column in expected:
@@ -77,8 +79,8 @@ def test_afl_components_are_identical_to_the_pre_refactor_implementation():
 
 def test_build_db_still_exposes_the_names_its_callers_import():
     """recompute_obscurity.py and test_obscurity.py both import from here."""
-    assert build_db.OBSCURITY_MODEL_VERSION == obscurity.AFL_MODEL.version
-    assert build_db.OBSCURITY_WEIGHTS == obscurity.AFL_MODEL.weights
+    assert build_db.OBSCURITY_MODEL_VERSION == AFL_MODEL.version
+    assert build_db.OBSCURITY_WEIGHTS == AFL_MODEL.weights
     assert build_db.OBSCURITY_OPTIONAL_TERMS == ("brownlow",)
     assert callable(build_db.obscurity_components)
     assert callable(build_db.obscurity_score)
@@ -86,13 +88,13 @@ def test_build_db_still_exposes_the_names_its_callers_import():
 
 # ------------------------------------------------------- model invariants
 
-@pytest.mark.parametrize("model", [obscurity.AFL_MODEL, obscurity.NBA_MODEL],
+@pytest.mark.parametrize("model", [AFL_MODEL, NBA_MODEL],
                          ids=["afl", "nba"])
 def test_weights_sum_to_one(model):
     assert round(sum(model.weights.values()), 6) == 1.0
 
 
-@pytest.mark.parametrize("model", [obscurity.AFL_MODEL, obscurity.NBA_MODEL],
+@pytest.mark.parametrize("model", [AFL_MODEL, NBA_MODEL],
                          ids=["afl", "nba"])
 def test_term_names_are_unique(model):
     names = [t.name for t in model.terms]
@@ -101,24 +103,24 @@ def test_term_names_are_unique(model):
 
 def test_the_two_models_are_versioned_apart():
     """A shared version number would claim the scores are comparable."""
-    assert obscurity.NBA_MODEL.version == 1
-    assert obscurity.AFL_MODEL.version == 2
-    assert obscurity.NBA_MODEL.version != obscurity.AFL_MODEL.version
+    assert NBA_MODEL.version == 1
+    assert AFL_MODEL.version == 2
+    assert NBA_MODEL.version != AFL_MODEL.version
 
 
 def test_required_columns_names_exactly_what_components_reads():
     """recompute_obscurity selects these, so a missing name scores on NaN."""
-    assert obscurity.AFL_MODEL.required_columns() == [
+    assert AFL_MODEL.required_columns() == [
         "career_games", "debut_season", "final_season",
         "career_goals", "finals_played", "career_brownlow"]
-    assert obscurity.NBA_MODEL.required_columns() == [
+    assert NBA_MODEL.required_columns() == [
         "career_games", "debut_season", "final_season", "career_minutes",
         "playoffs_played", "career_points", "n_clubs"]
 
 
 def test_required_columns_includes_the_columns_a_derivation_reads():
     """span reads two columns and names neither -- they must still appear."""
-    for model in (obscurity.AFL_MODEL, obscurity.NBA_MODEL):
+    for model in (AFL_MODEL, NBA_MODEL):
         assert "debut_season" in model.required_columns()
         assert "final_season" in model.required_columns()
 
@@ -136,7 +138,7 @@ def test_every_term_produces_a_component_column_in_declaration_order():
     out = obscurity.components(
         nba_frame([(500, 12000.0, 40, 8000, 2, 1990, 2004),
                    (12, 90.0, 0, 30, 1, 1998, 1998)]),
-        obscurity.NBA_MODEL)
+        NBA_MODEL)
     assert list(out.columns) == [
         "games_component", "span_component", "minutes_component",
         "era_component", "playoffs_component", "points_component",
@@ -146,8 +148,8 @@ def test_every_term_produces_a_component_column_in_declaration_order():
 def test_obscurity_model_column_records_the_models_version():
     out = obscurity.components(
         nba_frame([(500, 12000.0, 40, 8000, 2, 1990, 2004)]),
-        obscurity.NBA_MODEL)
-    assert out["obscurity_model"].iloc[0] == obscurity.NBA_MODEL.version
+        NBA_MODEL)
+    assert out["obscurity_model"].iloc[0] == NBA_MODEL.version
 
 
 # --------------------------------------------------- missing is not zero
@@ -156,7 +158,7 @@ def test_a_missing_optional_term_drops_and_renormalises():
     """No minutes recorded is not "played no minutes"."""
     rows = [(200, np.nan, 5, 3000, 1, 1946, 1950),
             (200, 6000.0, 5, 3000, 1, 1946, 1950)]
-    out = obscurity.components(nba_frame(rows), obscurity.NBA_MODEL)
+    out = obscurity.components(nba_frame(rows), NBA_MODEL)
     assert pd.isna(out["minutes_component"].iloc[0])
     # 1.0 minus the minutes weight, renormalised over what is left.
     assert out["obscurity_confidence"].iloc[0] == pytest.approx(0.85)
@@ -173,7 +175,7 @@ def test_a_missing_NON_optional_term_drops_by_the_same_path():
     """
     rows = [(200, 6000.0, 5, 3000, 1, 1990, np.nan),
             (200, 6000.0, 5, 3000, 1, 1990, 2000)]
-    out = obscurity.components(nba_frame(rows), obscurity.NBA_MODEL)
+    out = obscurity.components(nba_frame(rows), NBA_MODEL)
     assert pd.isna(out["era_component"].iloc[0])
     assert out["obscurity_confidence"].iloc[0] == pytest.approx(0.85)
     assert out["obscurity_confidence"].iloc[1] == pytest.approx(1.0)
@@ -183,7 +185,7 @@ def test_a_dropped_term_does_not_drag_the_score_toward_zero():
     """The renormalised score must sit where the remaining terms put it."""
     rows = [(1, np.nan, 0, 0, 1, 1946, 1946)]
     rows += [(400 + i, 20000.0, 60, 20000, 1, 1995, 2012) for i in range(20)]
-    out = obscurity.components(nba_frame(rows), obscurity.NBA_MODEL)
+    out = obscurity.components(nba_frame(rows), NBA_MODEL)
     # A one-game career with no minutes data is still maximally obscure on
     # every term it does have, so dropping minutes must not pull it down.
     assert out["obscurity"].iloc[0] > 95, out["obscurity"].iloc[0]
@@ -194,11 +196,11 @@ def test_a_dropped_term_does_not_drag_the_score_toward_zero():
 def test_the_disclaimer_names_the_models_own_terms():
     """The AFL string went stale claiming a term the formula never had."""
     import sports
-    afl = obscurity.disclaimer(obscurity.AFL_MODEL, sports.AFL.vocab)
+    afl = obscurity.disclaimer(AFL_MODEL, sports.AFL.vocab)
     assert "Brownlow votes" in afl
     assert "goals" in afl
 
-    nba = obscurity.disclaimer(obscurity.NBA_MODEL, sports.NBA.vocab)
+    nba = obscurity.disclaimer(NBA_MODEL, sports.NBA.vocab)
     assert "Brownlow" not in nba
     assert "goals" not in nba
     assert "minutes played" in nba

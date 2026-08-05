@@ -24,7 +24,7 @@ import pytest
 
 from afl import club_history as CH
 from afl import constraints as C
-import match_constraints as M
+from afl import match_constraints as M
 from afl import parse_criteria as P
 
 

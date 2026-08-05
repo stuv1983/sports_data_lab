@@ -381,7 +381,7 @@ FAMILY_RELATIONSHIP_BUILDER_NAMES = set(FAMILY_RELATIONSHIP_BUILDERS)
 # Match-context constraints: margin, team score and crowd. The margin and
 # result builders read `games` and always work; only the crowd builders
 # need the optional all-games layer.
-from match_constraints import (  # noqa: E402
+from .match_constraints import (  # noqa: E402
     MATCH_BUILDERS,
     CROWD_BUILDER_NAMES,
     match_history_available,

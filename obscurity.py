@@ -3,13 +3,15 @@ obscurity.py -- The sport-agnostic obscurity model.
 
 Obscurity is a 0-100 fame proxy, higher = more obscure, blended from a
 handful of ranked career-footprint terms. The machinery here is identical
-for every sport; only the *terms* are a sport decision, and those are
-declared as a `Model` at the bottom of this module.
+for every sport; only the *terms* are a sport decision, and each sport
+declares its own:
 
-This was lifted verbatim out of afl/build_db.py so a second sport could score
-its players without either copying the logic or inheriting AFL column
-names. afl/build_db.py re-exports the AFL names it used to define, so nothing
-that imported them had to change.
+    afl/obscurity_model.py      nba/obscurity_model.py
+    mlb/obscurity_model.py      nfl/obscurity_model.py
+
+each exporting a `MODEL`, which sports.py binds to the sport. Nothing
+sport-specific belongs in this file -- a term named here would be a term
+every sport inherits.
 
   Term   -- one ranked input: a column (or a derivation) and its weight.
   Model  -- an ordered set of terms plus a version number.
@@ -242,6 +244,11 @@ def disclaimer(model, vocab=None):
 #: How each term reads in the disclaimer. `{score}`, `{postseason}` and
 #: `{clubs}` are filled from the sport's Vocab so the NBA says "points" and
 #: "playoffs" where the AFL says "goals" and "finals".
+#:
+#: Keyed on term name, so a name several sports use is worded once. A term
+#: with no entry falls back to its own name, which is why a model is free to
+#: add one without touching this table -- "touchdowns" and "hits" read
+#: correctly as themselves.
 TERM_PROSE = {
     "games": "games played",
     "span": "career span",
@@ -250,138 +257,10 @@ TERM_PROSE = {
     "points": "points",
     "finals": "finals",
     "playoffs": "playoff games",
+    "postseason": "{postseason} games",
     "minutes": "minutes played",
     "teams": "number of {clubs}",
+    "franchises": "number of {clubs}",
+    "home_runs": "home runs",
     "brownlow": "Brownlow votes",
 }
-
-
-# ------------------------------------------------------------------- AFL
-
-#: The AFL model. Weights are the whole of the tuning surface, and they are
-#: judgement, not a fit: the only ground truth available offline is a
-#: handful of rarity percentages read off finished puzzles, which is far
-#: too few to fit six coefficients against without inventing precision.
-#: Career games stays the single strongest fame proxy; career span is the
-#: term that separates "a whole career inside one season" from the same
-#: game count spread over a decade.
-#:
-#: Version history, stored alongside every score so a database can say
-#: which model produced it:
-#:   1: original. Missing Brownlow data counted as zero votes; the era term
-#:      was clipped flat at 0 for every final season from 2000 on.
-#:   2: missing Brownlow data drops the term and renormalises instead of
-#:      being read as "never polled"; era ranks final seasons rather than
-#:      clipping, so the last 25 years separate again.
-#:
-#: Declaration order is the component-column order in the built database.
-AFL_MODEL = Model(version=2, terms=(
-    Term("games", 0.30, column="career_games", fillna=0.0),
-    Term("span", 0.18, derive=span),
-    Term("goals", 0.14, column="career_goals", fillna=0.0),
-    Term("finals", 0.13, column="finals_played", fillna=0.0),
-    # Recency: modern players are far more familiar to today's solvers.
-    Term("era", 0.15, column="final_season"),
-    Term("brownlow", 0.10, column="career_brownlow", optional=True),
-))
-
-
-# ------------------------------------------------------------------- NBA
-
-#: The NBA model. Deliberately not the AFL weights renamed.
-#:
-#: Career games and minutes are the broad career-visibility measures and
-#: carry 45% between them. Points sits at only 0.07 because scoring is the
-#: most role-dependent counting stat in the sport -- weighting it like the
-#: AFL weights goals would rank every defensive specialist and role player
-#: as obscure for playing their position.
-#:
-#: Minutes are the one genuinely optional term: they are not recorded
-#: before 1951-52, so a career wholly inside the 1940s has no minutes at
-#: all and must drop the term rather than be scored as having played none.
-#:
-#: `teams` is the least settled term and the first to revisit once there is
-#: any crowd data to calibrate against. A ten-team NBA journeyman is
-#: genuinely hard to place, which is not true of the AFL, but the direction
-#: is arguable: more teams also means more squares qualified for.
-#:
-#: Version 1 -- and it must stay distinct from the AFL's 2. A shared
-#: version number across two different formulas would claim the scores are
-#: comparable, which they are not.
-NBA_MODEL = Model(version=1, terms=(
-    Term("games", 0.30, column="career_games", fillna=0.0),
-    Term("span", 0.15, derive=span),
-    Term("minutes", 0.15, column="career_minutes", optional=True),
-    Term("era", 0.15, column="final_season"),
-    Term("playoffs", 0.13, column="playoffs_played", fillna=0.0),
-    Term("points", 0.07, column="career_points", fillna=0.0),
-    Term("teams", 0.05, column="n_clubs"),
-))
-
-
-# ------------------------------------------------------------------- MLB
-
-#: The MLB model. Again a distinct version number, and again not the AFL or
-#: NBA weights renamed.
-#:
-#: Career games carries the most weight because Lahman's Appearances table
-#: counts every player the same way whatever position they played, which is
-#: the one visibility measure that is fair to a relief pitcher and a
-#: shortstop at once.
-#:
-#: Hits outweigh home runs (0.10 to 0.07) for the reason points sit low in
-#: the NBA model: the home-run leaderboard is the most role-dependent
-#: counting stat baseball has, and weighting it heavily would score every
-#: contact hitter and every pitcher as obscure for the position they
-#: played. Both terms use `fillna=0.0` -- batting lines exist for every
-#: player-season in the file, so a zero is a real zero.
-#:
-#: The postseason term is `optional`. There was no postseason at all in
-#: several early seasons and no Division Series before 1969, so a career
-#: wholly inside a year with no October cannot be read as having failed to
-#: reach one. The build leaves it NULL for those players and the term drops.
-#:
-#: Version 1, distinct from the AFL's 2 and the NBA's 1-for-a-different-
-#: formula: no score here is comparable with a score there.
-MLB_MODEL = Model(version=1, terms=(
-    Term("games", 0.32, column="career_games", fillna=0.0),
-    Term("span", 0.16, derive=span),
-    Term("era", 0.16, column="final_season"),
-    Term("postseason", 0.13, column="postseason_played", optional=True),
-    Term("hits", 0.11, column="career_hits", fillna=0.0),
-    Term("home_runs", 0.07, column="career_home_runs", fillna=0.0),
-    Term("franchises", 0.05, column="n_clubs"),
-))
-
-
-# ------------------------------------------------------------------- NFL
-
-#: The NFL model. Version 1 and, again, its own formula rather than another
-#: sport's weights renamed.
-#:
-#: Career games carries more weight here than anywhere else because it is
-#: the only visibility measure that is fair across positions: nflverse's
-#: weekly statistics give an offensive lineman almost nothing else, and any
-#: model leaning on production would rank every lineman as anonymous for
-#: playing his position. Touchdowns sit at 0.10 for the same reason points
-#: sit low in the NBA model.
-#:
-#: `touchdowns` is total touchdowns responsible for, passing included --
-#: that is how build_nfl_db computes career_touchdowns, and mixing a
-#: quarterback's passing scores into the same term as a receiver's is a
-#: known compromise of it.
-#:
-#: One caveat runs through every term: the weekly data begins in 1999, so a
-#: career that started earlier is scored on the part of it the database can
-#: see. `fillna=0.0` on games and touchdowns is still right -- a player in
-#: the table played and scored what the table says -- but a 1994 debut is
-#: measured short, and the `era` term then reads him as more recent than he
-#: was. Fixing that needs pre-1999 appearances, not a different weight.
-NFL_MODEL = Model(version=1, terms=(
-    Term("games", 0.35, column="career_games", fillna=0.0),
-    Term("span", 0.17, derive=span),
-    Term("era", 0.16, column="final_season"),
-    Term("postseason", 0.14, column="career_postseason_games", fillna=0.0),
-    Term("touchdowns", 0.10, column="career_touchdowns", fillna=0.0),
-    Term("teams", 0.08, column="n_teams"),
-))

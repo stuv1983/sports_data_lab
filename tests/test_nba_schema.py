@@ -179,9 +179,11 @@ def test_nba_is_not_offered_until_a_database_exists():
 
 
 def test_nba_declares_its_own_obscurity_model():
-    import obscurity
-    assert sports.NBA.obscurity_model is obscurity.NBA_MODEL
-    assert sports.AFL.obscurity_model is obscurity.AFL_MODEL
+    from afl import obscurity_model as afl_obscurity
+    from nba import obscurity_model as nba_obscurity
+    assert sports.NBA.obscurity_model is nba_obscurity.MODEL
+    assert sports.AFL.obscurity_model is afl_obscurity.MODEL
+    assert nba_obscurity.MODEL is not afl_obscurity.MODEL
 
 
 def test_the_star_disclaimer_matches_the_sport():

@@ -1,4 +1,4 @@
-"""Player constraints that depend on what happened in the match.
+"""afl/match_constraints.py -- AFL constraints about the match, not the player.
 
 Everything above is about a player's own numbers. These are about the game
 they were in: the size of the win, the size of the crowd, whether it was

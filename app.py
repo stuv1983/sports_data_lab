@@ -193,45 +193,16 @@ def player_picker(key, label="Player name", default_name=""):
     return pid, details[pid][0]
 
 
-DRAFT_OK = C.draft_available(con)
-AWARDS_OK = C.awards_available(con)
-CAPTAIN_OK = getattr(C, "captain_available", lambda _con: False)(con)
-CAPTAIN_BUILDERS = getattr(C, "CAPTAIN_BUILDER_NAMES", set())
-RISING_STAR_OK = getattr(C, "rising_star_available", lambda _con: False)(con)
-RISING_STAR_BUILDERS = getattr(C, "RISING_STAR_BUILDER_NAMES", set())
-# The table list is a property of the sport's Club Explorer, not of this
-# page. An empty set is a subset of anything, so a sport without one is
-# trivially "OK" -- which is fine, because the flag is only ever read
-# inside a SPORT.has_club_explorer guard.
-CLUB_DATA_OK = SPORT.club_data_tables <= {
-    row[0] for row in con.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    )
-}
-FAMILY_RELATIONSHIPS_OK = getattr(
-    C, "family_relationships_available", lambda _con: False
-)(con)
-FAMILY_RELATIONSHIP_BUILDERS = getattr(
-    C, "FAMILY_RELATIONSHIP_BUILDER_NAMES", set()
-)
-# Builders gated on an optional source layer, as {builder: probe name}. The
-# named sets above each needed a flag here; this needs none, so a sport that
-# imports a new layer declares the pairing in its own module and nothing in
-# this file changes. The NFL's snap counts, depth charts and weekly rosters
-# come through here.
-LAYER_BUILDERS = getattr(C, "LAYER_BUILDERS", {})
-LAYER_OK = {
-    builder: bool(getattr(C, probe, lambda _con: False)(con))
-    for builder, probe in LAYER_BUILDERS.items()
-}
-AVAILABLE = [k for k in C.BUILDERS
-             if (DRAFT_OK or k not in C.DRAFT_BUILDERS)
-             and (AWARDS_OK or k not in C.AWARD_BUILDER_NAMES)
-             and (CAPTAIN_OK or k not in CAPTAIN_BUILDERS)
-             and (RISING_STAR_OK or k not in RISING_STAR_BUILDERS)
-             and (FAMILY_RELATIONSHIPS_OK
-                  or k not in FAMILY_RELATIONSHIP_BUILDERS)
-             and LAYER_OK.get(k, True)]
+# Which optional layers this database actually has, and therefore which
+# builders to offer. The logic is in registry.py so it can be tested against
+# every sport: as a block of module-level code here it ran only when a page
+# rendered, and a sport missing one probe took the whole app down at import.
+LAYERS = SPORT.layers(con)
+DRAFT_OK = LAYERS.draft
+AWARDS_OK = LAYERS.awards
+CLUB_DATA_OK = LAYERS.club_data
+FAMILY_RELATIONSHIPS_OK = LAYERS.family_relationships
+AVAILABLE = LAYERS.builders
 
 st.sidebar.markdown(
     f"<div class='brand'>{SPORT.label}</div>"

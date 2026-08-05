@@ -86,6 +86,7 @@ import data_paths
 import names
 from . import nba_playoff_rounds
 from . import nba_source
+from . import obscurity_model
 import obscurity
 import sports
 
@@ -558,9 +559,9 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
                      f"no games in the requested seasons and are omitted")
 
     # 8. Obscurity -------------------------------------------------------
-    log(verbose, f"obscurity (model v{obscurity.NBA_MODEL.version})...")
+    log(verbose, f"obscurity (model v{obscurity_model.MODEL.version})...")
     for column, values in obscurity.components(
-            players, obscurity.NBA_MODEL).items():
+            players, obscurity_model.MODEL).items():
         players[column] = values
 
     # 9. Write -----------------------------------------------------------
@@ -613,7 +614,7 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
             ("seasons", f"{min(wanted)}-{max(wanted)}"),
             ("season_labels",
              f"{season_label(min(wanted))}-{season_label(max(wanted))}"),
-            ("obscurity_model", str(obscurity.NBA_MODEL.version)),
+            ("obscurity_model", str(obscurity_model.MODEL.version)),
             ("built", nba_source.now()),
         ])
         con.commit()

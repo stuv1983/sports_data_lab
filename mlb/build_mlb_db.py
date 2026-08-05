@@ -44,7 +44,7 @@ SeriesPost says who won each series, so the `is_postseason` rows carry a
 real `round` ('WS', 'ALCS', ...) and a real `result` -- which is what makes
 "won a final" and "no finals wins" mean something specific. Players whose
 whole career fell in seasons with no postseason at all get NULL rather
-than 0 for `postseason_played`; see obscurity.MLB_MODEL.
+than 0 for `postseason_played`; see obscurity_model.MODEL.
 """
 
 import argparse
@@ -59,6 +59,8 @@ import pandas as pd
 import data_paths
 import names
 import obscurity
+
+from . import obscurity_model
 
 #: Batting counting stats, Lahman column -> the name this repository uses.
 BATTING_STATS = {
@@ -416,7 +418,7 @@ def _postseason_or_null(career, postseason_seasons):
 
     Several of Lahman's early seasons have no postseason series, and a
     career wholly inside them has not "failed to reach October" -- there
-    was no October. obscurity.MLB_MODEL drops the term for those players
+    was no October. obscurity_model.MODEL drops the term for those players
     rather than scoring them maximally obscure for a record-keeping
     artefact.
     """
@@ -561,9 +563,9 @@ def build(db=None, raw=None, verbose=True):
     log(verbose, "career summaries...")
     players = build_players(people, games, postseason_seasons)
 
-    log(verbose, f"obscurity (model v{obscurity.MLB_MODEL.version})...")
+    log(verbose, f"obscurity (model v{obscurity_model.MODEL.version})...")
     for column, values in obscurity.components(
-            players, obscurity.MLB_MODEL).items():
+            players, obscurity_model.MODEL).items():
         players[column] = values
 
     if not awards.empty:

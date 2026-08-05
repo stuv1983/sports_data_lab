@@ -31,6 +31,7 @@ import pytest
 import core
 import obscurity
 import sports
+from mlb.obscurity_model import MODEL as MLB_MODEL
 from mlb import build_mlb_db, constraints_mlb
 
 
@@ -177,7 +178,7 @@ def test_postseason_played_counts_postseason_games(con):
 
 def test_postseason_is_null_when_no_postseason_was_played_at_all(con):
     """1871 had no series. "Never reached October" is a different claim
-    from "there was no October", and obscurity.MLB_MODEL drops the term."""
+    from "there was no October", and MLB_MODEL drops the term."""
     played, = one(con, "SELECT postseason_played FROM players "
                        "WHERE player_id='earlyt01'")
     assert played is None
@@ -196,12 +197,12 @@ def test_obscurity_is_scored_and_recorded_against_the_mlb_model(con):
     score, model = one(con, "SELECT obscurity, obscurity_model FROM players "
                             "WHERE player_id='dodgem01'")
     assert 0 <= score <= 100
-    assert model == obscurity.MLB_MODEL.version
+    assert model == MLB_MODEL.version
 
 
 def test_the_component_columns_the_model_declares_are_all_written(con):
     columns = {r[1] for r in con.execute("PRAGMA table_info(players)")}
-    for term in obscurity.MLB_MODEL.terms:
+    for term in MLB_MODEL.terms:
         assert f"{term.name}_component" in columns
 
 

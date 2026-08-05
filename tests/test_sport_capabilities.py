@@ -147,6 +147,39 @@ def test_every_search_example_actually_compiles(sport, request):
 
 
 @pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
+def test_layers_probes_a_sport_that_declares_no_layers(sport):
+    """Every probe is optional, and a missing one is "not loaded".
+
+    app.py called `awards_available` directly, so the NFL -- which has no
+    awards layer and therefore no such function -- raised AttributeError at
+    import and took the whole application down. An empty database is enough
+    to catch that: it needs no sport's build to have run.
+    """
+    con = sqlite3.connect(":memory:")
+    try:
+        layers = sport.layers(con)
+    finally:
+        con.close()
+    assert set(layers.builders) <= set(sport.C.BUILDERS)
+    for flag in (layers.draft, layers.awards, layers.captain,
+                 layers.rising_star, layers.family_relationships):
+        assert flag is False, f"{sport.key}: probed true against an empty db"
+
+
+@pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
+def test_layers_offers_builders_against_the_real_database(sport):
+    if not sport.exists():
+        pytest.skip(f"no {sport.key} database built")
+    con = sport.connect()
+    try:
+        layers = sport.layers(con)
+    finally:
+        con.close()
+    assert layers.builders, sport.key
+    assert set(layers.builders) <= set(sport.C.BUILDERS)
+
+
+@pytest.mark.parametrize("sport", IMPLEMENTED, ids=IMPLEMENTED_IDS)
 def test_layer_gated_builders_exist_and_name_a_real_probe(sport):
     """app.py hides a builder when its probe says the layer is missing.
 

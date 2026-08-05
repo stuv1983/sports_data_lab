@@ -1,0 +1,384 @@
+"""
+registry.py -- The types a sport is described with.
+
+`Vocab` is the words the UI puts on screen ("club" vs "team" vs
+"franchise", "final" vs "playoff" vs "postseason"). `Sport` binds a database
+file, a core.Schema naming its columns, the module holding its constraints,
+that vocabulary, and the capabilities the sport has.
+
+The four descriptions themselves live with their sport -- afl/sport.py,
+nba/sport.py, mlb/sport.py, nfl/sport.py -- and sports.py collects them into
+the registry. This module is only the shape they share, and it imports no
+sport: that is what lets a sport module import it.
+"""
+
+import importlib
+import sqlite3
+from dataclasses import dataclass, field
+from typing import Sequence
+
+import core
+import obscurity
+
+@dataclass(frozen=True)
+class Vocab:
+    """Words the UI substitutes so pages can be written once."""
+    club: str = "club"
+    clubs: str = "clubs"
+    game: str = "game"
+    games: str = "games"
+    season: str = "season"
+    venue: str = "venue"
+    venues: str = "venues"
+    score: str = "goals"            # the headline career counting stat
+    postseason: str = "finals"
+    postseason_one: str = "final"
+    title: str = "premiership"
+    grid_source: str = "Gridley"
+
+    def title_case(self, word):
+        return getattr(self, word).capitalize()
+
+
+# ---------------------------------------------------------------- sport
+
+@dataclass(frozen=True)
+class Sport:
+    key: str
+    label: str
+    icon: str
+    db: str
+    module: str                     # dotted name of the constraints module
+    schema: core.Schema
+    vocab: Vocab
+    theme: str = "afl"              # default palette name in theme.py
+    build_cmd: str = "python -m afl.build_db"
+    missing_db_hint: str = ""
+    #: Shown when a square returns nothing, to explain era gaps honestly.
+    empty_hint: str = ""
+    #: Stat -> first season it was recorded. Constraints on a stat outside
+    #: its era must be declined, not silently answered from partial data.
+    stat_eras: dict = field(default_factory=dict)
+    enabled: bool = True
+    #: Show in the sport picker before its database exists, labelled
+    #: "coming soon" and explained by missing_db_hint when chosen. Without
+    #: this a sport that is announced but not yet built is simply invisible,
+    #: which reads as "this app does not do that sport".
+    preview: bool = False
+    #: The obscurity.Model this sport's scores were produced by.
+    obscurity_model: object = None
+    #: SQL predicate naming the players an obscurity score is computed over,
+    #: empty for "all of them". Obscurity is a percentile rank, so who is in
+    #: the population changes every score: the NFL's `players` table holds
+    #: 13,669 identities with no game in the 1999-onward data, and scoring
+    #: them put 55% of the table at a tied 100 and pushed every player who
+    #: did play down the scale.
+    obscurity_population: str = ""
+    #: Optional imported club catalogue shown after the standard layers.
+    club_data_table: str = ""
+    #: Optional broad-family availability probe on the constraints module.
+    family_probe: str = ""
+    #: What one row of the `games` table actually is, when it is not a
+    #: player-game. Empty means it is, and the status panel says
+    #: "Player-<games>". MLB sets it because Lahman's finest grain is a
+    #: player's season with one team, not a game.
+    games_row_label: str = ""
+
+    # -- capabilities --------------------------------------------------
+    criterion_parser: str = ""
+    grid_library: bool = False
+    game_lab_module: str = ""
+    has_club_explorer: bool = False
+    has_awards_page: bool = False
+    has_past_games: bool = False
+    loader_hints: dict = field(default_factory=dict)
+    club_data_tables: frozenset = frozenset()
+    club_data_hint: str = ""
+    family_hint: str = ""
+    search_examples: tuple = ()
+    grid_defaults: tuple = ()
+    venue_display: dict = field(default_factory=dict)
+
+    @property
+    def star_disclaimer(self):
+        if self.obscurity_model is None:
+            return core.STAR_DISCLAIMER
+        return obscurity.disclaimer(self.obscurity_model, self.vocab)
+
+    def missing_layer_hints(self, con):
+        for label, probe in self.optional_layers.items():
+            hint = self.loader_hints.get(probe)
+            if hint and not self.layer_ready(probe, con):
+                yield label, hint
+
+    # -- module access ------------------------------------------------
+    @property
+    def C(self):
+        """The sport's constraints module, imported on first use."""
+        return importlib.import_module(self.module)
+
+    # -- namespacing --------------------------------------------------
+    def k(self, *parts):
+        """A session-state / widget key namespaced to this sport."""
+        return ":".join((self.key,) + tuple(str(p) for p in parts))
+
+    # -- database -----------------------------------------------------
+    def connect(self):
+        return sqlite3.connect(f"file:{self.db}?mode=ro", uri=True,
+                               check_same_thread=False)
+
+    def exists(self):
+        try:
+            con = self.connect()
+            con.execute(f"SELECT 1 FROM {self.schema.players} LIMIT 1")
+            return True
+        except sqlite3.OperationalError:
+            return False
+
+    # -- era honesty ---------------------------------------------------
+    def stat_available_from(self, stat):
+        return self.stat_eras.get(stat)
+
+    def stat_era_warning(self, stat, season_from=None):
+        first = self.stat_eras.get(stat)
+        if first is None:
+            return None
+        if season_from is None or season_from < first:
+            return (f"{stat.replace('_', ' ')} was not recorded before "
+                    f"{first} — players from earlier {self.vocab.season}s "
+                    f"cannot satisfy this square.")
+        return None
+
+    # -- status line ---------------------------------------------------
+    def status(self, con):
+        s = self.schema
+        lo, hi = con.execute(
+            f"SELECT MIN({s.season}), MAX({s.season}) FROM {s.games}"
+        ).fetchone()
+        players = con.execute(
+            f"SELECT COUNT(*) FROM {s.players}").fetchone()[0]
+        appearances = con.execute(
+            f"SELECT COUNT(*) FROM {s.games}").fetchone()[0]
+        rows = [
+            ("Seasons", f"{lo}–{hi}"),
+            ("Players", self.player_count_value(con, players)),
+            (self.games_row_label or f"Player-{self.vocab.games}",
+             f"{appearances:,}"),
+        ]
+        for label, probe in self.optional_layers.items():
+            if not self.layer_ready(probe, con):
+                rows.append((label, "not loaded"))
+                continue
+            rows.append((label, self.layer_value(probe, con)))
+
+        if self.club_data_table:
+            rows.append(("Club data", self.club_data_value(con)))
+        if self.family_probe:
+            rows.append(("Family links", self.family_links_value(con)))
+        return rows
+
+    def player_count_value(self, con, total):
+        """How many players the database can actually answer for.
+
+        Where `obscurity_population` names a subset -- the NFL's player list
+        is every known identity, over half of them with no game in the data
+        -- reporting the table's row count alone states a number the app
+        cannot back up.
+        """
+        if not self.obscurity_population:
+            return f"{total:,}"
+        try:
+            played = con.execute(
+                f"SELECT COUNT(*) FROM {self.schema.players} "
+                f"WHERE {self.obscurity_population}").fetchone()[0]
+        except sqlite3.Error:
+            return f"{total:,}"
+        if played >= total:
+            return f"{total:,}"
+        return f"{played:,} with {self.vocab.games} ({total:,} listed)"
+
+    def layer_value(self, probe, con):
+        counter = getattr(self.C, probe.replace("_available", "_count"), None)
+        if counter is not None:
+            try:
+                total = counter(con)
+                if total is not None:
+                    return f"ready ({int(total):,})"
+            except Exception:
+                pass
+        return "ready"
+
+    def layer_ready(self, probe, con):
+        fn = getattr(self.C, probe, None)
+        if fn is None:
+            return False
+        try:
+            return bool(fn(con))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _table_exists(con, table):
+        if not table:
+            return False
+        try:
+            return bool(con.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type IN ('table','view') AND name=?", (table,)
+            ).fetchone())
+        except sqlite3.Error:
+            return False
+
+    @staticmethod
+    def _table_columns(con, table):
+        try:
+            return {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+        except sqlite3.Error:
+            return set()
+
+    def club_data_value(self, con):
+        table = self.club_data_table
+        if not self._table_exists(con, table):
+            return "not loaded"
+        columns = self._table_columns(con, table)
+        try:
+            if "is_current" in columns:
+                total = con.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE is_current=1"
+                ).fetchone()[0]
+            else:
+                total = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        except sqlite3.Error:
+            return "not loaded"
+        if not total:
+            return "not loaded"
+        noun = "club" if int(total) == 1 else "clubs"
+        return f"ready ({int(total):,} current {noun})"
+
+    def family_links_value(self, con):
+        ready = self.layer_ready(self.family_probe, con)
+        if not ready:
+            ready = (self._table_exists(con, "family_members") and
+                     self._table_exists(con, "family_relationships"))
+        if not ready:
+            return "not loaded"
+
+        members = self._family_counter(
+            con, "family_member_count", self._fallback_family_members
+        )
+        relationships = self._family_counter(
+            con, "trusted_relationship_count",
+            self._fallback_family_relationships,
+        )
+        if members is not None and relationships is not None:
+            return (f"ready ({members:,} linked players; "
+                    f"{relationships:,} explicit relationships)")
+        if members is not None:
+            return f"ready ({members:,} linked players)"
+        return "ready"
+
+    def _family_counter(self, con, name, fallback):
+        counter = getattr(self.C, name, None)
+        if counter is not None:
+            try:
+                value = counter(con)
+                if value is not None:
+                    return int(value)
+            except Exception:
+                pass
+        try:
+            value = fallback(con)
+            return None if value is None else int(value)
+        except sqlite3.Error:
+            return None
+
+    def _fallback_family_members(self, con):
+        if not self._table_exists(con, "family_members"):
+            return None
+        columns = self._table_columns(con, "family_members")
+        where = ["player_id IS NOT NULL"] if "player_id" in columns else []
+        if "match_status" in columns:
+            where.append("match_status IN ('unique','resolved')")
+        predicate = " WHERE " + " AND ".join(where) if where else ""
+        distinct = "DISTINCT player_id" if "player_id" in columns else "*"
+        return con.execute(
+            f"SELECT COUNT({distinct}) FROM family_members{predicate}"
+        ).fetchone()[0]
+
+    def _fallback_family_relationships(self, con):
+        if not self._table_exists(con, "family_relationships"):
+            return None
+        return con.execute(
+            "SELECT COUNT(*) FROM family_relationships"
+        ).fetchone()[0]
+
+    optional_layers: dict = field(default_factory=dict)
+
+    # -- capability probing --------------------------------------------
+    def layers(self, con):
+        """Which optional layers this database has, and what to offer.
+
+        Every probe is optional. A sport declares only the layers it has,
+        and a missing probe reads as "not loaded" rather than raising --
+        app.py used to call `awards_available` directly and took the whole
+        application down at import for a sport that has no awards.
+        """
+        def probe(name):
+            fn = getattr(self.C, name, None)
+            if fn is None:
+                return False
+            try:
+                return bool(fn(con))
+            except Exception:
+                return False
+
+        def names(attribute):
+            return set(getattr(self.C, attribute, set()) or set())
+
+        gates = [
+            (probe("draft_available"), names("DRAFT_BUILDERS")),
+            (probe("awards_available"), names("AWARD_BUILDER_NAMES")),
+            (probe("captain_available"), names("CAPTAIN_BUILDER_NAMES")),
+            (probe("rising_star_available"),
+             names("RISING_STAR_BUILDER_NAMES")),
+            (probe("family_relationships_available"),
+             names("FAMILY_RELATIONSHIP_BUILDER_NAMES")),
+        ]
+        # Builders gated on a source layer, as {builder: probe}. Unlike the
+        # five above this needs no entry here: a sport that imports a new
+        # layer declares the pairing in its own module and nothing in the
+        # framework changes.
+        by_layer = {
+            builder: probe(name) for builder, name
+            in (getattr(self.C, "LAYER_BUILDERS", {}) or {}).items()
+        }
+        builders = [k for k in self.C.BUILDERS
+                    if all(ok or k not in gated for ok, gated in gates)
+                    and by_layer.get(k, True)]
+
+        return Layers(
+            draft=gates[0][0], awards=gates[1][0],
+            captain=gates[2][0], rising_star=gates[3][0],
+            family_relationships=gates[4][0],
+            # The table list belongs to the sport's Club Explorer, not to a
+            # page. An empty set is a subset of anything, so a sport without
+            # one is trivially available -- which is fine, because the flag
+            # is only read inside a has_club_explorer guard.
+            club_data=self.club_data_tables <= {
+                row[0] for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")},
+            builders=builders,
+        )
+
+
+@dataclass(frozen=True)
+class Layers:
+    """What one database has, as `Sport.layers` measured it."""
+    draft: bool
+    awards: bool
+    captain: bool
+    rising_star: bool
+    family_relationships: bool
+    club_data: bool
+    #: Builder names to offer, with every unavailable one already removed.
+    builders: Sequence[str]

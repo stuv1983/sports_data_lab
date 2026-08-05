@@ -12,11 +12,13 @@ authoritative scorer, and writes the column back.
     python recompute_obscurity.py --sport nba     # rescore the NBA database
     python recompute_obscurity.py --db other.db
 
-The formula itself lives in obscurity.py and is not duplicated here -- a
-second copy is how the rebuilt database and the rescored one start
-disagreeing. Which terms apply is a property of the sport, read from
-sports.Sport.obscurity_model, so this script never has to know that the AFL
-scores Brownlow votes and the NBA scores minutes.
+    python recompute_obscurity.py --sport nfl
+
+The machinery lives in obscurity.py and the terms in each sport's own
+`obscurity_model.py`; neither is duplicated here, because a second copy is
+how the rebuilt database and the rescored one start disagreeing. Which model
+applies is read from registry.Sport.obscurity_model, so this script never has
+to know that the AFL scores Brownlow votes and the NFL scores touchdowns.
 """
 
 import argparse
@@ -51,16 +53,19 @@ def _key(player_id):
     return int(player_id)
 
 
-def recompute(db, model=None, dry_run=False, verbose=True, where=""):
+def recompute(db, model, dry_run=False, verbose=True, where=""):
     """Rescore `db` against `model`. Returns (rows, changed, biggest_move).
 
+    `model` is required. It used to default to the AFL's, which was a root
+    script quietly preferring one sport -- and once the models moved into
+    their own packages, a default here would have meant importing `afl` to
+    rescore the NFL.
+
     `where` is a SQL predicate naming the players to score, from
-    sports.Sport.obscurity_population. Obscurity is a percentile rank, so
+    registry.Sport.obscurity_population. Obscurity is a percentile rank, so
     this is not a filter on the output but part of the formula: players
     outside it are left unscored rather than ranked against.
     """
-    if model is None:
-        model = obscurity_module.AFL_MODEL
     NEEDED = needed_columns(model)
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row

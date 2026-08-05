@@ -29,6 +29,8 @@ from pathlib import Path
 import obscurity
 from data_paths import default_db
 
+from . import obscurity_model
+
 DATA_URL = (
     "https://github.com/jimmyday12/fitzRoy_data/raw/main/"
     "data-raw/afl_tables_playerstats/afldata.rda"
@@ -388,19 +390,19 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
         repair_database.run(db_path)
 
 
-#: The AFL obscurity model. The machinery moved to obscurity.py so the NBA
-#: build could use it without copying it or inheriting AFL column names;
-#: only the term declaration is a sport decision, and that lives there too.
+#: The AFL obscurity model. The machinery is shared and lives in
+#: obscurity.py; the terms and weights are the sport's and live in
+#: afl/obscurity_model.py.
 #:
 #: These four names stay here because recompute_obscurity.py, the star
 #: disclaimer and tests/test_obscurity.py all import them from build_db,
 #: and there is no reason to make callers care where the code moved to.
-AFL_MODEL = obscurity.AFL_MODEL
+AFL_MODEL = obscurity_model.MODEL
 OBSCURITY_WEIGHTS = AFL_MODEL.weights
 
 #: Bumped whenever the formula changes, and stored alongside every score so
 #: a database can say which model produced it. Scores from different
-#: versions are not comparable. The version history is on obscurity.AFL_MODEL.
+#: versions are not comparable. The version history is on the MODEL itself.
 OBSCURITY_MODEL_VERSION = AFL_MODEL.version
 
 #: Terms that can be unavailable rather than zero. Everything else is
