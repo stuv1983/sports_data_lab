@@ -227,21 +227,34 @@ def test_every_scope_is_in_the_manual_builder():
         assert name in C.BUILDERS, name
 
 
-def test_every_builder_argument_is_renderable_by_the_ui():
+#: Arguments axis_widget renders with an explicit branch, and arguments it
+#: renders through the numeric fallback. Every builder argument in every
+#: sport must be one or the other.
+UI_HANDLED_ARGS = {"club", "venue", "player_id", "kind", "source", "award",
+                   "times", "avg", "player", "stat", "stat_a", "stat_b",
+                   "min_games", "derby", "event", "rivalry"}
+UI_NUMERIC_ARGS = {"x", "y", "x_a", "x_b", "games", "goals", "clubs", "from",
+                   "to", "season", "times", "points", "people", "round"}
+
+
+@pytest.mark.parametrize("sport_key", ["afl", "mlb", "nfl", "nba"])
+def test_every_builder_argument_is_renderable_by_the_ui(sport_key):
     """A builder whose argument the UI cannot render is unusable.
 
     app.py's axis_widget has a branch per argument name and a numeric
     fallback; anything not numeric needs an explicit branch, so this
     catches a new builder that quietly cannot be configured.
+
+    Parameterised over every registered sport. It used to check the AFL
+    alone, which is why MLB's `rivalry` argument went in unguarded: a
+    missing branch there would have rendered a franchise-pair key as a
+    number input and nobody would have found out until the board was open.
     """
-    handled = {"club", "venue", "player_id", "kind", "source", "award",
-               "times", "avg", "player", "stat", "stat_a", "stat_b",
-               "min_games"}
-    numeric = {"x", "y", "x_a", "x_b", "games", "goals", "clubs", "from", "to",
-               "season", "times", "points", "people"}
-    for name, (_fn, argnames) in C.BUILDERS.items():
+    module = sports.get(sport_key).C
+    for name, (_fn, argnames) in module.BUILDERS.items():
         for arg in argnames:
-            assert arg in handled or arg in numeric, (name, arg)
+            assert arg in UI_HANDLED_ARGS or arg in UI_NUMERIC_ARGS, (
+                sport_key, name, arg)
 
 
 # ============================================================ live data

@@ -384,8 +384,15 @@ FAMILY_RELATIONSHIP_BUILDER_NAMES = set(FAMILY_RELATIONSHIP_BUILDERS)
 from .match_constraints import (  # noqa: E402
     MATCH_BUILDERS,
     CROWD_BUILDER_NAMES,
+    MARQUEE_BUILDER_NAMES,
+    DERBIES,
+    DERBY_CHOICES,
+    DERBY_LABELS,
+    DERBY_MIN_GAMES,
     match_history_available,
     match_history_count,
+    marquee_events,
+    marquee_events_available,
     won_by_min,
     lost_by_min,
     won_by_max,
@@ -394,7 +401,20 @@ from .match_constraints import (  # noqa: E402
     crowd_min,
     crowd_max,
     crowd_min_in_final,
+    derby_winning_record,
+    derby_losing_record,
+    derby_games_min,
+    played_in_derby,
+    marquee_event_winning_record,
+    marquee_event_games_min,
+    played_marquee_event,
 )
 
 BUILDERS.update(MATCH_BUILDERS)
 MATCH_BUILDER_NAMES = set(MATCH_BUILDERS)
+
+#: Builders gated on a source layer, as {builder: probe}. registry.Sport
+#: .layers() reads this generically, so the marquee squares disappear on a
+#: database the scraper has not tagged instead of returning nothing.
+LAYER_BUILDERS = {name: "marquee_events_available"
+                  for name in MARQUEE_BUILDER_NAMES}

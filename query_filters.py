@@ -342,7 +342,8 @@ def compile_query(schema, query: str, con=None):
         f'p.{s.debut_season} AS "From", p.{s.final_season} AS "To", '
         f'p.{s.career_games} AS Games, p.{s.career_score} AS Score, '
         f'p.{s.career_postseason} AS Postseason, '
-        f'p.{s.clubs_hist} AS Teams, p.{s.obscurity} AS ObscurityRaw '
+        f'p.{s.clubs_hist} AS Teams, p.{s.obscurity} AS ObscurityRaw, '
+        f'p.{s.player_id} AS PlayerID '
         f'FROM {s.players} p WHERE {where_sql} '
         f'ORDER BY {orders[spec.sort]} LIMIT ?'
     )

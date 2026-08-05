@@ -38,6 +38,8 @@ postseason series, not merely appeared in October.
 import core
 import sports
 
+from . import mlb_reference
+
 # Declared in sports.py because the sport picker needs them before this
 # module is imported. CLUBS comes from the reference file the build writes,
 # so it is measured rather than hand-maintained.
@@ -129,6 +131,42 @@ def career_hits_min(hits):
     return ("SELECT player_id FROM players WHERE career_hits >= ?", [hits])
 
 
+# --------------------------------------------------- rivalry (Retrosheet)
+#
+# Lahman has no box scores, so "won more Yankees-Red Sox games than lost"
+# cannot come from the tables build_mlb_db.py writes. mlb/load_retrosheet.py
+# fills mlb_player_rivalry_games separately, from Retrosheet's game logs --
+# see that module's docstring for why the squares below are gated on it
+# rather than always offered.
+
+#: rivalry_key -> display label, for the axis picker.
+RIVALRY_LABELS = {key: r["label"] for key, r in mlb_reference.rivalries().items()}
+RIVALRY_CHOICES = list(RIVALRY_LABELS.items())
+
+#: Rivalry appearances below this are a cameo, not a rivalry record.
+RIVALRY_MIN_GAMES = 5
+
+
+def rivalry_winning_record(rivalry):
+    """Started more wins than losses in this rivalry, min RIVALRY_MIN_GAMES."""
+    return ("""
+        SELECT player_id FROM mlb_player_rivalry_games
+        WHERE rivalry_key = ?
+        GROUP BY player_id
+        HAVING SUM(CASE WHEN is_win = 1 THEN 1 ELSE 0 END)
+             > SUM(CASE WHEN is_win = 0 THEN 1 ELSE 0 END)
+           AND COUNT(*) >= ?
+    """, [rivalry, RIVALRY_MIN_GAMES])
+
+
+def rivalry_games_min(rivalry, games):
+    """Started X+ games in this rivalry, win or lose."""
+    return ("""
+        SELECT player_id FROM mlb_player_rivalry_games
+        WHERE rivalry_key = ? GROUP BY player_id HAVING COUNT(*) >= ?
+    """, [rivalry, games])
+
+
 # ---------------------------------------------------------------- registry
 
 BUILDERS = {
@@ -164,6 +202,8 @@ BUILDERS = {
     "Won the World Series":       (won_the_world_series, []),
     "Never played in the World Series": (never_played_the_world_series, []),
     "X+ career hits":             (career_hits_min, ["x"]),
+    "Winning record in a rivalry": (rivalry_winning_record, ["rivalry"]),
+    "X+ games in a rivalry":      (rivalry_games_min, ["rivalry", "games"]),
 }
 
 #: Builders needing an optional layer. app.py filters BUILDERS by these
@@ -217,6 +257,23 @@ def rising_star_available(con):
 
 def family_relationships_available(con):
     return False
+
+
+def rivalry_available(con):
+    """True once mlb/load_retrosheet.py has populated the rivalry table."""
+    if not core.have_tables(con, "mlb_player_rivalry_games"):
+        return False
+    return con.execute(
+        "SELECT 1 FROM mlb_player_rivalry_games LIMIT 1").fetchone() is not None
+
+
+#: Builders gated on a layer with no dedicated probe slot in registry.py's
+#: five (draft/awards/captain/rising_star/family). registry.Sport.layers()
+#: reads this generically: {builder_name: probe_function_name}.
+LAYER_BUILDERS = {
+    "Winning record in a rivalry": "rivalry_available",
+    "X+ games in a rivalry": "rivalry_available",
+}
 
 
 # ------------------------------------------------- engine, bound to MLB

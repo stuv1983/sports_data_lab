@@ -510,7 +510,8 @@ def leaderboard_page(sport, con):
                        g.{sc.venue} AS "{V.venue.capitalize()}",
                        g.{stat} AS "{stat}",
                        p.{sc.career_games} AS "Career {V.games}",
-                       p.{sc.obscurity} AS Obsc
+                       p.{sc.obscurity} AS Obsc,
+                       p.{sc.player_id} AS PlayerID
                 FROM {sc.games} g JOIN {sc.players} p
                   ON p.{sc.player_id} = g.{sc.player_id}
                 WHERE {where} AND g.{stat} IS NOT NULL
@@ -521,7 +522,8 @@ def leaderboard_page(sport, con):
                        COUNT(*) AS "{V.games.capitalize()}",
                        SUM(g.{stat}) AS "{stat}",
                        ROUND(AVG(g.{stat}),1) AS "per {V.game}",
-                       p.{sc.obscurity} AS Obsc
+                       p.{sc.obscurity} AS Obsc,
+                       p.{sc.player_id} AS PlayerID
                 FROM {sc.games} g JOIN {sc.players} p
                   ON p.{sc.player_id} = g.{sc.player_id}
                 WHERE {where} AND g.{stat} IS NOT NULL
@@ -534,7 +536,8 @@ def leaderboard_page(sport, con):
                        COUNT(*) AS "{V.games.capitalize()}",
                        SUM(g.{stat}) AS "{stat}",
                        ROUND(AVG(g.{stat}),1) AS "per {V.game}",
-                       p.{sc.obscurity} AS Obsc
+                       p.{sc.obscurity} AS Obsc,
+                       p.{sc.player_id} AS PlayerID
                 FROM {sc.games} g JOIN {sc.players} p
                   ON p.{sc.player_id} = g.{sc.player_id}
                 WHERE {where} AND g.{stat} IS NOT NULL
@@ -551,7 +554,12 @@ def leaderboard_page(sport, con):
     # Raw obscurity is replaced by the star rating everywhere it is shown.
     df["Rating"] = df["Obsc"].map(core.stars_text)
     df = df.drop(columns=["Obsc"])
-    st.dataframe(df, hide_index=True, width="stretch")
+    player_ids = df["PlayerID"].tolist()
+    df = df.drop(columns=["PlayerID"])
+    st.caption("Select a row to see that player's full career.")
+    import components   # deferred: components imports explore for the dialog body
+    components.clickable_player_table(
+        df, player_ids, sport, con, key=sport.k("lb_results"))
     with st.expander("SQL"):
         st.code(q, language="sql")
 

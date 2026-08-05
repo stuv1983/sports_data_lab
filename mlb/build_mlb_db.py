@@ -5,6 +5,7 @@ build_mlb_db.py -- Build data/mlb/mlb.db from the Lahman baseball database.
     python -m mlb.build_mlb_db
     python -m mlb.build_mlb_db --db /tmp/mlb.db --raw data/mlb/raw
     python -m mlb.build_mlb_db --quiet
+    python -m mlb.build_mlb_db --no-retrosheet   # Lahman only, no network
 
 Reads the Lahman CSV export (People, Appearances, Batting, Pitching, their
 postseason counterparts, Teams and TeamsFranchises) and writes the two
@@ -45,6 +46,15 @@ real `round` ('WS', 'ALCS', ...) and a real `result` -- which is what makes
 "won a final" and "no finals wins" mean something specific. Players whose
 whole career fell in seasons with no postseason at all get NULL rather
 than 0 for `postseason_played`; see obscurity_model.MODEL.
+
+RETROSHEET
+----------
+The final step calls mlb/load_retrosheet.py, which fills
+`mlb_player_rivalry_games` from Retrosheet's bulk game logs -- the one
+source of per-game lineups and results, which Lahman does not have at any
+grain. It is the only step that touches the network, runs after the
+database is already written, and degrades to an empty table rather than
+failing the build. `--no-retrosheet` skips it entirely.
 """
 
 import argparse
@@ -481,6 +491,13 @@ def write(db, players, games, awards, hall_of_fame, verbose):
             "CREATE INDEX ix_games_post ON games(is_postseason)",
         ):
             con.execute(statement)
+        # Empty until mlb/load_retrosheet.py is run separately -- declared
+        # here too so the rivalry builders have a table to query (zero rows
+        # rather than "no such table") on a fresh build, and so
+        # constraints_mlb.rivalry_available() can tell "not built" apart
+        # from "built, not yet loaded".
+        from . import load_retrosheet
+        load_retrosheet._ensure_table(con)
         con.commit()
     finally:
         con.close()
@@ -490,6 +507,39 @@ def write(db, players, games, awards, hall_of_fame, verbose):
     db.unlink(missing_ok=True)
     building.replace(db)
     log(verbose, f"wrote {db}")
+
+
+def load_rivalries(db, people, verbose, refresh=False):
+    """Augment the finished database with Retrosheet's rivalry game log.
+
+    Runs after write()'s atomic swap rather than inside it, because this is
+    the one step that needs the network: a Retrosheet outage must not throw
+    away a Lahman build that has already succeeded. On failure the table is
+    left empty, which constraints_mlb.rivalry_available() reads as "not
+    loaded" and which hides the rivalry squares -- the same state as a
+    database built before this step existed.
+
+    The crosswalk comes from the People frame the build already parsed,
+    rather than load_retrosheet re-reading People.csv: `raw` may have been
+    a ZIP, or a fixture folder that is not data/mlb/raw at all.
+    """
+    from . import load_retrosheet
+
+    crosswalk = {str(retro): str(player)
+                 for retro, player in zip(people["retroID"],
+                                          people["playerID"])
+                 if pd.notna(retro) and pd.notna(player)}
+    con = sqlite3.connect(db)
+    try:
+        rows = load_retrosheet.load(con, refresh=refresh, crosswalk=crosswalk)
+        log(verbose, f"rivalry games: {rows:,} rows")
+    except Exception as error:                                  # noqa: BLE001
+        # Never silent, even under --quiet: the build otherwise looks
+        # complete while two squares are missing from the board.
+        print(f"warning: Retrosheet rivalry load skipped ({error})",
+              file=sys.stderr)
+    finally:
+        con.close()
 
 
 def write_reference(db, teams, franchises, games, verbose):
@@ -525,7 +575,8 @@ def write_reference(db, teams, franchises, games, verbose):
 
 # ------------------------------------------------------------------ build
 
-def build(db=None, raw=None, verbose=True):
+def build(db=None, raw=None, verbose=True, retrosheet=True,
+          refresh_retrosheet=False):
     db = Path(db or data_paths.default_db("mlb"))
     source, kind = find_source(raw or data_paths.raw_dir("mlb"))
     log(verbose, f"reading Lahman data from {source}")
@@ -579,6 +630,9 @@ def build(db=None, raw=None, verbose=True):
 
     write(db, players, games, awards, hall_of_fame, verbose)
     write_reference(db, teams, franchises, games, verbose)
+    if retrosheet:
+        log(verbose, "rivalry game logs (Retrosheet)...")
+        load_rivalries(db, people, verbose, refresh=refresh_retrosheet)
     log(verbose, f"{len(players):,} players, {len(games):,} player-seasons "
                  f"({int(games['is_postseason'].sum()):,} postseason)")
     return db
@@ -592,8 +646,14 @@ def main(argv=None):
     parser.add_argument("--raw", default=None,
                         help="Lahman CSV folder or ZIP (default data/mlb/raw)")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--no-retrosheet", action="store_true",
+                        help="skip the rivalry game-log step (no network)")
+    parser.add_argument("--refresh-retrosheet", action="store_true",
+                        help="re-download the Retrosheet logs even if cached")
     args = parser.parse_args(argv)
-    build(db=args.db, raw=args.raw, verbose=not args.quiet)
+    build(db=args.db, raw=args.raw, verbose=not args.quiet,
+          retrosheet=not args.no_retrosheet,
+          refresh_retrosheet=args.refresh_retrosheet)
     return 0
 
 

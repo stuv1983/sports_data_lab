@@ -48,7 +48,12 @@ def db(tmp_path_factory):
     root = tmp_path_factory.mktemp("mlb")
     mlb_fixture.write(root / "csv")
     path = root / "mlb.db"
-    build_mlb_db.build(db=path, raw=root / "csv", verbose=False)
+    # retrosheet=False keeps the suite offline. The rivalry step downloads
+    # 34MB of game logs and has nothing to say about a four-player fixture;
+    # write() still declares the empty table, which is what the builders
+    # below are checked against.
+    build_mlb_db.build(db=path, raw=root / "csv", verbose=False,
+                       retrosheet=False)
     return path
 
 
@@ -258,7 +263,8 @@ def test_every_builder_actually_runs(con):
     """A registry entry that throws is a square that breaks the board."""
     arguments = {"club": "Los Angeles Dodgers", "games": 10, "goals": 1,
                  "clubs": 2, "stat": "home_runs", "x": 1, "from": 1950,
-                 "to": 1960, "venue": "Ebbets Field"}
+                 "to": 1960, "venue": "Ebbets Field",
+                 "rivalry": "yankees_redsox"}
     for name, (builder, argnames) in constraints_mlb.BUILDERS.items():
         sql, params = builder(*[arguments[a] for a in argnames])
         con.execute(sql, params).fetchall()

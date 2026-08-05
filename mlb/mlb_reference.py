@@ -111,3 +111,30 @@ def stat_eras():
     if isinstance(measured, dict) and measured:
         return {k: int(v) for k, v in measured.items()}
     return dict(FALLBACK_STAT_ERAS)
+
+
+#: Historic derby pairings, hand-curated rather than build-measured -- a
+#: rivalry is an editorial judgment, not a fact `build_mlb_db.py` can derive
+#: from Lahman. Each side lists every Retrosheet/Lahman 3-letter team code
+#: the franchise has played under, since a Brooklyn-era Dodgers game and an
+#: LA-era one are the same rivalry under different codes. Loaded by
+#: mlb/load_retrosheet.py to filter the Retrosheet game logs, and by
+#: constraints_mlb.py to offer the "winning record in a rivalry" square.
+RIVALRIES = {
+    "yankees_redsox": {
+        "label": "Yankees–Red Sox",
+        "team_a": {"name": "New York Yankees", "codes": ("NYA",)},
+        "team_b": {"name": "Boston Red Sox", "codes": ("BOS",)},
+    },
+    "dodgers_giants": {
+        "label": "Dodgers–Giants",
+        "team_a": {"name": "Los Angeles Dodgers", "codes": ("BRO", "LAN")},
+        "team_b": {"name": "San Francisco Giants",
+                  "codes": ("NY1", "NYP", "SFN")},
+    },
+}
+
+
+def rivalries() -> dict:
+    """rivalry_key -> {label, team_a, team_b}, for the pairings above."""
+    return RIVALRIES

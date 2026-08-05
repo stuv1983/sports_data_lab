@@ -19,6 +19,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
+import components
 from . import club_history as CH
 
 ANY = "Any"
@@ -59,6 +60,23 @@ def _match_table(matches, two_sided: bool) -> pd.DataFrame:
         "Result": m.result, "Score": m.score, "Margin": m.margin,
         "Venue": m.venue, "Crowd": m.attendance,
     } for m in matches])
+
+
+def _match_dialog_body(m) -> None:
+    st.markdown(f"### {_label(m.club_id)} vs {_label(m.opponent_id)}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Season", m.season)
+    c2.metric("Round", m.round)
+    c3.metric("Score", m.score)
+    st.write(f"**Venue:** {m.venue}")
+    st.write(f"**Date:** {m.match_date}")
+    if m.attendance:
+        st.write(f"**Crowd:** {m.attendance:,}")
+    st.write(f"**Margin:** {abs(m.margin)}")
+    if m.team_position != "F":
+        st.write(f"**{_label(m.club_id)}:** {m.where.title()}, {m.result}")
+    if m.is_final:
+        st.caption("Finals match")
 
 
 def past_games_page(sport, con: sqlite3.Connection) -> None:
@@ -202,8 +220,9 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
             "Finals have no home side in the source, so for rows marked "
             "Final the two columns are simply the two clubs, in a fixed "
             "order — not a home-and-away split.")
-    st.dataframe(
-        table, hide_index=True, width="stretch",
+    st.caption("Select a row to see that match's full detail.")
+    components.clickable_match_table(
+        table, matches, key="pg_matches", render_body=_match_dialog_body,
         column_config={
             "Crowd": st.column_config.NumberColumn(format="%d"),
             "Margin": st.column_config.NumberColumn(

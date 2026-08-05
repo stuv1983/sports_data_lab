@@ -266,15 +266,63 @@ TABLE_PURPOSE = {
 
 
 def stat_coverage_rows(con: sqlite3.Connection) -> list[dict]:
-    """The measured coverage table, if load_stat_coverage.py has run."""
+    """The measured coverage table, whichever shape this sport wrote.
+
+    Two builders write a table called `stat_coverage` and they do not agree
+    on its columns. load_stat_coverage.py (AFL, NBA) writes a curated row
+    per statistic with a prose `coverage_notes`; build_nfl_db.py measures
+    its own and writes `table_name`, `populated_rows` and `total_rows`
+    instead. Only `stat_name`, `available_from` and `available_to` are
+    common to both.
+
+    Selecting `coverage_notes` unconditionally is what took the NFL health
+    page down with "no such column". So the note is built from whichever
+    columns are actually present, and an unrecognised shape degrades to a
+    blank note rather than an exception -- this is a diagnostics page, and
+    it failing to render is strictly worse than it rendering one column
+    short.
+    """
     if not table_exists(con, "stat_coverage"):
         return []
-    return [
-        {"Statistic": stat, "From": lo, "To": hi, "Notes": notes}
-        for stat, lo, hi, notes in con.execute(
-            "SELECT stat_name, available_from, available_to, coverage_notes "
-            "FROM stat_coverage ORDER BY available_from, stat_name")
-    ]
+    columns = {row[1] for row in con.execute("PRAGMA table_info(stat_coverage)")}
+    if not {"stat_name", "available_from", "available_to"} <= columns:
+        return []
+
+    has_notes = "coverage_notes" in columns
+    has_counts = {"populated_rows", "total_rows"} <= columns
+    extra = []
+    if has_notes:
+        extra.append("coverage_notes")
+    elif has_counts:
+        extra.extend(["populated_rows", "total_rows"])
+    if "table_name" in columns:
+        extra.append("table_name")
+
+    selected = ["stat_name", "available_from", "available_to", *extra]
+    rows = con.execute(
+        f"SELECT {', '.join(selected)} FROM stat_coverage "
+        "ORDER BY available_from, stat_name")
+
+    out = []
+    for row in rows:
+        record = dict(zip(selected, row))
+        if has_notes:
+            note = record.get("coverage_notes") or ""
+        elif has_counts:
+            populated = record.get("populated_rows") or 0
+            total = record.get("total_rows") or 0
+            share = f" ({populated / total:.0%})" if total else ""
+            note = f"{populated:,} of {total:,} rows populated{share}"
+        else:
+            note = ""
+        if record.get("table_name"):
+            note = f"{record['table_name']}: {note}" if note \
+                else str(record["table_name"])
+        out.append({"Statistic": record["stat_name"],
+                    "From": record["available_from"],
+                    "To": record["available_to"],
+                    "Notes": note})
+    return out
 
 
 def match_coverage(con: sqlite3.Connection) -> dict:

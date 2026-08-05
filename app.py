@@ -102,6 +102,25 @@ def venue_options(sport_key, db, revision):
     return out
 
 
+@st.cache_data(show_spinner=False)
+def marquee_event_options(sport_key, db, revision):
+    """Marquee fixture names actually tagged in this database.
+
+    Read from the data rather than a constant so a new event added to
+    afl/scrape_marquee_games.py appears in the picker with no UI change.
+    Sports whose constraints module has no such concept get an empty list,
+    and their marquee builders are already hidden by LAYER_BUILDERS.
+    """
+    module = sports.get(sport_key).C
+    lookup = getattr(module, "marquee_events", None)
+    if lookup is None:
+        return []
+    try:
+        return list(lookup(get_con(db, revision)))
+    except Exception:                                           # noqa: BLE001
+        return []
+
+
 PLAYER_MATCH_LIMIT = 30
 
 
@@ -347,6 +366,28 @@ def axis_widget(key, default_type, defaults=None):
         elif a == "player":
             args.append(st.text_input("Player", defaults.get("player", ""),
                                       key=wk))
+        elif a == "derby":
+            choices = list(getattr(C, "DERBY_CHOICES", ()))
+            keys = [k for k, _ in choices]
+            want = defaults.get("derby")
+            idx = keys.index(want) if want in keys else 0
+            pick = st.selectbox("Derby", range(len(choices)), index=idx,
+                                format_func=lambda i: choices[i][1], key=wk)
+            args.append(choices[pick][0] if choices else None)
+        elif a == "event":
+            events = marquee_event_options(SPORT.key, SPORT.db, DB_REVISION)
+            want = defaults.get("event")
+            idx = events.index(want) if want in events else 0
+            args.append(st.selectbox("Match", events, index=idx, key=wk)
+                        if events else None)
+        elif a == "rivalry":
+            choices = list(getattr(C, "RIVALRY_CHOICES", ()))
+            keys = [k for k, _ in choices]
+            want = defaults.get("rivalry")
+            idx = keys.index(want) if want in keys else 0
+            pick = st.selectbox("Rivalry", range(len(choices)), index=idx,
+                                format_func=lambda i: choices[i][1], key=wk)
+            args.append(choices[pick][0] if choices else None)
         elif a in ("stat", "stat_a", "stat_b"):
             stats = list(SCHEMA.stats)
             want = defaults.get(a, stats[0])
@@ -400,6 +441,23 @@ def axis_widget(key, default_type, defaults=None):
         label = f"{args[0]}+ {V.score} avg\nin {V.postseason}"
     elif kind == "First career game for club":
         label = f"{args[0]}\nfirst career {V.game}"
+    elif kind in ("Winning record in a derby", "Losing record in a derby"):
+        outcome = "winning" if kind.startswith("Winning") else "losing"
+        label = f"{C.DERBY_LABELS.get(args[0], args[0])}\n{outcome} record"
+    elif kind == "X+ games in a derby":
+        label = f"{args[1]}+ {C.DERBY_LABELS.get(args[0], args[0])}\n{V.games}"
+    elif kind == "Played in a derby":
+        label = f"played a\n{C.DERBY_LABELS.get(args[0], args[0])}"
+    elif kind == "Winning record in a marquee match":
+        label = f"{args[0]}\nwinning record"
+    elif kind == "X+ marquee matches":
+        label = f"{args[1]}+ {args[0]}\n{V.games}"
+    elif kind == "Played in a marquee match":
+        label = f"played\n{args[0]}"
+    elif kind == "Winning record in a rivalry":
+        label = f"{C.RIVALRY_LABELS.get(args[0], args[0])}\nwinning record"
+    elif kind == "X+ games in a rivalry":
+        label = f"{args[1]}+ {V.games} in\n{C.RIVALRY_LABELS.get(args[0], args[0])}"
     elif kind == "150+ / X+ career games":
         label = f"{args[0]}+ {V.games} played"
     elif kind == "X+ goals at 2+ clubs":

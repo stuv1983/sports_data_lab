@@ -8,6 +8,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
+import components
 import core
 import query_filters_family as Q
 
@@ -156,7 +157,14 @@ def search_page(sport, con):
                 "|", ", ", regex=False
             )
         st.caption(f"{len(frame):,} result{'s' if len(frame) != 1 else ''} shown.")
-        st.dataframe(frame, hide_index=True, width="stretch")
+        if "PlayerID" in frame.columns:
+            player_ids = frame["PlayerID"].tolist()
+            frame = frame.drop(columns=["PlayerID"])
+            st.caption("Select a row to see that player's full career.")
+            components.clickable_player_table(
+                frame, player_ids, sport, con, key=sport.k("search_results"))
+        else:
+            st.dataframe(frame, hide_index=True, width="stretch")
         st.download_button(
             "Download results as CSV",
             data=frame.to_csv(index=False).encode("utf-8"),

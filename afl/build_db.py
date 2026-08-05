@@ -376,6 +376,28 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
         else:
             derive_matches.run(db_path)
 
+    # to_sql(if_exists="replace") takes games.match_event with it too, and the
+    # marquee squares vanish with it. The tags are derived from cached
+    # Wikipedia pages, so a retag is offline and idempotent -- it re-applies
+    # the same event names to the same matches. Only a first run, with no
+    # cache, needs the network; that failure is reported and skipped rather
+    # than allowed to fail a build whose games table is already correct.
+    print()
+    try:
+        from . import scrape_marquee_games
+    except ImportError:
+        print("afl/scrape_marquee_games.py not found -- games.match_event "
+              "not rebuilt.")
+    else:
+        con = sqlite3.connect(db_path)
+        try:
+            scrape_marquee_games.scrape_and_update(con)
+        except Exception as error:                              # noqa: BLE001
+            print(f"warning: marquee tagging skipped ({error})",
+                  file=sys.stderr)
+        finally:
+            con.close()
+
     # The ladder built above orders on points and percentage alone, which is
     # ambiguous when both tie, and it does not carry the club_path_* columns.
     # repair_database.py is the canonical fix and is idempotent, so run it here

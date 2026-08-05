@@ -128,6 +128,168 @@ def crowd_min_in_final(people):
             [people])
 
 
+# ------------------------------------------------------ derbies and events
+#
+# Two different ideas that answer the same shape of question -- "has this
+# player won more of these than they have lost" -- from two different
+# sources:
+#
+# * A **derby** is a fixed pair of clubs, so it needs no source at all
+#   beyond `games`, which already carries club_now, match_id and result for
+#   every player-game. Nothing is scraped and nothing can be missing: the
+#   Western Derby is every Fremantle-West Coast match there has ever been.
+#
+# * A **marquee event** is a fixture identified by the day it is played on
+#   rather than by who plays in it, so it cannot be derived from the teams.
+#   afl/scrape_marquee_games.py tags those matches with `games.match_event`
+#   from Wikipedia, and the builders reading that column are gated on
+#   marquee_events_available() because a database built before the scraper
+#   runs has the column but no values in it.
+
+#: derby_key -> the two clubs, under the club_now names build_db.py writes.
+#: Only fixtures the sport actually calls a derby, each one a same-city or
+#: same-state pair: the Victorian rivalries are rivalries, not derbies, and
+#: naming them here would be this file inventing a category.
+DERBIES = {
+    "western_derby": ("Western Derby", "Fremantle", "West Coast"),
+    "showdown": ("Showdown", "Adelaide", "Port Adelaide"),
+    "q_clash": ("QClash", "Brisbane Lions", "Gold Coast"),
+    "sydney_derby": ("Sydney Derby", "Sydney", "GWS"),
+}
+
+#: derby_key -> label, for the axis picker.
+DERBY_LABELS = {key: label for key, (label, _a, _b) in DERBIES.items()}
+DERBY_CHOICES = list(DERBY_LABELS.items())
+
+#: Appearances below this are a cameo rather than a derby record. Matches
+#: constraints_mlb.RIVALRY_MIN_GAMES, which answers the same question.
+DERBY_MIN_GAMES = 5
+
+#: Matches in which both clubs played, found through match_id rather than
+#: through `opponent`.
+#:
+#: `opponent` and `club_now` are two different vocabularies: `opponent`
+#: carries the club's *historical* name, as club_hist does, while
+#: `club_now` carries the current franchise. They coincide for most clubs
+#: and diverge for exactly the ones a derby cares about -- GWS is
+#: 'Greater Western Sydney' in `opponent`, so `opponent = 'GWS'` matches no
+#: row at all and the Sydney Derby silently returned only GWS's half of it.
+#: Intersecting match_ids keeps both sides in one vocabulary, so a club
+#: rename can never drop a side. match_id is non-NULL for all 693,194 rows
+#: and indexed, so this stays a sub-30ms lookup.
+_DERBY_MATCHES = """match_id IN (
+        SELECT match_id FROM games WHERE club_now = ?
+        INTERSECT
+        SELECT match_id FROM games WHERE club_now = ?
+    )"""
+
+
+def _derby_teams(derby):
+    """The two clubs of a derby, as the bound parameters _DERBY_MATCHES
+    wants."""
+    try:
+        _label, team_a, team_b = DERBIES[derby]
+    except KeyError:
+        raise ValueError(f"unknown derby: {derby!r}") from None
+    return [team_a, team_b]
+
+
+def derby_winning_record(derby):
+    """Won more matches in this derby than they lost.
+
+    Draws count as neither, so this is strictly wins > losses rather than
+    a winning percentage -- "won more than they've lost" is the question
+    as the sport asks it.
+    """
+    return (f"""
+        SELECT player_id FROM games WHERE {_DERBY_MATCHES}
+        GROUP BY player_id
+        HAVING SUM(CASE WHEN result = 'W' THEN 1 ELSE 0 END)
+             > SUM(CASE WHEN result = 'L' THEN 1 ELSE 0 END)
+           AND COUNT(*) >= ?
+    """, _derby_teams(derby) + [DERBY_MIN_GAMES])
+
+
+def derby_losing_record(derby):
+    """Lost more matches in this derby than they won."""
+    return (f"""
+        SELECT player_id FROM games WHERE {_DERBY_MATCHES}
+        GROUP BY player_id
+        HAVING SUM(CASE WHEN result = 'L' THEN 1 ELSE 0 END)
+             > SUM(CASE WHEN result = 'W' THEN 1 ELSE 0 END)
+           AND COUNT(*) >= ?
+    """, _derby_teams(derby) + [DERBY_MIN_GAMES])
+
+
+def derby_games_min(derby, games):
+    """Played X+ matches in this derby, win or lose."""
+    return (f"""
+        SELECT player_id FROM games WHERE {_DERBY_MATCHES}
+        GROUP BY player_id HAVING COUNT(*) >= ?
+    """, _derby_teams(derby) + [games])
+
+
+def played_in_derby(derby):
+    """Played in this derby at all."""
+    return (f"SELECT DISTINCT player_id FROM games WHERE {_DERBY_MATCHES}",
+            _derby_teams(derby))
+
+
+def marquee_events_available(con: sqlite3.Connection) -> bool:
+    """True once afl/scrape_marquee_games.py has tagged any match.
+
+    The column alone is not enough: build_db.py's to_sql drops and
+    recreates `games`, so between a rebuild and the retag the column is
+    absent entirely, and a database that has never been tagged has it
+    present but empty.
+    """
+    if "games" not in _tables(con):
+        return False
+    columns = {row[1] for row in con.execute("PRAGMA table_info(games)")}
+    if "match_event" not in columns:
+        return False
+    return bool(con.execute(
+        "SELECT 1 FROM games WHERE match_event IS NOT NULL LIMIT 1").fetchone())
+
+
+def marquee_events(con: sqlite3.Connection) -> list[str]:
+    """Every event name actually tagged, for the axis picker.
+
+    Read from the database rather than hardcoded, so a fourth event added
+    to the scraper's config appears here with no change to this file.
+    """
+    if not marquee_events_available(con):
+        return []
+    return [row[0] for row in con.execute(
+        "SELECT DISTINCT match_event FROM games "
+        "WHERE match_event IS NOT NULL ORDER BY match_event")]
+
+
+def played_marquee_event(event):
+    """Played in this marquee fixture -- an Anzac Day match, a Dreamtime."""
+    return ("SELECT DISTINCT player_id FROM games WHERE match_event = ?",
+            [event])
+
+
+def marquee_event_winning_record(event):
+    """Won more of this marquee fixture than they lost."""
+    return ("""
+        SELECT player_id FROM games WHERE match_event = ?
+        GROUP BY player_id
+        HAVING SUM(CASE WHEN result = 'W' THEN 1 ELSE 0 END)
+             > SUM(CASE WHEN result = 'L' THEN 1 ELSE 0 END)
+           AND COUNT(*) >= ?
+    """, [event, DERBY_MIN_GAMES])
+
+
+def marquee_event_games_min(event, games):
+    """Played X+ of this marquee fixture."""
+    return ("""
+        SELECT player_id FROM games WHERE match_event = ?
+        GROUP BY player_id HAVING COUNT(*) >= ?
+    """, [event, games])
+
+
 MATCH_BUILDERS = {
     "Played in a win by X+ points":   (won_by_min, ["points"]),
     "Played in a loss by X+ points":  (lost_by_min, ["points"]),
@@ -137,6 +299,23 @@ MATCH_BUILDERS = {
     "Played before a crowd of X+":    (crowd_min, ["people"]),
     "Played before a crowd of X or fewer": (crowd_max, ["people"]),
     "Played before a crowd of X+ in a final": (crowd_min_in_final, ["people"]),
+    "Winning record in a derby":      (derby_winning_record, ["derby"]),
+    "Losing record in a derby":       (derby_losing_record, ["derby"]),
+    "X+ games in a derby":            (derby_games_min, ["derby", "games"]),
+    "Played in a derby":              (played_in_derby, ["derby"]),
+    "Winning record in a marquee match":
+        (marquee_event_winning_record, ["event"]),
+    "X+ marquee matches":             (marquee_event_games_min,
+                                       ["event", "games"]),
+    "Played in a marquee match":      (played_marquee_event, ["event"]),
+}
+
+#: Builders needing the scraped `match_event` tags. The derby builders are
+#: deliberately absent: they read `games` alone and always work.
+MARQUEE_BUILDER_NAMES = {
+    "Winning record in a marquee match",
+    "X+ marquee matches",
+    "Played in a marquee match",
 }
 
 #: Builders that need the optional all-games layer, so the UI can say why
