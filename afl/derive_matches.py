@@ -58,6 +58,7 @@ MATCH_COLS = [
     "home_team", "away_team", "home_team_now", "away_team_now",
     "home_score", "away_score", "winner", "margin", "is_final",
     "home_away_known", "home_players", "away_players", "attendance",
+    "game_status", "data_status", "score_source_url",
 ] + QUARTER_COLS
 
 FINALS = {"EF", "QF", "SF", "PF", "GF"}
@@ -162,6 +163,9 @@ def build_matches(df, oriented):
 
     m["home_away_known"] = int(bool(oriented))
     m["attendance"] = None
+    m["game_status"] = "played"
+    m["data_status"] = "player_stats"
+    m["score_source_url"] = None
     for c in QUARTER_COLS:
         m[c] = None
 

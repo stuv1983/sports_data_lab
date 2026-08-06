@@ -96,7 +96,8 @@ SPORT = Sport(
                      "Award data": "awards_available",
                      "Captain data": "captain_available",
                      "Rising Star": "rising_star_available",
-                     "Brownlow voting": "brownlow_available"},
+                     "Brownlow voting": "brownlow_available",
+                     "Match score audit": "match_scores_available"},
     obscurity_model=MODEL,
     club_data_table="clubs",
     family_probe="family_relationships_available",
@@ -118,6 +119,9 @@ SPORT = Sport(
         "rising_star_available": ("Run `afl/fetch_footywire_rising_star.py`, "
                                   "then `afl/load_rising_star.py`."),
         "brownlow_available": "Run `python -m afl.load_brownlow`.",
+        "match_scores_available": (
+            "Cache AFL Tables bg3.txt, then run `python -m afl.load_match_scores "
+            "--source data/afl/raw/matches/afltables_bg3.txt`."),
     },
     club_data_tables=frozenset({
         "clubs", "club_source_snapshots", "club_wikipedia_fields",

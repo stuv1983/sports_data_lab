@@ -536,6 +536,21 @@ def refresh_layers(db_path, verbose=True):
 
     step("club all-games match sources", club_all_games)
 
+    # Run after the club-page loader: score-only results newer than the cached
+    # player and club pages are also projected into Past Games by this pass.
+    def match_scores():
+        from . import load_match_scores
+        source = raw_dir("afl") / "matches" / "afltables_bg3.txt"
+        if not source.is_file():
+            raise RuntimeError(f"no cached AFL Tables score list at {source}")
+        with sqlite3.connect(db_path) as con:
+            counts = load_match_scores.load(con, load_match_scores.read_source(source))
+        if verbose:
+            print("   " + ", ".join(
+                f"{count:,} {status}" for status, count in counts.items() if count))
+
+    step("full-history match-score audit", match_scores)
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

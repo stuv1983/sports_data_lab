@@ -355,6 +355,21 @@ from .brownlow import (  # noqa: E402
 BUILDERS.update(BROWNLOW_BUILDERS)
 BROWNLOW_BUILDER_NAMES = set(BROWNLOW_BUILDERS)
 
+
+def match_scores_available(con) -> bool:
+    """True only when the AFL Tables played-match audit has no open gaps."""
+    if not con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='afltables_match_scores'").fetchone():
+        return False
+    total, linked = con.execute("""
+        SELECT COUNT(*),
+               SUM(audit_status IN ('matched','score_only')
+                   AND db_match_id IS NOT NULL)
+        FROM afltables_match_scores
+    """).fetchone()
+    return bool(total and total == linked)
+
 # Optional FootyWire Rising Star nomination layer.  The network fetcher is
 # permission-gated; afl/load_rising_star.py links local CSV rows to players.
 from .rising_star import (  # noqa: E402
