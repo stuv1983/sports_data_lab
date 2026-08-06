@@ -55,6 +55,22 @@ class Schema:
     clubs_hist: str = "clubs_hist"
     obscurity: str = "obscurity"
 
+    #: Optional card-back bio columns on `players`. Empty string means the
+    #: sport's data does not carry it -- the AFL and MLB builds have no
+    #: height, weight, position or draft data, while the NFL and NBA
+    #: (position/height/weight only) builds do. A page that renders these
+    #: shows only the fields whose name is set here.
+    position: str = ""
+    height: str = ""
+    weight: str = ""
+    college: str = ""
+    draft_year: str = ""
+    #: Units the height/weight columns are actually stored in, so a page
+    #: can format them without guessing. NFL stores inches and pounds; NBA
+    #: stores centimetres and kilograms.
+    height_unit: str = "in"
+    weight_unit: str = "lb"
+
     # games
     season: str = "season"
     date: str = "date"

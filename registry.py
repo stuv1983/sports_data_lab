@@ -39,6 +39,20 @@ class Vocab:
     def title_case(self, word):
         return getattr(self, word).capitalize()
 
+    @property
+    def title_plural(self) -> str:
+        """The countable form of `title`, for a tile that counts them.
+
+        'premiership' -> 'Premierships', 'Super Bowl' -> 'Super Bowls'.
+        Anything already ending in 's' is left alone, which is what keeps
+        the MLB's 'World Series' from becoming 'World Seriess'.
+        """
+        label = self.title.strip()
+        if not label:
+            return "Titles"
+        label = label[0].upper() + label[1:]
+        return label if label.endswith("s") else label + "s"
+
 
 # ---------------------------------------------------------------- sport
 
@@ -110,6 +124,12 @@ class Sport:
     loader_hints: dict = field(default_factory=dict)
     club_data_tables: frozenset = frozenset()
     club_data_hint: str = ""
+    #: How to fill `club_match_sources` for this sport, shown when Past
+    #: Games finds the table empty. Three sports now feed that one table
+    #: from three unrelated loaders -- the AFL scrapes it, the MLB
+    #: downloads Retrosheet game logs, the NFL projects its own schedule --
+    #: so the page cannot name a command without being told which.
+    past_games_hint: str = ""
     family_hint: str = ""
     search_examples: tuple = ()
     grid_defaults: tuple = ()

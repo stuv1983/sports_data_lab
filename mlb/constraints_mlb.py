@@ -355,6 +355,34 @@ def season_two_stats_min(stat_a, x_a, stat_b, x_b):
             f"WHERE {stat_a} >= ? AND {stat_b} >= ?", [x_a, x_b])
 
 
+# -------------------------------------------------------------------- WAR
+#
+# Wins Above Replacement is the one statistic on this page that Lahman
+# cannot supply at all -- see mlb/load_war.py for what it is and where the
+# figures come from. Both squares are gated on `war_available`, so they
+# stay hidden until those files are loaded rather than returning nobody.
+
+def season_war_min(war):
+    """A single season worth `war` or more Wins Above Replacement.
+
+    A row is one player's season with one team, so a player traded
+    mid-year has two rows and clears this only if one half does on its
+    own. That is the rule every other season square here follows, and it
+    is why `career_war_min` reads the career column instead of summing
+    this one.
+    """
+    return (f"{core.ROW_MARKER}stat@g.war >= ?", [war])
+
+
+def career_war_min(war):
+    """Career WAR of at least `war`, from the total load_war.py wrote.
+
+    Read off `players` rather than summed here, so the number a square
+    selects on is the same one the player's profile displays.
+    """
+    return ("SELECT player_id FROM players WHERE career_war >= ?", [war])
+
+
 # ---------------------------------------------------------------- registry
 
 BUILDERS = {
@@ -406,6 +434,11 @@ BUILDERS = {
                                    ["stat", "avg", "min_games"]),
     "Season average of a stat":   (season_stat_per_game_min,
                                    ["stat", "avg", "min_games"]),
+    # Named squares of their own rather than left to the generic stat
+    # builders: WAR is the category Immaculate Grid actually uses, and
+    # "5+ WAR season" is how a solver says it.
+    "X+ WAR in a season":         (season_war_min, ["war"]),
+    "X+ career WAR":              (career_war_min, ["war"]),
 }
 
 #: Builders needing an optional layer. app.py filters BUILDERS by these
@@ -492,6 +525,35 @@ def rivalry_available(con):
         "SELECT 1 FROM mlb_player_rivalry_games LIMIT 1").fetchone() is not None
 
 
+def war_available(con):
+    """True once mlb/load_war.py has loaded Baseball-Reference's WAR files.
+
+    Checks for a value, not just the column: `load_war` adds `games.war`
+    before it fills it, so a run that failed part-way would otherwise
+    advertise squares that no player can satisfy.
+    """
+    try:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(games)")}
+        if "war" not in columns:
+            return False
+        return con.execute(
+            "SELECT 1 FROM games WHERE war IS NOT NULL LIMIT 1"
+        ).fetchone() is not None
+    except Exception:                                       # noqa: BLE001
+        return False
+
+
+def war_count(con):
+    """Player-seasons carrying a WAR figure, for the status panel."""
+    try:
+        return con.execute(
+            "SELECT COUNT(*) FROM games WHERE war IS NOT NULL").fetchone()[0]
+    except Exception:                                       # noqa: BLE001
+        return None
+
+
+
+
 #: Builders gated on a layer with no dedicated probe slot in registry.py's
 #: five (draft/awards/captain/rising_star/family). registry.Sport.layers()
 #: reads this generically: {builder_name: probe_function_name}.
@@ -503,6 +565,10 @@ LAYER_BUILDERS = {
     "Hall of Fame": "hall_of_fame_available",
     "Played a position": "positions_available",
     "Born outside the US": "birthplace_available",
+    # Hidden until the Baseball-Reference files are loaded, because WAR is
+    # the one statistic here that no amount of Lahman can supply.
+    "X+ WAR in a season": "war_available",
+    "X+ career WAR": "war_available",
 }
 
 

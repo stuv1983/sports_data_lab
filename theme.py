@@ -389,6 +389,57 @@ div[data-testid="column"] .stButton > button:focus:not(:active) {{
   margin-top: .3rem;
 }}
 
+/* Player profile, styled as a vintage trading card back: a themed banner,
+   a bio column beside a capped-height season table, and a career-totals
+   footer strip. */
+.card-banner {{
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: .75rem;
+}}
+.card-banner-name {{
+  font-family: 'Oswald', sans-serif;
+  font-weight: 700;
+  font-size: 1.8rem;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: var(--chalk);
+  line-height: 1.1;
+}}
+.card-banner-stars {{ padding-top: .3rem; white-space: nowrap; }}
+.card-banner-sub {{
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: .74rem;
+  color: var(--muted);
+  letter-spacing: .03em;
+  margin: .2rem 0 .9rem 0;
+  padding-bottom: .7rem;
+  border-bottom: 2px solid var(--amber);
+}}
+.card-section-label {{
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: .64rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: .5rem;
+}}
+.bio-row {{
+  display: flex;
+  justify-content: space-between;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: .78rem;
+  padding: .3rem 0;
+  border-bottom: 1px dotted var(--line);
+}}
+.bio-label {{ color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }}
+.bio-value {{ color: var(--chalk); }}
+.card-footer-divider {{
+  border-top: 1px solid var(--line);
+  margin: 1.1rem 0 .8rem 0;
+}}
+
 .axis {{
   font-family: 'Oswald', sans-serif;
   text-transform: uppercase;

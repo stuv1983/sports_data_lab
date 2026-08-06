@@ -55,8 +55,8 @@ IMPLEMENTED_IDS = [s.key for s in IMPLEMENTED]
 CAPABILITIES = ("criterion_parser", "grid_library", "game_lab_module",
                 "has_club_explorer", "has_awards_page", "has_past_games",
                 "loader_hints", "club_data_tables", "club_data_hint",
-                "family_hint", "search_examples", "grid_defaults",
-                "venue_display")
+                "past_games_hint", "family_hint", "search_examples",
+                "grid_defaults", "venue_display")
 
 #: Files allowed to name a sport. sports.py and data_paths.py are the
 #: registries; theme.py names a *palette*, which happens to be called "AFL",
@@ -277,17 +277,26 @@ def test_afl_criterion_parser_and_game_lab_modules_import():
 # --------------------------------------------------------------- the NBA
 
 def test_nba_declares_none_of_the_afl_only_pages():
-    """Club Explorer is no longer one of them.
+    """Club Explorer and Past Games are no longer among them.
 
-    It reads six tables that utils/derive_club_tables.py now builds from
-    the match database itself, so it is not tied to the AFL scrape. The
-    rest still are.
+    Club Explorer reads six tables that utils/derive_club_tables.py now
+    builds from the match database itself, and Past Games reads
+    `club_match_sources`, which nba/load_club_history.py projects from the
+    schedule the build already imports. Neither is tied to the AFL scrape
+    any more. The rest still are.
     """
     assert sports.NBA.grid_library is False
     assert sports.NBA.criterion_parser == ""
     assert sports.NBA.game_lab_module == ""
     assert sports.NBA.has_awards_page is False
-    assert sports.NBA.has_past_games is False
+
+
+@pytest.mark.parametrize(
+    "sport", [s for s in sports.SPORTS.values() if s.has_past_games],
+    ids=[s.key for s in sports.SPORTS.values() if s.has_past_games])
+def test_past_games_sports_say_how_to_load_them(sport):
+    """A page that says "not loaded" and no more leaves nowhere to go."""
+    assert sport.past_games_hint, sport.key
 
 
 def test_nba_has_no_loader_hints_because_it_has_no_loaders():

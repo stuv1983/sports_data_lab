@@ -106,11 +106,8 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
                 f"{sport.label} yet.")
         return
     if not CH.club_history_available(con):
-        st.info(
-            "Past game data is not loaded. Run "
-            "`python utils/fetch_club_sources.py`, then "
-            "`python utils/load_club_all_games.py`."
-        )
+        hint = sport.past_games_hint or "Load this sport's club-history rows."
+        st.info(f"Past {sport.vocab.games} are not loaded. {hint}")
         return
 
     cov = CH.coverage(con)

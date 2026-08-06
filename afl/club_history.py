@@ -305,6 +305,31 @@ def clubs_with_history(con: sqlite3.Connection) -> list[str]:
         f"ORDER BY source_club_id")]
 
 
+def source_club_id(con: sqlite3.Connection, club_id: str,
+                   club_name: str | None = None) -> str | None:
+    """The `source_club_id` a `clubs` row's matches are filed under.
+
+    Two conventions are in use and both are legitimate, so a caller holding
+    a `clubs.club_id` cannot simply pass it through. The AFL scrape files
+    matches under a slug ('adelaide'), which is also that club's
+    `clubs.club_id`. The MLB and NFL loaders file them under the club's
+    name ('Arizona Diamondbacks', 'Oakland Raiders'), because their sources
+    identify teams by opaque codes and the name is what keeps a franchise's
+    earlier identity distinct from the one it relocated into.
+
+    Passing the slug to a name-keyed table matches nothing, and every
+    aggregate then reads as a real 0-0-0 rather than as an absence -- which
+    is what the Club Explorer's Past games tab was showing for every MLB
+    club. Returning None lets a caller say so instead.
+    """
+    known = {r[0] for r in con.execute(
+        f"SELECT DISTINCT source_club_id FROM {SOURCE_TABLE}")}
+    for candidate in (club_id, club_name):
+        if candidate and candidate in known:
+            return candidate
+    return None
+
+
 def _canonical_venue(sport, raw: str) -> str:
     """Best-effort venue name.
 

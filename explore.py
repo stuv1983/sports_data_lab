@@ -248,20 +248,6 @@ def _player_profile(sport, con, player_picker):
     render_player_profile(sport, con, pid, key_prefix="explore")
 
 
-def _title_label(title: str) -> str:
-    """'premiership' -> 'Premierships', 'World Series' -> 'World Series'.
-
-    Vocab.title is singular, and the tile counts them. Anything already
-    ending in 's' is left alone, which is what keeps 'World Series' from
-    becoming 'World Seriess'.
-    """
-    label = title.strip()
-    if not label:
-        return "Titles"
-    label = label[0].upper() + label[1:]
-    return label if label.endswith("s") else label + "s"
-
-
 def _titles_won(sport, con, pid, revision):
     """How many titles this player won, or None if the sport cannot say.
 
@@ -292,36 +278,77 @@ def _titles_won(sport, con, pid, revision):
     return row[0] if row else 0
 
 
+def _format_height(value, unit):
+    """`70, "in"` -> `5′10″`; `198.1, "cm"` -> `198 cm`."""
+    if value is None:
+        return None
+    if unit == "cm":
+        return f"{value:.0f} cm"
+    inches = int(round(value))
+    return f"{inches // 12}′{inches % 12}″"
+
+
+def _format_weight(value, unit):
+    if value is None:
+        return None
+    return f"{value:.0f} {unit}"
+
+
+def _career_blurb(V, debut, final, games, n_clubs, draft_year=None):
+    """One flavour-text sentence, in the voice of a trading card back.
+
+    `position` is deliberately not woven into the sentence: the data holds
+    codes ("RB", "G"), not nouns, and "this rb played..." reads as a typo
+    rather than prose. The position still shows in the bio rows above,
+    where it is a label rather than a sentence subject.
+    """
+    club_clause = f"one {V.club}" if n_clubs == 1 else f"{n_clubs} {V.clubs}"
+    prefix = f"Drafted in {int(draft_year)}, " if draft_year else ""
+    sentence = (f"{prefix}this player played {games:,} {V.games} for "
+                f"{club_clause} between {debut} and {final}.")
+    return sentence[0].upper() + sentence[1:]
+
+
 def render_player_profile(sport, con, pid, key_prefix="explore",
                           heading_level="##"):
-    """One player's career, rendered wherever it is asked for.
+    """One player's career, rendered as a trading-card back wherever it is
+    asked for.
 
     Split out of the Player Search page so the Grid Solver can show the
     same profile in a dialog without navigating away from the board, and
     without a second copy of these queries drifting from this one.
 
     `key_prefix` namespaces the widgets inside: two callers on one page
-    each need their own "ranked by" selectbox. `heading_level` lets a
-    dialog, which already has a title bar, drop to a smaller heading.
+    each need their own "ranked by" selectbox. `heading_level` is accepted
+    for backward compatibility but no longer used -- the card banner
+    carries its own heading treatment regardless of caller.
     """
     V, sc = sport.vocab, sport.schema
     revision = _db_revision(sport.db)
+
+    bio_fields = [(name, col) for name, col in (
+        ("position", sc.position), ("height", sc.height),
+        ("weight", sc.weight), ("college", sc.college),
+        ("draft_year", sc.draft_year),
+    ) if col]
+    bio_select = "".join(f", {col}" for _, col in bio_fields)
     profile_sql = (
         f"SELECT {sc.player}, {sc.debut_season}, {sc.final_season}, "
         f"{sc.career_games}, {sc.career_score}, {sc.career_postseason}, "
-        f"{sc.clubs_hist}, {sc.birth_year}, {sc.obscurity} "
+        f"{sc.clubs_hist}, {sc.birth_year}, {sc.obscurity}{bio_select} "
         f"FROM {sc.players} WHERE {sc.player_id} = ?"
     )
     p = _fetchone(profile_sql, (pid,), revision, con)
     if not p:
         return
+    bio = dict(zip((name for name, _ in bio_fields), p[9:]))
+    n_clubs = len(p[6].split("|")) if p[6] else 0
 
-    st.markdown(f"{heading_level} {p[0]}")
-    st.caption(f"{p[1]}–{p[2]} · {p[6].replace('|', ', ')}")
-
-    # Show trusted captain appointments on the player profile. Gated on the
-    # constraints module declaring the layer rather than on the sport's name,
-    # so a sport that later gains captaincy data gets this for free.
+    # Trusted captain appointments, shown in the bio column when a sport
+    # has them. Gated on the constraints module declaring the layer rather
+    # than on the sport's name, so a sport that later gains captaincy data
+    # gets this for free.
+    captain_line = None
     if getattr(sport.C, "captain_available", None):
         has_captains = con.execute(
             "SELECT 1 FROM main.sqlite_master "
@@ -343,43 +370,84 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                         f"{club} ({years}; {seasons} season"
                         f"{'s' if seasons != 1 else ''})"
                     )
-                st.caption("Club captain: " + " · ".join(appointments))
+                captain_line = "Club captain: " + " · ".join(appointments)
 
-    tiles = [
-        (V.games.capitalize(), f"{p[3]:,}"),
-        (V.score.capitalize(), f"{int(p[4] or 0):,}"),
-        (V.postseason.capitalize(), p[5]),
-    ]
     # Premierships / World Series / Super Bowls, for the sports whose data
-    # can actually answer it. Inserted before Born so the career numbers
-    # stay together.
+    # can actually answer it.
     titles = _titles_won(sport, con, pid, revision)
-    if titles is not None:
-        tiles.append((_title_label(V.title), titles))
-    tiles.append(("Born", int(p[7]) if p[7] else "—"))
 
-    cols = st.columns(len(tiles) + 1)
-    for col, (lab, val) in zip(cols, tiles):
-        col.markdown(f"<div class='count'>{val}</div>"
-                     f"<div class='count-label'>{lab}</div>",
-                     unsafe_allow_html=True)
-    cols[-1].markdown(f"<div>{core.stars_html(p[8])}</div>"
-                      f"<div class='count-label'>Obscurity</div>",
-                      unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown(
+            f"<div class='card-banner'>"
+            f"<div class='card-banner-name'>{p[0]}</div>"
+            f"<div class='card-banner-stars'>{core.stars_html(p[8])}</div>"
+            f"</div>"
+            f"<div class='card-banner-sub'>{p[1]}–{p[2]} · "
+            f"{p[6].replace('|', ', ')}</div>",
+            unsafe_allow_html=True)
+        if captain_line:
+            st.caption(captain_line)
 
-    st.markdown("### Season by season")
-    seasons_sql = f"""
-        SELECT {sc.season} AS Season, {sc.club_hist} AS "{V.club.capitalize()}",
-               COUNT(*) AS "{V.games.capitalize()}",
-               SUM({sc.game_score}) AS "{V.score.capitalize()}",
-               ROUND(AVG({sc.game_score}),2) AS "{V.score}/{V.game}",
-               SUM(CASE WHEN {sc.result}='W' THEN 1 ELSE 0 END) AS W,
-               SUM(CASE WHEN {sc.result}='L' THEN 1 ELSE 0 END) AS L,
-               SUM({sc.is_final}) AS "{V.postseason.capitalize()}"
-        FROM {sc.games} WHERE {sc.player_id} = ?
-        GROUP BY {sc.season}, {sc.club_hist} ORDER BY {sc.season}"""
-    seasons = _read_frame(seasons_sql, (pid,), revision, con)
-    st.dataframe(seasons, hide_index=True, width="stretch")
+        bio_col, stat_col = st.columns([1, 2])
+        with bio_col:
+            st.markdown("<div class='card-section-label'>Bio</div>",
+                       unsafe_allow_html=True)
+            bio_rows = []
+            if p[7]:
+                bio_rows.append(("Born", int(p[7])))
+            if bio.get("position"):
+                bio_rows.append(("Position", bio["position"]))
+            height = _format_height(bio.get("height"), sc.height_unit)
+            if height:
+                bio_rows.append(("Height", height))
+            weight = _format_weight(bio.get("weight"), sc.weight_unit)
+            if weight:
+                bio_rows.append(("Weight", weight))
+            if bio.get("college"):
+                bio_rows.append(("College", bio["college"]))
+            if bio.get("draft_year"):
+                bio_rows.append(("Drafted", int(bio["draft_year"])))
+            for label, val in bio_rows:
+                st.markdown(
+                    f"<div class='bio-row'><span class='bio-label'>{label}"
+                    f"</span><span class='bio-value'>{val}</span></div>",
+                    unsafe_allow_html=True)
+            st.caption(_career_blurb(
+                V, p[1], p[2], p[3], n_clubs, bio.get("draft_year")))
+
+        with stat_col:
+            st.markdown(
+                "<div class='card-section-label'>Season by season</div>",
+                unsafe_allow_html=True)
+            seasons_sql = f"""
+                SELECT {sc.season} AS Season, {sc.club_hist} AS "{V.club.capitalize()}",
+                       COUNT(*) AS "{V.games.capitalize()}",
+                       SUM({sc.game_score}) AS "{V.score.capitalize()}",
+                       ROUND(AVG({sc.game_score}),2) AS "{V.score}/{V.game}",
+                       SUM(CASE WHEN {sc.result}='W' THEN 1 ELSE 0 END) AS W,
+                       SUM(CASE WHEN {sc.result}='L' THEN 1 ELSE 0 END) AS L,
+                       SUM({sc.is_final}) AS "{V.postseason.capitalize()}"
+                FROM {sc.games} WHERE {sc.player_id} = ?
+                GROUP BY {sc.season}, {sc.club_hist} ORDER BY {sc.season}"""
+            seasons = _read_frame(seasons_sql, (pid,), revision, con)
+            st.dataframe(seasons, hide_index=True, width="stretch",
+                        height=300)
+
+        tiles = [
+            (V.games.capitalize(), f"{p[3]:,}"),
+            (V.score.capitalize(), f"{int(p[4] or 0):,}"),
+            (V.postseason.capitalize(), p[5]),
+        ]
+        if titles is not None:
+            tiles.append((V.title_plural, titles))
+
+        st.markdown("<div class='card-footer-divider'></div>",
+                   unsafe_allow_html=True)
+        footer_cols = st.columns(len(tiles))
+        for col, (lab, val) in zip(footer_cols, tiles):
+            col.markdown(f"<div class='count'>{val}</div>"
+                         f"<div class='count-label'>{lab}</div>",
+                         unsafe_allow_html=True)
 
     st.markdown(f"### Biggest {V.games}")
     metric = st.selectbox("Ranked by", list(sc.stats),

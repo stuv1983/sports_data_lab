@@ -75,6 +75,8 @@ SPORT = Sport(
     #: is a player-season, so the match-level rows the page lists exist only
     #: because the Retrosheet game logs are loaded alongside.
     has_past_games=True,
+    past_games_hint=("Run `python -m mlb.load_retrosheet` to fetch and load "
+                     "the Retrosheet game logs."),
     #: `result` on a postseason row is the *series* outcome from SeriesPost,
     #: one row per player per round, so a 'WS' win is the title itself
     #: rather than one win inside a seven-game series.
@@ -82,7 +84,14 @@ SPORT = Sport(
     has_awards_page=True,
     awards_page_module="mlb.awards_page",
     optional_layers={"Awards data": "awards_available",
-                     "Hall of Fame": "hall_of_fame_available"},
+                     "Hall of Fame": "hall_of_fame_available",
+                     "WAR (Baseball-Reference)": "war_available"},
+    loader_hints={
+        "war_available":
+            "WAR is not in Lahman. Download war_daily_bat.txt and "
+            "war_daily_pitch.txt from baseball-reference.com/data/, then "
+            "run `python -m mlb.load_war --dir <folder>`.",
+    },
     obscurity_model=MODEL,
     has_club_explorer=True,
     club_data_table="clubs",

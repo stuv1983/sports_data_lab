@@ -22,6 +22,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
+import components
 import core
 import db_pool
 import sports
@@ -900,23 +901,6 @@ def _solve(sport_key, db, revision, frags, params, order, limit):
     return tuple(rows)
 
 
-@st.dialog("Player", width="large")
-def show_player_dialog(pid):
-    """The selected answer's full career, over the board rather than away
-    from it.
-
-    A grid solver's question is "who is this, and does the career actually
-    fit the square?", asked about one row of a list the board just
-    produced. Sending that to the Player Search page loses the board, the
-    open square and the scroll position, and makes the solver re-find their
-    place afterwards. The profile body is the same one Player Search
-    renders -- explore.render_player_profile -- so the two cannot drift.
-    """
-    import explore
-    explore.render_player_profile(SPORT, con, pid, key_prefix="griddlg",
-                                  heading_level="###")
-
-
 def constraints_for(r, c):
     return [x for x in (rows_def[r][1], cols_def[c][1]) if x]
 
@@ -1064,14 +1048,9 @@ if st.session_state.cell:
         st.markdown("")
         st.caption("Select a row to see that player's full career without "
                    "leaving the board.")
-        table = st.dataframe(
-            df, hide_index=True, width="stretch",
-            on_select="rerun", selection_mode="single-row",
-            key=SPORT.k("answers", r, c))
-
-        picked_rows = table.selection.rows if table and table.selection else []
-        if picked_rows:
-            show_player_dialog(pids[picked_rows[0]])
+        components.clickable_player_table(
+            df, pids, SPORT, con, key=SPORT.k("answers", r, c),
+            key_prefix="griddlg")
 
         with st.expander("SQL for this square"):
             st.code(C.to_standalone_sql(cs, limit), language="sql")

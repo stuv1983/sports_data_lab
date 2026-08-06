@@ -128,25 +128,30 @@ def _record_line(rec) -> str:
             f"(W-D-L) · {pct}")
 
 
-def _past_games_tab(con, club_id: str, club_name: str) -> None:
+def _past_games_tab(con, sport, club_id: str, club_name: str) -> None:
     """Searchable past results for one club, over the all-games rows.
 
-    The source carries one row per club per match back to 1897, so every
-    figure here is from this club's point of view: `result` and `margin`
-    are theirs, and the opponent comes from the other row of the same game
-    rather than from any name matching.
+    The source carries one row per club per match, so every figure here is
+    from this club's point of view: `result` and `margin` are theirs, and
+    the opponent comes from the other row of the same game rather than from
+    any name matching.
     """
     if not CH.club_history_available(con):
-        st.info(
-            "Past game data is not loaded. It comes from the AFL club "
-            "scrape -- run `python utils/fetch_club_sources.py`, then "
-            "`python utils/load_club_all_games.py`."
-        )
+        hint = sport.past_games_hint or "Load this sport's club-history rows."
+        st.info(f"Past {sport.vocab.games} are not loaded. {hint}")
         return
 
     seasons = CH.seasons_available(con)
     if not seasons:
-        st.info("No matches recorded for this club.")
+        st.info(f"No {sport.vocab.games} recorded for this club.")
+        return
+
+    # The club-history rows may be keyed by slug or by name depending on
+    # which loader filled them; passing the wrong one silently produced a
+    # 0-0-0 all-time record rather than saying anything was missing.
+    club_id = CH.source_club_id(con, club_id, club_name)
+    if club_id is None:
+        st.info(f"No {sport.vocab.games} recorded for {club_name}.")
         return
 
     splits = {s.split: s for s in CH.home_away_splits(con, club_id)}
@@ -348,8 +353,10 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
     c1, c2, c3, c4 = st.columns(4)
     _headline(c1, fields, "nickname", "Nickname")
     _headline(c2, fields, "founded", "Founded")
-    _headline(c3, fields, "ground", "Home ground")
-    _headline(c4, fields, "premierships", "Premierships")
+    # The sport's own words: an NFL team has a home stadium and Super Bowls,
+    # not a home ground and premierships.
+    _headline(c3, fields, "ground", f"Home {sport.vocab.venue}")
+    _headline(c4, fields, "premierships", sport.vocab.title_plural)
 
     tabs = st.tabs([
         "Overview", "Past games", "Player totals", "All-time players",
@@ -393,7 +400,7 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
                     hide_index=True, width="stretch")
 
     with tabs[1]:
-        _past_games_tab(con, club_id, club["name"])
+        _past_games_tab(con, sport, club_id, club["name"])
 
     with tabs[2]:
         totals = _read(con, f"""

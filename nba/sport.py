@@ -21,6 +21,11 @@ SCHEMA = core.Schema(
     career_postseason="playoffs_played",
     game_score="points",
     is_final="is_playoff",
+    position="position",
+    height="height_cm",
+    weight="weight_kg",
+    height_unit="cm",
+    weight_unit="kg",
     stats=STATS,
     clubs=nba_reference.teams(),
     club_lineage=nba_reference.club_lineage(),
@@ -66,6 +71,11 @@ SPORT = Sport(
                      "Award data": "awards_available"},
     obscurity_model=MODEL,
     has_club_explorer=True,
+    has_past_games=True,
+    past_games_hint=("Run `python -m nba.load_club_history` to project the "
+                     "schedule already in the database into club-history "
+                     "rows. Add `--attendance <game_info.csv>` from the box "
+                     "score dataset to fill in crowds before 2023."),
     club_data_table="clubs",
     club_data_tables=frozenset({
         "clubs", "club_source_snapshots", "club_wikipedia_fields",

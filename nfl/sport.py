@@ -38,6 +38,11 @@ SCHEMA = core.Schema(
     game_score="touchdowns",
     is_final="is_playoff",
     opponent="opponent_team",
+    position="position",
+    height="height",
+    weight="weight",
+    college="college_name",
+    draft_year="draft_year",
     stats=STATS,
     clubs=CLUBS,
     club_lineage=nfl_reference.club_lineage(),
@@ -107,6 +112,10 @@ SPORT = Sport(
     },
     obscurity_model=MODEL,
     has_club_explorer=True,
+    has_past_games=True,
+    past_games_hint=("Run `python -m nfl.load_club_history` to project the "
+                     "schedule already in the database into club-history "
+                     "rows."),
     club_data_table="clubs",
     club_data_tables=frozenset({
         "clubs", "club_source_snapshots", "club_wikipedia_fields",
