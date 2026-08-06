@@ -443,21 +443,148 @@ def _club_leaders(sport_key, club, revision, _con) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@st.cache_data(show_spinner=False)
+def _club_identity(club, revision, _con):
+    """Resolve a display/game name to the optional clubs-table row."""
+    columns = _columns(_con, "clubs")
+    if not {"club_id", "name"} <= columns:
+        return None
+    comparisons = ["LOWER(name) = LOWER(?)", "LOWER(club_id) = LOWER(?)"]
+    params = [club, club]
+    if "db_club_now" in columns:
+        comparisons.append("LOWER(db_club_now) = LOWER(?)")
+        params.append(club)
+    select = ["club_id", "name"]
+    for column in ("abbreviation", "db_club_now", "wikipedia_url"):
+        select.append(column if column in columns else "NULL")
+    try:
+        return _con.execute(
+            f"SELECT {', '.join(select)} FROM clubs WHERE "
+            + " OR ".join(comparisons) + " LIMIT 1",
+            params,
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+
+
+@st.cache_data(show_spinner=False)
+def _club_information(club_id, revision, _con) -> pd.DataFrame:
+    columns = _columns(_con, "club_wikipedia_fields")
+    if not club_id or not {"club_id", "field_value"} <= columns:
+        return pd.DataFrame()
+    label = ("field_label" if "field_label" in columns else
+             "field_key" if "field_key" in columns else None)
+    if label is None:
+        return pd.DataFrame()
+    try:
+        return pd.read_sql_query(
+            f"SELECT {label} AS Field, field_value AS Value "
+            "FROM club_wikipedia_fields WHERE club_id = ? "
+            f"ORDER BY {label}",
+            _con, params=(club_id,),
+        )
+    except (sqlite3.Error, pd.errors.DatabaseError):
+        return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def _club_recent_games(club, club_id, revision, _con) -> pd.DataFrame:
+    columns = _columns(_con, "club_match_sources")
+    required = {"source_club_id", "season", "opponent_raw", "result"}
+    if not required <= columns:
+        return pd.DataFrame()
+    candidates = [str(value) for value in (club_id, club) if value]
+    where = [f"source_club_id IN ({','.join('?' for _ in candidates)})"]
+    params = list(candidates)
+    if "source_club_label" in columns:
+        where.append("LOWER(source_club_label) = LOWER(?)")
+        params.append(club)
+    fields = [
+        "season AS Season",
+        ("round AS Round" if "round" in columns else "NULL AS Round"),
+        ("match_date AS Date" if "match_date" in columns else "NULL AS Date"),
+        "opponent_raw AS Opponent",
+        "result AS Result",
+        ("margin AS Margin" if "margin" in columns else "NULL AS Margin"),
+        ("scoring_for_raw AS Score" if "scoring_for_raw" in columns
+         else "NULL AS Score"),
+        ("venue_raw AS Venue" if "venue_raw" in columns else "NULL AS Venue"),
+    ]
+    order = "match_date" if "match_date" in columns else "season"
+    try:
+        return pd.read_sql_query(
+            f"SELECT {', '.join(fields)} FROM club_match_sources "
+            f"WHERE ({' OR '.join(where)}) ORDER BY {order} DESC LIMIT 5",
+            _con, params=tuple(params),
+        ).dropna(axis=1, how="all")
+    except (sqlite3.Error, pd.errors.DatabaseError):
+        return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def _club_award_winners(club, revision, _con) -> pd.DataFrame:
+    columns = _columns(_con, "awards")
+    if "club" not in columns or "season" not in columns:
+        return pd.DataFrame()
+    award = "award_name" if "award_name" in columns else (
+        "award" if "award" in columns else None)
+    player = "player" if "player" in columns else None
+    if not award or not player:
+        return pd.DataFrame()
+    try:
+        return pd.read_sql_query(
+            f"SELECT season AS Season, {award} AS Award, {player} AS Player "
+            "FROM awards WHERE LOWER(COALESCE(club, '')) = LOWER(?) "
+            "OR ',' || LOWER(COALESCE(club, '')) || ',' LIKE "
+            "'%,' || LOWER(?) || ',%' "
+            "ORDER BY season DESC, Award, Player LIMIT 5",
+            _con, params=(club, club),
+        )
+    except (sqlite3.Error, pd.errors.DatabaseError):
+        return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def _club_hall_of_famers(club, revision, _con) -> pd.DataFrame:
+    columns = _columns(_con, "hall_of_fame")
+    if not {"club", "name"} <= columns:
+        return pd.DataFrame()
+    inducted = ("inducted_year AS Inducted" if "inducted_year" in columns
+                else "NULL AS Inducted")
+    legend = ("CASE WHEN is_legend = 1 THEN 'Legend' ELSE '' END AS Status"
+              if "is_legend" in columns else "NULL AS Status")
+    try:
+        return pd.read_sql_query(
+            f"SELECT name AS Name, {inducted}, {legend} FROM hall_of_fame "
+            "WHERE LOWER(COALESCE(club, '')) LIKE '%' || LOWER(?) || '%' "
+            "ORDER BY Inducted DESC, Name LIMIT 5",
+            _con, params=(club,),
+        ).dropna(axis=1, how="all")
+    except (sqlite3.Error, pd.errors.DatabaseError):
+        return pd.DataFrame()
+
+
 def club_overview(sport, con, club) -> None:
-    """One club: its logo, its span, its titles and its leading scorers."""
+    """One club's identity, history, recent form, honours and leaders."""
     V = sport.vocab
     revision = _revision(sport.db)
+    identity = _club_identity(club, revision, con)
+    club_id = identity[0] if identity else None
+    display_name = identity[1] if identity else club
 
-    logo = logo_for(sport, con, club)
+    logo = logo_for(sport, con, display_name)
     if logo:
         badge, title = st.columns([1, 5])
         badge.markdown(logo_html(logo), unsafe_allow_html=True)
-        title.markdown(f"### {club}")
+        title.markdown(f"### {display_name}")
+        if identity and identity[2]:
+            title.caption(identity[2])
     else:
-        st.markdown(f"### {club}")
+        st.markdown(f"### {display_name}")
 
-    summary = _club_summary(sport.key, club, revision, con)
-    titles = _club_titles(sport.key, club, revision, con)
+    games_name = identity[3] if identity and identity[3] else club
+    summary = _club_summary(sport.key, games_name, revision, con)
+    titles = _club_titles(sport.key, games_name, revision, con)
     if summary and summary[0] is not None:
         first, last, players = summary
         tiles = [
@@ -470,14 +597,42 @@ def club_overview(sport, con, club) -> None:
             column.markdown(f"<div class='count'>{value}</div>"
                             f"<div class='count-label'>{label}</div>",
                             unsafe_allow_html=True)
-        if titles:
-            st.caption(f"{V.title_plural}: "
-                       + ", ".join(str(season) for season in titles))
     else:
-        st.caption(f"No {V.games} recorded for {club} in this database.")
-        return
+        st.caption(f"No {V.games} recorded for {display_name} in this database.")
 
-    leaders = _club_leaders(sport.key, club, revision, con)
+    information = _club_information(club_id, revision, con)
+    if not information.empty:
+        preferred = {
+            "Full name", "Nickname(s)", "Founded", "Colours", "Coach",
+            "Captain(s)", "Ground(s)", "Home ground", "Competition",
+        }
+        headline = information[information["Field"].isin(preferred)].head(6)
+        if not headline.empty:
+            st.markdown("**Club information**")
+            st.dataframe(headline, hide_index=True, width="stretch")
+        with st.expander(f"All club information ({len(information)})"):
+            st.dataframe(information, hide_index=True, width="stretch")
+
+    recent = _club_recent_games(display_name, club_id, revision, con)
+    if not recent.empty:
+        st.markdown(f"**Last {len(recent)} {V.games}**")
+        st.dataframe(recent, hide_index=True, width="stretch")
+
+    if titles:
+        st.markdown(f"**{V.title_plural} ({len(titles)})**")
+        st.write(", ".join(str(season) for season in reversed(titles)))
+
+    award_winners = _club_award_winners(display_name, revision, con)
+    if not award_winners.empty:
+        st.markdown("**Latest 5 award winners**")
+        st.dataframe(award_winners, hide_index=True, width="stretch")
+
+    hall = _club_hall_of_famers(display_name, revision, con)
+    if not hall.empty:
+        st.markdown("**Latest 5 Hall of Fame inductees**")
+        st.dataframe(hall, hide_index=True, width="stretch")
+
+    leaders = _club_leaders(sport.key, games_name, revision, con)
     if not leaders.empty:
         st.markdown(f"**Leading {V.score}, all time**")
         st.dataframe(leaders, hide_index=True, width="stretch")

@@ -120,8 +120,12 @@ def _filter_roll(roll: pd.DataFrame, club: str, seasons, name: str
 def _multiple_winners(con: sqlite3.Connection, slug: str) -> pd.DataFrame:
     return pd.read_sql_query(
         """SELECT a.player AS Player, COUNT(*) AS Wins,
-                  GROUP_CONCAT(a.season) AS Seasons
-           FROM awards a WHERE a.award_slug = ?
+                  GROUP_CONCAT(a.season) AS Seasons,
+                  MAX(l.player_id) AS player_id
+           FROM awards a
+           LEFT JOIN person_links l ON l.dg_person_id = a.dg_person_id
+             AND l.match_status IN ('from_draft','unique','resolved')
+           WHERE a.award_slug = ?
            GROUP BY a.name_key HAVING COUNT(*) > 1
            ORDER BY COUNT(*) DESC, a.player""", con, params=(slug,))
 
@@ -273,7 +277,10 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
             repeats = _multiple_winners(con, slug)
             if not repeats.empty:
                 with st.expander(f"Multiple winners ({len(repeats)})"):
-                    st.dataframe(repeats, hide_index=True, width="stretch")
+                    components.clickable_player_table(
+                        repeats.drop(columns=["player_id"]),
+                        repeats["player_id"].tolist(), sport, con,
+                        key=f"aw_repeat_{slug}")
 
     # --------------------------------------------------- all-australian
     with tab["All-Australian"]:
@@ -304,13 +311,21 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
                     side.drop(columns=["player_id"]), player_ids, sport, con,
                     key=f"aw_aa_{season}")
             with st.expander("Most selections, all time"):
-                st.dataframe(pd.read_sql_query(
-                    """SELECT player AS Player, COUNT(*) AS Selections,
-                              MIN(season) AS First, MAX(season) AS Last
-                       FROM all_australian GROUP BY name_key
+                most = pd.read_sql_query(
+                    """SELECT a.player AS Player, COUNT(*) AS Selections,
+                              MIN(a.season) AS First, MAX(a.season) AS Last,
+                              MAX(l.player_id) AS player_id
+                       FROM all_australian a
+                       LEFT JOIN person_links l
+                         ON l.dg_person_id = a.dg_person_id
+                        AND l.match_status IN ('from_draft','unique','resolved')
+                       GROUP BY a.name_key
                        HAVING COUNT(*) > 1
-                       ORDER BY COUNT(*) DESC, player LIMIT 100""", con),
-                    hide_index=True, width="stretch")
+                       ORDER BY COUNT(*) DESC, a.player LIMIT 100""", con)
+                components.clickable_player_table(
+                    most.drop(columns=["player_id"]),
+                    most["player_id"].tolist(), sport, con,
+                    key="aw_aa_most")
 
     # ------------------------------------------------ best and fairest
     with tab["Club best and fairest"]:
@@ -354,13 +369,14 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
     # -------------------------------------------------------- catalogue
     with tab["All awards"]:
         st.caption("Every award in the database, with its coverage.")
-        st.dataframe(
-            catalogue.rename(columns={
+        catalogue_table = catalogue.rename(columns={
                 "award_name": "Award", "award_category": "Category",
                 "winners": "Rows", "season_from": "From",
-                "season_to": "To", "seasons": "Seasons",
-            }).drop(columns=["award_slug"]),
-            hide_index=True, width="stretch")
+                "season_to": "To", "seasons": "Distinct seasons",
+            }).drop(columns=["award_slug"])
+        components.clickable_season_table(
+            catalogue_table, [None] * len(catalogue_table), sport, con,
+            key="aw_catalogue")
 
 
 def _hall_of_fame(sport, con: sqlite3.Connection) -> None:

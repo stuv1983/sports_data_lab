@@ -23,8 +23,9 @@ table when it is set -- see explore.render_player_profile.
 
 from __future__ import annotations
 
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
+import pandas as pd
 import streamlit as st
 
 import explore
@@ -36,18 +37,89 @@ import overlays
 _PENDING = "_overlay_pending"
 
 
-def _queue_click(event_key: str, table_key: str) -> None:
+def _queue_click(event_key: str, table_key: str, action: str,
+                 column: str) -> None:
     """Remember one transient ButtonColumn click for the following rerun."""
     event = st.session_state.get(event_key)
     if event is not None and event.get("row") is not None:
         st.session_state[_PENDING] = {
             "key": table_key,
             "row": int(event["row"]),
+            "action": action,
+            "column": column,
+            "label": event.get("label"),
         }
 
 
-def _select(df, key, dataframe_kwargs, action_column: str | None = None):
-    """Draw a table and return the row whose action cell was clicked.
+def _club_actions(value):
+    """Turn a club-history cell into one button or a menu of club buttons."""
+    if value is None or (not isinstance(value, (list, tuple, set))
+                         and pd.isna(value)):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    values = [part.strip() for part in text.replace("|", ",").split(",")]
+    values = [part for part in values if part]
+    return values if len(values) > 1 else values[0]
+
+
+def _club_action_column(series):
+    """Keep Arrow types uniform when any row needs a multi-club menu."""
+    values = series.map(_club_actions)
+    if any(isinstance(value, list) for value in values):
+        return values.map(
+            lambda value: value if isinstance(value, list)
+            else ([value] if value else [])
+        )
+    return values
+
+
+def _season_action_column(series):
+    """Render a comma-separated season history as a button menu."""
+    def split(value):
+        if isinstance(value, (list, tuple, set)):
+            return [str(part).strip() for part in value if str(part).strip()]
+        if value is None or pd.isna(value):
+            return []
+        values = [part.strip() for part in str(value).replace("|", ",").split(",")]
+        return [part for part in values if part]
+
+    values = series.map(split)
+    if any(len(value) > 1 for value in values):
+        return values
+    return values.map(lambda value: value[0] if value else "")
+
+
+def _entity_columns(df, *, player=False, season=True, clubs=True) -> dict:
+    """Return visible dataframe columns that represent overlay entities."""
+    actions = {}
+    if player:
+        for column in ("Player", "Name"):
+            if column in df.columns:
+                actions[column] = "player"
+                break
+    if season:
+        for column in (
+            "Season", "Seasons", "Year", "First", "Last", "From", "To",
+            "Debut", "Final",
+        ):
+            if column in df.columns:
+                actions[column] = "season"
+    if clubs:
+        for column in (
+            "Club", "Team", "Clubs", "Teams", "For", "Opponent",
+            "Home", "Away", "Source team", "Current club", "Drafted by",
+        ):
+            if column in df.columns:
+                actions[column] = "club"
+    return actions
+
+
+def _select(df, key, dataframe_kwargs,
+            action_columns: Mapping[str, str] | None = None,
+            add_open: bool = False):
+    """Draw a table and return the entity action that was clicked.
 
     Streamlit dataframe selections persist after a dialog is dismissed. That
     makes clicking the same row again unreliable and means several tables can
@@ -55,46 +127,51 @@ def _select(df, key, dataframe_kwargs, action_column: str | None = None):
     every click fires, including a second click on the same player or season,
     and only the table named by the callback can consume the event.
 
-    When ``action_column`` is supplied, that visible value becomes the button
-    (for example, Player or Season). Otherwise a compact Open column is added
-    for rows such as matches and individual games.
+    ``action_columns`` maps visible columns to ``player``, ``club`` or
+    ``season``. Several cells in one row can therefore open different cards.
+    ``add_open`` adds a compact action for the row itself (a match or game).
     """
     frame = df.copy()
     kwargs = {"hide_index": True, "width": "stretch"}
     kwargs.update(dataframe_kwargs)
 
-    if action_column not in frame.columns:
-        action_column = "_Open"
-        while action_column in frame.columns:
-            action_column = "_" + action_column
-        frame.insert(0, action_column, ":material/open_in_new: Open")
+    actions = dict(action_columns or {})
+    if add_open:
+        open_column = "_Open"
+        while open_column in frame.columns:
+            open_column = "_" + open_column
+        frame.insert(0, open_column, ":material/open_in_new: Open")
+        actions = {open_column: "open", **actions}
         if "column_order" in kwargs:
             kwargs["column_order"] = [
-                action_column, *list(kwargs["column_order"])
+                open_column, *list(kwargs["column_order"])
             ]
-        label = ""
-        width = "small"
-    else:
-        # Button labels must be text. Keep the aligned seasons/player_ids
-        # sequences untouched; only the displayed copy is converted.
-        frame[action_column] = frame[action_column].map(
-            lambda value: "" if value is None else str(value)
-        )
-        label = action_column
-        width = None
 
-    event_key = f"{key}__open"
     column_config = dict(kwargs.pop("column_config", {}) or {})
-    column_config[action_column] = st.column_config.ButtonColumn(
-        label,
-        width=width,
-        pinned=True,
-        alignment="left",
-        type="tertiary",
-        on_click=_queue_click,
-        args=(event_key, key),
-        key=event_key,
-    )
+    for position, (column, action) in enumerate(actions.items()):
+        if column not in frame.columns:
+            continue
+        if action == "club":
+            frame[column] = _club_action_column(frame[column])
+        elif action == "season":
+            frame[column] = _season_action_column(frame[column])
+        else:
+            # Button labels must be text. Keep parallel ids/seasons untouched;
+            # only the displayed copy is converted.
+            frame[column] = frame[column].map(
+                lambda value: "" if value is None else str(value)
+            )
+        event_key = f"{key}__action_{position}"
+        column_config[column] = st.column_config.ButtonColumn(
+            "" if action == "open" else column,
+            width="small" if action == "open" else None,
+            pinned=position == 0,
+            alignment="left",
+            type="tertiary",
+            on_click=_queue_click,
+            args=(event_key, key, action, column),
+            key=event_key,
+        )
     st.dataframe(frame, key=key, column_config=column_config, **kwargs)
 
     pending = st.session_state.get(_PENDING)
@@ -102,7 +179,9 @@ def _select(df, key, dataframe_kwargs, action_column: str | None = None):
         return None
     del st.session_state[_PENDING]
     row = pending.get("row")
-    return row if isinstance(row, int) and 0 <= row < len(frame) else None
+    if not isinstance(row, int) or not 0 <= row < len(frame):
+        return None
+    return pending
 
 
 # --------------------------------------------------------------- player
@@ -111,6 +190,13 @@ def _select(df, key, dataframe_kwargs, action_column: str | None = None):
 def _player_dialog(sport, con, pid, key_prefix):
     explore.render_player_profile(sport, con, pid, key_prefix=key_prefix,
                                   heading_level="###", nested=True)
+
+
+def player_button(label: str, sport, con, pid, key: str,
+                  key_prefix: str | None = None) -> None:
+    """Render a native button that opens one player's card."""
+    if st.button(label, key=key, icon=":material/person:", type="tertiary"):
+        _player_dialog(sport, con, pid, key_prefix or key)
 
 
 def clickable_player_table(df, player_ids: Sequence, sport, con, key: str,
@@ -125,15 +211,25 @@ def clickable_player_table(df, player_ids: Sequence, sport, con, key: str,
     whose name could not be resolved to a player in this database, and
     those rows are still worth showing -- they just have no career to open.
     """
-    action_column = next(
-        (column for column in ("Player", "Name") if column in df.columns),
-        None,
+    event = _select(
+        df, key, dataframe_kwargs,
+        action_columns=_entity_columns(df, player=True),
     )
-    row = _select(df, key, dataframe_kwargs, action_column=action_column)
-    if row is None:
+    if event is None:
+        return
+    row = event["row"]
+    if event["action"] == "club":
+        club = event.get("label")
+        if club:
+            _club_dialog(sport, con, club)
+        return
+    if event["action"] == "season":
+        season = event.get("label")
+        if season is not None and not pd.isna(season):
+            _season_dialog(sport, con, season, None)
         return
     pid = player_ids[row] if row < len(player_ids) else None
-    if pid is None:
+    if pid is None or pd.isna(pid):
         st.info("That row could not be linked to a player in this database, "
                 "so there is no career to show.")
         return
@@ -173,6 +269,7 @@ def _default_match_body(match) -> None:
 
 
 def clickable_match_table(df, matches: Sequence, key: str,
+                          sport=None, con=None,
                           render_body: Callable | None = None,
                           **dataframe_kwargs):
     """Render `df` and open a match dialog from its Open action.
@@ -181,8 +278,24 @@ def clickable_match_table(df, matches: Sequence, key: str,
     convention as `clickable_player_table`. `render_body(match)` draws the
     dialog's contents; the default shows the fields every Match carries.
     """
-    row = _select(df, key, dataframe_kwargs)
-    if row is not None:
+    event = _select(
+        df, key, dataframe_kwargs,
+        action_columns=_entity_columns(df) if sport is not None and con is not None
+        else {},
+        add_open=True,
+    )
+    if event is None:
+        return
+    row = event["row"]
+    if event["action"] == "club":
+        club = event.get("label")
+        if club:
+            _club_dialog(sport, con, club)
+    elif event["action"] == "season":
+        season = event.get("label")
+        if season is not None and not pd.isna(season):
+            _season_dialog(sport, con, season, None)
+    else:
         _match_dialog(matches[row], render_body or _default_match_body)
 
 
@@ -201,8 +314,22 @@ def clickable_game_table(df, sport, con, key: str, stat=None,
     everything the card shows, so the clicked row of the frame *is* the
     record.
     """
-    row = _select(df, key, dataframe_kwargs)
-    if row is not None:
+    event = _select(
+        df, key, dataframe_kwargs,
+        action_columns=_entity_columns(df), add_open=True,
+    )
+    if event is None:
+        return
+    row = event["row"]
+    if event["action"] == "club":
+        club = event.get("label")
+        if club:
+            _club_dialog(sport, con, club)
+    elif event["action"] == "season":
+        season = event.get("label")
+        if season is not None and not pd.isna(season):
+            _season_dialog(sport, con, season, None)
+    else:
         _game_dialog(sport, con, df.iloc[row].to_dict(), stat)
 
 
@@ -223,11 +350,21 @@ def clickable_season_table(df, seasons: Sequence, sport, con, key: str,
     and the overview then shows that club's part in the season alongside
     the champion.
     """
-    row = _select(df, key, dataframe_kwargs, action_column="Season")
-    if row is None:
+    event = _select(
+        df, key, dataframe_kwargs,
+        action_columns=_entity_columns(df, clubs=True),
+    )
+    if event is None:
         return
-    season = seasons[row] if row < len(seasons) else None
-    if season is None:
+    row = event["row"]
+    if event["action"] == "club":
+        club = event.get("label")
+        if club:
+            _club_dialog(sport, con, club)
+        return
+    season = (event.get("label") if event["action"] == "season"
+              else seasons[row] if row < len(seasons) else None)
+    if season is None or pd.isna(season):
         return
     club = clubs[row] if clubs is not None and row < len(clubs) else None
     _season_dialog(sport, con, season, club)
@@ -244,9 +381,11 @@ def clickable_club_table(df, clubs: Sequence, sport, con, key: str,
                          **dataframe_kwargs):
     """Render `df` and open a club overview when its club name is clicked."""
     action_column = df.columns[0] if len(df.columns) else None
-    row = _select(df, key, dataframe_kwargs, action_column=action_column)
-    if row is None:
+    actions = {action_column: "club"} if action_column is not None else {}
+    event = _select(df, key, dataframe_kwargs, action_columns=actions)
+    if event is None:
         return
+    row = event["row"]
     club = clubs[row] if row < len(clubs) else None
     if club:
         _club_dialog(sport, con, club)

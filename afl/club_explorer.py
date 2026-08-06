@@ -265,7 +265,7 @@ def _past_games_tab(con, sport, club_id: str, club_name: str,
     } for m in matches])
     st.caption("Select a row to see that match's full detail.")
     components.clickable_match_table(
-        table, matches, key=f"ce_pg_{club_id}",
+        table, matches, key=f"ce_pg_{club_id}", sport=sport, con=con,
         column_config={
             "Crowd": st.column_config.NumberColumn(format="%d"),
             "Margin": st.column_config.NumberColumn(format="%+d"),

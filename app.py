@@ -1072,6 +1072,10 @@ if st.session_state.cell:
             f"<div class='card-value'>{best_name}</div>"
             f"<div class='card-sub'>{best[1]}–{best[2]} · "
             f"{best[3]:,} {V.games}</div></div>", unsafe_allow_html=True)
+        with card1:
+            components.player_button(
+                f"Open {best_name}", SPORT, con, pids[0],
+                key=SPORT.k("best_answer", r, c), key_prefix="gridbest")
         card2.markdown(
             f"<div class='card'><div class='card-label'>Rarity for this "
             f"square</div><div class='card-value'>"

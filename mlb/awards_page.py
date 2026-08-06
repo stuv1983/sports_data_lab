@@ -129,7 +129,8 @@ def _honour_roll(con: sqlite3.Connection, award: str) -> pd.DataFrame:
 def _multiple_winners(con: sqlite3.Connection, award: str) -> pd.DataFrame:
     return pd.read_sql_query(
         """SELECT p.player AS Player, COUNT(*) AS Wins,
-                  GROUP_CONCAT(a.season) AS Seasons
+                  GROUP_CONCAT(a.season) AS Seasons,
+                  a.player_id AS player_id
            FROM awards a JOIN players p ON p.player_id = a.player_id
            WHERE a.award = ?
            GROUP BY a.player_id HAVING COUNT(*) > 1
@@ -260,7 +261,10 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
     repeats = _multiple_winners(con, award)
     if not repeats.empty:
         with st.expander(f"Multiple winners ({len(repeats):,})"):
-            st.dataframe(repeats, hide_index=True, width="stretch")
+            components.clickable_player_table(
+                repeats.drop(columns=["player_id"]),
+                repeats["player_id"].tolist(), sport, con,
+                key=sport.k("mlb_aw_repeats"))
 
     if "hall_of_fame" in _tables(con):
         st.markdown("### Hall of Fame")

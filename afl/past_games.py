@@ -244,7 +244,8 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
             f"{V.clubs}, in a fixed order — not a home-and-away split.")
     st.caption(f"Select a row to see that {V.game}'s full detail.")
     components.clickable_match_table(
-        table, matches, key="pg_matches", render_body=_match_dialog_body,
+        table, matches, key="pg_matches", sport=sport, con=con,
+        render_body=_match_dialog_body,
         column_config={
             "Crowd": st.column_config.NumberColumn(format="%d"),
             "Margin": st.column_config.NumberColumn(
