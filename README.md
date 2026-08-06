@@ -642,6 +642,54 @@ attendance onto `matches` where both clubs agree.
 through the CLI and SQL, but no application page reads it. Nothing depends on
 it, so it is safe to skip.
 
+### Wikipedia reference scrape (NBA, NFL, MLB)
+
+`wiki_sports_scraper.py` collects Wikipedia reference data for the three
+American leagues: a catalogue of every current franchise, plus whatever the
+team, league and Hall of Fame pages say under headings such as "Retired
+numbers", "Franchise leaders" and "Hall of Fame". `load_wiki_reference.py`
+validates that output and stages it into each sport's own database:
+
+```bash
+python -m load_wiki_reference --check          # validate, write nothing
+python -m load_wiki_reference                  # all three sports
+python -m load_wiki_reference --profile mlb    # what is inside data_json
+python tests/test_wiki_reference.py
+```
+
+The default source is the scraper's own output root, `C:\data_lab\wiki`;
+pass `--dir` for another. Validation runs first and blocks the import on a
+short team list, a failed team page, invalid `data_json` or a missing file
+— the scraper exits cleanly whether or not its own log recorded problems,
+so a completed run is not by itself a loadable one.
+
+The records land in `wiki_reference_stage`, not in normalised tables. Their
+structure lives in `data_json`, whose keys come from whatever columns the
+Wikipedia table happened to have: this run produced 73 distinct key sets
+across the NBA's table rows, 91 across the NFL's and 26 across the MLB's,
+including positional keys where the page gave no usable header.
+`--profile` reports those key sets, which is the inventory a later
+normalisation pass would be designed from. `wiki_team_stage` holds the
+franchise catalogue with each raw cell kept beside its parsed value, and
+`wiki_team_map` records how each Wikipedia team name resolved to a
+`clubs` row — four MLB franchises are `alias_match` rather than `matched`,
+because Wikipedia names them as they are named now and the database was
+built from sources that named them as they used to be.
+
+Re-importing is idempotent. Each record carries a content hash that
+excludes its position on the page, so a table an editor moved is recognised
+as the same record rather than staged again.
+
+The loader also fills `club_wikipedia_fields` — the Team Explorer's field
+table — from the catalogue, but **only for keys a club has no value for
+already**. The existing per-sport loaders read curated sources, and a
+Wikipedia infobox cell is not a reason to overwrite one. Pass
+`--no-fields` to stage the reference data and leave that table alone.
+
+**This layer is reference material.** It does not carry games, scores,
+schedules, player careers, rosters, drafts or stable external identifiers,
+and nothing in it is written into `matches`, `players` or `player_seasons`.
+
 ### Family-draft relationships
 
 Family-draft data is loaded and linked separately:
@@ -861,6 +909,9 @@ Selected files:
 | `afl/derive_matches.py` | Canonical match table and stable match IDs |
 | `repair_database.py` | Non-download database repair workflow |
 | `data_paths.py` | Single source of truth for every database and data path |
+| `wiki_sports_scraper.py` | NBA/NFL/MLB Wikipedia reference scraper |
+| `wiki_reference.py` | Staging schema, validation and team mapping for that scrape |
+| `load_wiki_reference.py` | Validate and import the scrape into each sport's database |
 | `afl/awards.py` | Award and recruitment constraints |
 | `afl/captains.py` | Club captaincy constraints |
 | `afl/rising_star.py` | Rising Star nomination constraints |

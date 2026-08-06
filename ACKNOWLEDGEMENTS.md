@@ -51,6 +51,20 @@ other infobox metadata. Retrieved through the MediaWiki API with source page,
 revision ID, timestamp and raw snapshot retained locally. Wikipedia content is
 available under CC BY-SA; attribution metadata is preserved.
 
+**Wikipedia NBA, NFL and MLB league, team and Hall of Fame pages** —
+<https://en.wikipedia.org>
+Current-franchise catalogues for the three American leagues, taken from the
+`National Basketball Association`, `National Football League` and `Major
+League Baseball` pages, plus championships, retired numbers, franchise
+leaders, honours and Hall of Fame membership from each team's own page and
+from the three leagues' Hall of Fame list pages. Retrieved through the
+MediaWiki API. Every staged record keeps its source page title, source URL,
+revision ID and retrieval timestamp, and the raw API responses are archived
+beside the output. Wikipedia content is available under CC BY-SA, subject to
+the attribution terms on each page; attribution and revision metadata are
+preserved on every row. Raw responses and the derived database remain local
+and are not redistributed.
+
 **AFL Tables club summaries** — <https://afltables.com>
 Current-club player totals, all-time player lists and season/game record
 leaderboards. Source HTML and derived database tables remain local and are not
