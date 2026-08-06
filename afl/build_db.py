@@ -503,6 +503,12 @@ def refresh_layers(db_path, verbose=True):
 
     step("Rising Star nominations", rising_star)
 
+    def brownlow():
+        from . import load_brownlow
+        load_brownlow.refresh_default(db_path=str(db_path), verbose=verbose)
+
+    step("Brownlow voting results", brownlow)
+
     def family_draft():
         from . import load_family_draft
         load_family_draft.refresh_default(db_path=str(db_path), verbose=verbose)

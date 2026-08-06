@@ -234,7 +234,7 @@ UI_HANDLED_ARGS = {"club", "venue", "state", "player_id", "kind", "source", "awa
                    "times", "avg", "player", "stat", "stat_a", "stat_b",
                    "min_games", "derby", "event", "rivalry",
                    "award_axis", "position", "average",
-                   "min_plate_appearances", "war"}
+                   "min_plate_appearances", "war", "place", "votes"}
 UI_NUMERIC_ARGS = {"x", "y", "x_a", "x_b", "games", "goals", "clubs", "from",
                    "to", "season", "times", "points", "people", "round"}
 

@@ -113,6 +113,22 @@ def _honours(con: sqlite3.Connection, player_id: int) -> list[tuple[str, str]]:
             years = str(lo) if lo == hi else f"{lo}–{hi}"
             out.append(("Club captain", f"{club} {years} ({n} seasons)"))
 
+    if _table_exists(con, "brownlow_results"):
+        row = con.execute(
+            """SELECT SUM(votes), MIN(eligible_rank),
+                      SUM(eligible_rank <= 3), SUM(eligible_rank <= 10),
+                      COUNT(*)
+                 FROM brownlow_results
+                WHERE player_id=? AND match_status IN ('unique','resolved')""",
+            (player_id,)).fetchone()
+        if row and row[4]:
+            detail = f"{row[0]} votes; best finish {row[1]}"
+            if row[2]:
+                detail += f"; {row[2]}Ã— top 3"
+            elif row[3]:
+                detail += f"; {row[3]}Ã— top 10"
+            out.append(("Brownlow voting", detail))
+
     # Two shapes exist. The AFL table is a scraped inductee list that had to
     # be name-matched onto players, so it carries a match_status and a Legend
     # flag; the MLB one is Lahman's ballot history keyed on player_id, where

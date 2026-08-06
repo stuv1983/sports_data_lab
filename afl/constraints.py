@@ -267,6 +267,7 @@ def require_schema(con):
     # before the separate captaincy dataset has been imported.
     ensure_captain_table(con)
     ensure_rising_star_table(con)
+    ensure_brownlow_table(con)
     ensure_family_relationship_tables(con)
 
 
@@ -274,6 +275,7 @@ def solve(con, constraints, limit=25, order="obscurity"):
     """Intersect constraints and return ranked players."""
     ensure_captain_table(con)
     ensure_rising_star_table(con)
+    ensure_brownlow_table(con)
     ensure_family_relationship_tables(con)
     return core.solve(con, constraints, SCHEMA, limit=limit, order=order)
 
@@ -282,6 +284,7 @@ def count(con, constraints):
     """How many players satisfy every constraint."""
     ensure_captain_table(con)
     ensure_rising_star_table(con)
+    ensure_brownlow_table(con)
     ensure_family_relationship_tables(con)
     return core.count(con, constraints, SCHEMA)
 
@@ -290,6 +293,7 @@ def square(con, constraints, order="obscurity"):
     """Eligible count plus the single best answer, for a prefilled board."""
     ensure_captain_table(con)
     ensure_rising_star_table(con)
+    ensure_brownlow_table(con)
     ensure_family_relationship_tables(con)
     return core.square(con, constraints, SCHEMA, order=order)
 
@@ -337,6 +341,19 @@ except ImportError:
 
 BUILDERS.update(AWARD_BUILDERS)
 AWARD_BUILDER_NAMES = set(AWARD_BUILDERS)
+
+# Optional full Brownlow voting results from AFL Tables. This is deliberately
+# separate from Draftguru's winners-only award layer: a top-five finish is a
+# season result, not another kind of award.
+from .brownlow import (  # noqa: E402
+    BROWNLOW_BUILDERS,
+    brownlow_available,
+    brownlow_count,
+    ensure_brownlow_table,
+)
+
+BUILDERS.update(BROWNLOW_BUILDERS)
+BROWNLOW_BUILDER_NAMES = set(BROWNLOW_BUILDERS)
 
 # Optional FootyWire Rising Star nomination layer.  The network fetcher is
 # permission-gated; afl/load_rising_star.py links local CSV rows to players.
@@ -416,5 +433,7 @@ MATCH_BUILDER_NAMES = set(MATCH_BUILDERS)
 #: Builders gated on a source layer, as {builder: probe}. registry.Sport
 #: .layers() reads this generically, so the marquee squares disappear on a
 #: database the scraper has not tagged instead of returning nothing.
-LAYER_BUILDERS = {name: "marquee_events_available"
-                  for name in MARQUEE_BUILDER_NAMES}
+LAYER_BUILDERS = {
+    **{name: "marquee_events_available" for name in MARQUEE_BUILDER_NAMES},
+    **{name: "brownlow_available" for name in BROWNLOW_BUILDER_NAMES},
+}

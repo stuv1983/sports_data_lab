@@ -377,6 +377,14 @@ def axis_widget(key, default_type, defaults=None):
             args.append(st.number_input(label, min_value=1,
                                         value=int(defaults.get("times", 1)),
                                         step=1, key=wk))
+        elif a == "place":
+            args.append(st.number_input(
+                "Finishing position", min_value=1,
+                value=int(defaults.get("place", 5)), step=1, key=wk))
+        elif a == "votes":
+            args.append(st.number_input(
+                "Brownlow votes", min_value=1,
+                value=int(defaults.get("votes", 20)), step=1, key=wk))
         elif a == "avg":
             # The same argument name means several different things
             # depending on the builder: a per-game average across finals,
@@ -559,6 +567,14 @@ def axis_widget(key, default_type, defaults=None):
         # instead of naming the square, which is the one thing the header
         # exists to do.
         label = _STAT_SCOPE_LABELS[kind](args, V)
+    elif kind == "Top X Brownlow finish":
+        label = f"top-{args[0]} Brownlow finish"
+    elif kind == "Exact Brownlow finish":
+        label = f"finished {args[0]} in Brownlow"
+    elif kind == "Top X Brownlow finish X+ times":
+        label = f"top-{args[0]} Brownlow\n{args[1]}+ times"
+    elif kind == "X+ Brownlow votes in a season":
+        label = f"{args[0]}+ Brownlow votes\nin a season"
 
     if kind == "Teammate of…" and (not args or args[0] is None):
         return label, None

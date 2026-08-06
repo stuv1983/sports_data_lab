@@ -62,17 +62,58 @@ def awards_data_available(con: sqlite3.Connection) -> bool:
 
 def _catalogue(con: sqlite3.Connection) -> pd.DataFrame:
     """Every award in the table, with its coverage."""
-    return pd.read_sql_query(
+    catalogue = pd.read_sql_query(
         """SELECT award_slug, award_name, award_category,
                   COUNT(*) AS winners,
                   MIN(season) AS season_from, MAX(season) AS season_to,
                   COUNT(DISTINCT season) AS seasons
            FROM awards GROUP BY award_slug
            ORDER BY award_category, award_name""", con)
+    if "brownlow_results" in _tables(con):
+        summary = con.execute(
+            """SELECT COUNT(*), MIN(season), MAX(season), COUNT(DISTINCT season)
+                 FROM brownlow_results
+                WHERE winner=1 AND match_status IN ('unique','resolved')"""
+        ).fetchone()
+        if summary and summary[0]:
+            mask = catalogue["award_slug"] == "brownlow-medal"
+            if mask.any():
+                catalogue.loc[mask, [
+                    "winners", "season_from", "season_to", "seasons"
+                ]] = summary
+            else:
+                catalogue = pd.concat([catalogue, pd.DataFrame([{
+                    "award_slug": "brownlow-medal",
+                    "award_name": "Brownlow Medal",
+                    "award_category": "award",
+                    "winners": summary[0], "season_from": summary[1],
+                    "season_to": summary[2], "seasons": summary[3],
+                }])], ignore_index=True)
+    return catalogue
 
 
 def _honour_roll(con: sqlite3.Connection, slug: str) -> pd.DataFrame:
     """One row per winner per season, newest first."""
+    if slug == "brownlow-medal" and "brownlow_results" in _tables(con):
+        return pd.read_sql_query(
+            """SELECT b.season AS Season, b.player AS Player,
+                      COALESCE((
+                          SELECT GROUP_CONCAT(club_hist, ' / ') FROM (
+                              SELECT DISTINCT g.club_hist
+                                FROM games g
+                               WHERE g.player_id=b.player_id
+                                 AND g.season=b.season
+                               ORDER BY g.club_hist
+                          )
+                      ), b.clubs) AS Club,
+                      b.votes AS Votes, b.games AS Games,
+                      NULL AS Goals,
+                      CASE WHEN b.ineligible=1 THEN 'Ineligible' END AS Note,
+                      b.player_id AS player_id
+                 FROM brownlow_results b
+                WHERE b.winner=1
+                  AND b.match_status IN ('unique','resolved')
+                ORDER BY b.season DESC, b.player""", con)
     return pd.read_sql_query(
         """SELECT a.season AS Season, a.player AS Player, a.club AS Club,
                   a.votes AS Votes, a.season_games AS "Games",
@@ -96,6 +137,10 @@ def _clubs_for(con: sqlite3.Connection, slug: str) -> list[str]:
     Melbourne'), and offering the current eighteen would filter half the
     honour roll to nothing.
     """
+    if slug == "brownlow-medal" and "brownlow_results" in _tables(con):
+        roll = _honour_roll(con, slug)
+        return sorted({str(club).strip() for club in roll["Club"].dropna()
+                       if str(club).strip()})
     return [row[0] for row in con.execute(
         "SELECT DISTINCT club FROM awards "
         "WHERE award_slug = ? AND club IS NOT NULL AND TRIM(club) != '' "
@@ -118,6 +163,15 @@ def _filter_roll(roll: pd.DataFrame, club: str, seasons, name: str
 
 
 def _multiple_winners(con: sqlite3.Connection, slug: str) -> pd.DataFrame:
+    if slug == "brownlow-medal" and "brownlow_results" in _tables(con):
+        return pd.read_sql_query(
+            """SELECT player AS Player, COUNT(*) AS Wins,
+                      GROUP_CONCAT(season) AS Seasons,
+                      player_id
+                 FROM brownlow_results
+                WHERE winner=1 AND match_status IN ('unique','resolved')
+                GROUP BY player_id, player HAVING COUNT(*) > 1
+                ORDER BY COUNT(*) DESC, player""", con)
     return pd.read_sql_query(
         """SELECT a.player AS Player, COUNT(*) AS Wins,
                   GROUP_CONCAT(a.season) AS Seasons,
@@ -178,16 +232,21 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
     st.caption(
         "Honour rolls for AFL/VFL, state-league and club awards, plus "
         "All-Australian selections and Hall of Fame inductees.")
+    have = _tables(con)
     if not awards_data_available(con):
-        st.info("Award data is not loaded. Run `python -m afl.load_draftguru`, "
-                "then `python -m afl.link_people`.")
+        if "brownlow_results" in have:
+            _brownlow_voting(sport, con)
+        else:
+            st.info("Award data is not loaded. Run `python -m afl.load_draftguru`, "
+                    "then `python -m afl.link_people`.")
         return
 
-    have = _tables(con)
     catalogue = _catalogue(con)
     by_slug = {row.award_slug: row for row in catalogue.itertuples()}
 
     tab_names = ["Honour rolls", "All-Australian", "Club best and fairest"]
+    if "brownlow_results" in have:
+        tab_names.insert(1, "Brownlow voting")
     if "hall_of_fame" in have:
         tab_names.append("Hall of Fame")
     if "team_selections" in have:
@@ -221,12 +280,21 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
             c3.metric("Distinct seasons", f"{info.seasons}")
 
             gap = info.season_to - info.season_from + 1 - info.seasons
-            if gap > 0:
+            if gap > 0 and slug == "brownlow-medal":
+                st.caption(
+                    f"{gap} season(s) in that range have no winner. The "
+                    "Brownlow Medal was not awarded from 1942 to 1945.")
+            elif gap > 0:
                 st.caption(
                     f"{gap} season(s) in that range have no recorded winner. "
                     "The source table starts where it starts — an absent "
                     "season is missing from the source, not a year the "
                     "award went unawarded.")
+            if slug == "brownlow-medal":
+                st.caption(
+                    "Voting format: one best-on-ground vote per match from "
+                    "1924 to 1930; 3-2-1 from 1931, except 1976 and 1977 when "
+                    "two field umpires voted independently.")
 
             roll = _honour_roll(con, slug)
 
@@ -281,6 +349,11 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
                         repeats.drop(columns=["player_id"]),
                         repeats["player_id"].tolist(), sport, con,
                         key=f"aw_repeat_{slug}")
+
+    # --------------------------------------------------- Brownlow voting
+    if "Brownlow voting" in tab:
+        with tab["Brownlow voting"]:
+            _brownlow_voting(sport, con)
 
     # --------------------------------------------------- all-australian
     with tab["All-Australian"]:
@@ -377,6 +450,83 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
         components.clickable_season_table(
             catalogue_table, [None] * len(catalogue_table), sport, con,
             key="aw_catalogue")
+
+
+def _brownlow_voting(sport, con: sqlite3.Connection) -> None:
+    """Full season voting, including non-winners and ineligible players."""
+    seasons = [row[0] for row in con.execute(
+        "SELECT DISTINCT season FROM brownlow_results "
+        "WHERE match_status IN ('unique','resolved') ORDER BY season DESC")]
+    if not seasons:
+        st.info("No linked Brownlow voting results are loaded.")
+        return
+
+    st.caption(
+        "Complete AFL Tables voting results. Finish is the official eligible "
+        "rank; suspended players retain their vote rank but have no finish.")
+    f1, f2, f3 = st.columns([1, 1, 1.4])
+    season = f1.selectbox("Season", seasons, key="bm_season")
+    top = f2.number_input("Show top", min_value=3, max_value=300,
+                          value=30, step=5, key="bm_top")
+    name = f3.text_input("Player contains", placeholder="surnameâ€¦",
+                         key="bm_name")
+
+    frame = pd.read_sql_query(
+        """SELECT player AS Player, clubs AS Club, votes AS Votes,
+                  vote_rank AS "Vote rank", eligible_rank AS Finish,
+                  CASE WHEN winner=1 THEN 'Winner'
+                       WHEN ineligible=1 THEN 'Ineligible' ELSE '' END AS Status,
+                  games AS Games, three_vote_games AS "3 votes",
+                  two_vote_games AS "2 votes", one_vote_games AS "1 vote",
+                  player_url AS Source, player_id
+             FROM brownlow_results
+            WHERE season=? AND match_status IN ('unique','resolved')
+            ORDER BY votes DESC, player""",
+        con, params=(season,))
+    full = frame
+    if name.strip():
+        frame = frame[frame["Player"].str.contains(
+            name.strip(), case=False, na=False)]
+    else:
+        frame = frame.head(int(top))
+
+    winners = full[full["Status"] == "Winner"]["Player"].tolist()
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Winner" if len(winners) == 1 else "Winners",
+              ", ".join(winners) or "â€”")
+    m2.metric("Players polling votes", f"{len(full):,}")
+    m3.metric("Winning votes", int(full.loc[
+        full["Status"] == "Winner", "Votes"].max()) if winners else "â€”")
+
+    if frame.empty:
+        st.info("No players match that search.")
+    else:
+        player_ids = frame["player_id"].tolist()
+        table = _drop_empty(frame.drop(columns=["player_id"]))
+        st.caption("Select a row to see that player's full career.")
+        components.clickable_player_table(
+            table, player_ids, sport, con, key=f"bm_results_{season}",
+            column_config={"Source": st.column_config.LinkColumn("Source")})
+        st.download_button(
+            "Download season CSV", table.to_csv(index=False),
+            file_name=f"brownlow-{season}.csv", mime="text/csv",
+            key=f"bm_download_{season}")
+
+    with st.expander("Career voting leaders"):
+        leaders = pd.read_sql_query(
+            """SELECT player AS Player, SUM(votes) AS Votes,
+                      COUNT(*) AS "Seasons polling",
+                      MIN(eligible_rank) AS "Best finish",
+                      SUM(eligible_rank <= 3) AS "Top 3",
+                      SUM(eligible_rank <= 10) AS "Top 10",
+                      MAX(player_id) AS player_id
+                 FROM brownlow_results
+                WHERE match_status IN ('unique','resolved')
+                GROUP BY player_id, player
+                ORDER BY SUM(votes) DESC, player LIMIT 100""", con)
+        components.clickable_player_table(
+            leaders.drop(columns=["player_id"]), leaders["player_id"].tolist(),
+            sport, con, key="bm_career_leaders")
 
 
 def _hall_of_fame(sport, con: sqlite3.Connection) -> None:

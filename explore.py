@@ -487,6 +487,32 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                          f"<div class='count-label'>{lab}</div>",
                          unsafe_allow_html=True)
 
+    # Brownlow voting is an optional AFL-only enrichment. Keep it as its own
+    # compact season record rather than repeating one season total on every
+    # club row when a player changed clubs mid-year.
+    has_brownlow = con.execute(
+        "SELECT 1 FROM main.sqlite_master "
+        "WHERE type='table' AND name='brownlow_results'"
+    ).fetchone()
+    if has_brownlow:
+        brownlow = _read_frame(
+            """SELECT season AS Season, votes AS Votes,
+                      eligible_rank AS Finish, vote_rank AS "Vote rank",
+                      clubs AS Club,
+                      CASE WHEN winner=1 THEN 'Winner'
+                           WHEN ineligible=1 THEN 'Ineligible' ELSE '' END AS Status
+                 FROM brownlow_results
+                WHERE player_id=? AND match_status IN ('unique','resolved')
+                ORDER BY season""",
+            (pid,), revision, con)
+        if not brownlow.empty:
+            st.markdown("### Brownlow record")
+            st.caption("Seasons in which this player polled at least one vote.")
+            import components
+            components.clickable_season_table(
+                brownlow, brownlow["Season"].tolist(), sport, con,
+                key=sport.k(key_prefix, "brownlow", pid), nested=nested)
+
     st.markdown(f"### Biggest {V.games}")
     metric = st.selectbox("Ranked by", list(sc.stats),
                           format_func=labels.title,

@@ -129,6 +129,16 @@ def rising_star_sources(sport_key: str = "afl") -> list[Path]:
     return sorted((base / "csv").glob("rising_star_nominees_*.csv"))
 
 
+def brownlow_sources(sport_key: str = "afl") -> list[Path]:
+    """Yearly AFL Tables Brownlow result CSVs, excluding summary exports."""
+    base = ROOT / "data" / sport_key.strip().lower() / "bm"
+    return sorted(
+        (path for path in base.glob("[0-9][0-9][0-9][0-9].csv")
+         if path.stem.isdigit()),
+        key=lambda path: int(path.stem),
+    )
+
+
 def family_draft_sources(sport_key: str = "afl") -> list[Path]:
     """Canonical Wikipedia family-draft CSV, with legacy-name fallback."""
     base = raw_dir(sport_key)

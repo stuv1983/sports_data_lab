@@ -582,7 +582,8 @@ def test_widget_parameters():
     # than merely numeric keeps the assertion strict: app.py must still
     # reference it by name for this check to pass.
     handled = {"club", "player", "player_id", "stat", "stat_a", "stat_b",
-               "venue", "kind", "source", "avg", "award", "times", "season"}
+               "venue", "kind", "source", "avg", "award", "times", "season",
+               "place", "votes"}
     numeric = {"games", "goals", "n", "n_a", "n_b", "clubs", "from", "to"}
     unknown = set()
     for kind, (fn, argnames) in C.BUILDERS.items():

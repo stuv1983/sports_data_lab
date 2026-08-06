@@ -12,6 +12,7 @@ square is reported rather than silently answered wrong.
 import re
 from . import constraints as C
 from . import awards as A
+from . import brownlow as B
 
 # Gridley shows clubs as logos, not text. Column identity usually arrives
 # as a club name or slug from the API; these are the aliases we accept.
@@ -203,6 +204,42 @@ def parse(text):
         if n and n > 1:
             return A.all_australian(n), f"{n}x All-Australian"
         return A.all_australian(1), "All-Australian"
+
+    # Full Brownlow voting results. These precede the winners-only award rule
+    # so "top 5 Brownlow finish" cannot collapse to "won a Brownlow".
+    m = re.search(r"(\d+)\s*(?:x|times?)\b.{0,16}\btop\s*(\d+)"
+                  r".{0,20}\bbrownlow", t)
+    if m:
+        times, place = int(m.group(1)), int(m.group(2))
+        return (B.brownlow_top_finish_times(place, times),
+                f"top-{place} Brownlow finish {times}+ times")
+
+    m = re.search(r"(?:top\s*(\d+).{0,20}\bbrownlow|"
+                  r"\bbrownlow.{0,20}\btop\s*(\d+))", t)
+    if m:
+        place = int(m.group(1) or m.group(2))
+        return B.brownlow_top_finish(place), f"top-{place} Brownlow finish"
+
+    if re.search(r"\bbrownlow\b.{0,12}\bpodium\b|\bpodium\b.{0,12}\bbrownlow", t):
+        return B.brownlow_top_finish(3), "top-3 Brownlow finish"
+
+    if re.search(r"\bbrownlow\b.{0,12}\brunner[- ]?up\b|"
+                 r"\brunner[- ]?up\b.{0,12}\bbrownlow", t):
+        return B.brownlow_exact_finish(2), "Brownlow runner-up"
+
+    m = re.search(r"(?:finish(?:ed)?\s*|finish\s+of\s+)(\d+)"
+                  r"(?:st|nd|rd|th)?\s*(?:in|for)?\s*(?:the\s+)?brownlow", t)
+    if not m:
+        m = re.search(r"brownlow\s+finish\s*(?:of\s+)?(\d+)"
+                      r"(?:st|nd|rd|th)?", t)
+    if m:
+        place = int(m.group(1))
+        return B.brownlow_exact_finish(place), f"finished {place} in the Brownlow"
+
+    m = re.search(r"(\d+)\+?\s*brownlow votes?.{0,16}\b(?:a|one) season\b", t)
+    if m:
+        votes = int(m.group(1))
+        return B.brownlow_votes_in_season(votes), f"{votes}+ brownlow votes in a season"
 
     if re.search(r"brownlow (medal(?:list|ist)?|winner)", t):
         return A.brownlow_medallist(), "Brownlow Medallist"
