@@ -6,19 +6,20 @@ that pattern lifted out so Past Games, Advanced Search and Stats Explorer
 can offer the same thing without a fourth copy of the same twelve lines,
 and so a future overlay kind only has to be added once.
 
-There are four kinds now, one per thing a row can be: a player, a match, a
-season (optionally a club's season) and a club. A table opens the overlay
+There are five kinds now, one per thing a row can be: a player, a match, an
+individual game, a season (optionally a club's season) and a club. A table
+opens the overlay
 for whatever its rows *are*: player, season and club names are action cells,
 while matches and individual games have an Open action. A row naming both a
 player and a season makes its subject clickable, so an award roll opens the
 player while a season record opens the season.
 
-One dialog per script run
--------------------------
-Streamlit allows exactly one dialog to open per rerun, so an overlay body
-must never itself contain a clickable table. Renderers that appear both on
-a page and inside a dialog take a `nested` flag and fall back to a plain
-table when it is set -- see explore.render_player_profile.
+One navigable dialog
+--------------------
+Streamlit allows exactly one dialog to open per rerun. Every card therefore
+uses the same dialog and pushes the next player, club, season, match or game
+onto a session-local history stack. Tables inside a card remain clickable;
+their actions replace the dialog body, and Back restores the previous card.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ import overlays
 #: A ButtonColumn callback runs before Streamlit reruns the script. It leaves
 #: the clicked table and row here for that table to consume during the rerun.
 _PENDING = "_overlay_pending"
+_STACK = "_overlay_stack"
 
 
 def _queue_click(event_key: str, table_key: str, action: str,
@@ -186,21 +188,121 @@ def _select(df, key, dataframe_kwargs,
 
 # --------------------------------------------------------------- player
 
-@st.dialog("Player", width="large")
-def _player_dialog(sport, con, pid, key_prefix):
-    explore.render_player_profile(sport, con, pid, key_prefix=key_prefix,
-                                  heading_level="###", nested=True)
+def _clear_overlay() -> None:
+    st.session_state.pop(_STACK, None)
+
+
+def _back_overlay() -> None:
+    stack = st.session_state.get(_STACK, [])
+    if len(stack) > 1:
+        stack.pop()
+
+
+def _push_card(card: dict) -> None:
+    stack = st.session_state.setdefault(_STACK, [])
+    if not stack or stack[-1] != card:
+        stack.append(card)
+        if len(stack) > 30:
+            del stack[:-30]
+
+
+def _card_label(card: dict) -> str:
+    return str(card.get("label") or card.get("kind", "Details")).strip()
+
+
+def _open_card(card: dict, sport, con, *, nested: bool) -> None:
+    _push_card(card)
+    if nested:
+        st.rerun(scope="fragment")
+    else:
+        _details_dialog(sport, con)
+
+
+@st.dialog("Details", width="large", on_dismiss=_clear_overlay)
+def _details_dialog(sport, con):
+    """Render the current card and keep a back-stack inside one dialog."""
+    stack = st.session_state.get(_STACK, [])
+    if not stack:
+        return
+    current = stack[-1]
+
+    with st.container(horizontal=True, vertical_alignment="center"):
+        if len(stack) > 1:
+            st.button(
+                "Back", icon=":material/arrow_back:", key="overlay_back",
+                on_click=_back_overlay,
+            )
+        st.caption("  /  ".join(_card_label(card) for card in stack[-4:]))
+
+    kind = current["kind"]
+    if kind == "player":
+        explore.render_player_profile(
+            sport, con, current["pid"],
+            key_prefix=current.get("key_prefix", "overlay"),
+            heading_level="###", nested=True,
+        )
+    elif kind == "club":
+        overlays.club_overview(
+            sport, con, current["club"], nested=True,
+        )
+    elif kind == "season":
+        overlays.season_overview(
+            sport, con, current["season"], club=current.get("club"),
+            nested=True,
+        )
+    elif kind == "game":
+        overlays.game_card(
+            sport, con, current["record"], stat=current.get("stat"),
+            nested=True,
+        )
+    elif kind == "match":
+        render_body = current.get("render_body") or _default_match_body
+        match = current["match"]
+        render_body(match)
+        _match_links(sport, con, match)
 
 
 def player_button(label: str, sport, con, pid, key: str,
-                  key_prefix: str | None = None) -> None:
+                  key_prefix: str | None = None, nested: bool = False) -> None:
     """Render a native button that opens one player's card."""
     if st.button(label, key=key, icon=":material/person:", type="tertiary"):
-        _player_dialog(sport, con, pid, key_prefix or key)
+        _open_card({"kind": "player", "pid": pid, "label": label,
+                    "key_prefix": key_prefix or key},
+                   sport, con, nested=nested)
+
+
+def card_links(sport, con, *, key_prefix: str, player_id=None,
+               player=None, season=None, clubs: Sequence = ()) -> None:
+    """Compact in-card links that navigate within the active dialog."""
+    with st.container(horizontal=True):
+        if player_id is not None and not pd.isna(player_id):
+            label = str(player or "Player")
+            if st.button(label, icon=":material/person:",
+                         key=f"{key_prefix}_player", type="tertiary"):
+                _open_card({"kind": "player", "pid": player_id,
+                            "label": label,
+                            "key_prefix": f"{key_prefix}_player_card"},
+                           sport, con, nested=True)
+        if season is not None and not pd.isna(season):
+            if st.button(str(season), icon=":material/calendar_month:",
+                         key=f"{key_prefix}_season", type="tertiary"):
+                _open_card({"kind": "season", "season": season,
+                            "label": str(season)}, sport, con, nested=True)
+        seen = set()
+        for position, club in enumerate(clubs):
+            if not club or str(club) in seen:
+                continue
+            seen.add(str(club))
+            label = str(club).replace("_", " ").title()
+            if st.button(label, icon=":material/shield:",
+                         key=f"{key_prefix}_club_{position}", type="tertiary"):
+                _open_card({"kind": "club", "club": club, "label": label},
+                           sport, con, nested=True)
 
 
 def clickable_player_table(df, player_ids: Sequence, sport, con, key: str,
-                           key_prefix: str | None = None, **dataframe_kwargs):
+                           key_prefix: str | None = None, nested: bool = False,
+                           **dataframe_kwargs):
     """Render `df` and open a player dialog when its player/name is clicked.
 
     `player_ids` must align with `df`'s rows position-for-position -- it is
@@ -221,27 +323,27 @@ def clickable_player_table(df, player_ids: Sequence, sport, con, key: str,
     if event["action"] == "club":
         club = event.get("label")
         if club:
-            _club_dialog(sport, con, club)
+            _open_card({"kind": "club", "club": club, "label": club},
+                       sport, con, nested=nested)
         return
     if event["action"] == "season":
         season = event.get("label")
         if season is not None and not pd.isna(season):
-            _season_dialog(sport, con, season, None)
+            _open_card({"kind": "season", "season": season,
+                        "label": str(season)}, sport, con, nested=nested)
         return
     pid = player_ids[row] if row < len(player_ids) else None
     if pid is None or pd.isna(pid):
         st.info("That row could not be linked to a player in this database, "
                 "so there is no career to show.")
         return
-    _player_dialog(sport, con, pid, key_prefix or key)
+    label = str(df.iloc[row].get(event["column"], "Player"))
+    _open_card({"kind": "player", "pid": pid, "label": label,
+                "key_prefix": key_prefix or key},
+               sport, con, nested=nested)
 
 
 # ---------------------------------------------------------------- match
-
-@st.dialog("Match", width="large")
-def _match_dialog(match, render_body: Callable):
-    render_body(match)
-
 
 def _default_match_body(match) -> None:
     """Fallback dialog body when the caller has no richer renderer.
@@ -268,8 +370,31 @@ def _default_match_body(match) -> None:
         st.write(f"**Result:** {result}")
 
 
+def _match_links(sport, con, match) -> None:
+    """Entity navigation shown under either rich match renderer."""
+    links = []
+    for value in (getattr(match, "club_id", None),
+                  getattr(match, "opponent_id", None)):
+        if value and value not in links:
+            links.append(value)
+    with st.container(horizontal=True):
+        season = getattr(match, "season", None)
+        if season is not None:
+            if st.button(str(season), icon=":material/calendar_month:",
+                         key="match_link_season"):
+                _open_card({"kind": "season", "season": season,
+                            "label": str(season)}, sport, con, nested=True)
+        for position, club in enumerate(links):
+            label = str(club).replace("_", " ").title()
+            if st.button(label, icon=":material/shield:",
+                         key=f"match_link_club_{position}"):
+                _open_card({"kind": "club", "club": club, "label": label},
+                           sport, con, nested=True)
+
+
 def clickable_match_table(df, matches: Sequence, key: str,
                           sport=None, con=None,
+                          nested: bool = False,
                           render_body: Callable | None = None,
                           **dataframe_kwargs):
     """Render `df` and open a match dialog from its Open action.
@@ -290,23 +415,25 @@ def clickable_match_table(df, matches: Sequence, key: str,
     if event["action"] == "club":
         club = event.get("label")
         if club:
-            _club_dialog(sport, con, club)
+            _open_card({"kind": "club", "club": club, "label": club},
+                       sport, con, nested=nested)
     elif event["action"] == "season":
         season = event.get("label")
         if season is not None and not pd.isna(season):
-            _season_dialog(sport, con, season, None)
+            _open_card({"kind": "season", "season": season,
+                        "label": str(season)}, sport, con, nested=nested)
     else:
-        _match_dialog(matches[row], render_body or _default_match_body)
+        match = matches[row]
+        _open_card({"kind": "match", "match": match,
+                    "render_body": render_body,
+                    "label": f"{getattr(match, 'season', '')} match".strip()},
+                   sport, con, nested=nested)
 
 
 # ----------------------------------------------------------------- game
 
-@st.dialog("Game", width="large")
-def _game_dialog(sport, con, record, stat):
-    overlays.game_card(sport, con, record, stat=stat)
-
-
 def clickable_game_table(df, sport, con, key: str, stat=None,
+                         nested: bool = False,
                          **dataframe_kwargs):
     """Render a table of `games` rows, each opening its own scorecard.
 
@@ -324,24 +451,25 @@ def clickable_game_table(df, sport, con, key: str, stat=None,
     if event["action"] == "club":
         club = event.get("label")
         if club:
-            _club_dialog(sport, con, club)
+            _open_card({"kind": "club", "club": club, "label": club},
+                       sport, con, nested=nested)
     elif event["action"] == "season":
         season = event.get("label")
         if season is not None and not pd.isna(season):
-            _season_dialog(sport, con, season, None)
+            _open_card({"kind": "season", "season": season,
+                        "label": str(season)}, sport, con, nested=nested)
     else:
-        _game_dialog(sport, con, df.iloc[row].to_dict(), stat)
+        record = df.iloc[row].to_dict()
+        _open_card({"kind": "game", "record": record, "stat": stat,
+                    "label": f"{record.get('Season', '')} game".strip()},
+                   sport, con, nested=nested)
 
 
 # --------------------------------------------------------------- season
 
-@st.dialog("Season", width="large")
-def _season_dialog(sport, con, season, club):
-    overlays.season_overview(sport, con, season, club=club)
-
-
 def clickable_season_table(df, seasons: Sequence, sport, con, key: str,
                            clubs: Sequence | None = None,
+                           nested: bool = False,
                            **dataframe_kwargs):
     """Render `df` and open a season overview when its season is clicked.
 
@@ -360,24 +488,22 @@ def clickable_season_table(df, seasons: Sequence, sport, con, key: str,
     if event["action"] == "club":
         club = event.get("label")
         if club:
-            _club_dialog(sport, con, club)
+            _open_card({"kind": "club", "club": club, "label": club},
+                       sport, con, nested=nested)
         return
     season = (event.get("label") if event["action"] == "season"
               else seasons[row] if row < len(seasons) else None)
     if season is None or pd.isna(season):
         return
     club = clubs[row] if clubs is not None and row < len(clubs) else None
-    _season_dialog(sport, con, season, club)
+    _open_card({"kind": "season", "season": season, "club": club,
+                "label": str(season)}, sport, con, nested=nested)
 
 
 # ----------------------------------------------------------------- club
 
-@st.dialog("Club", width="large")
-def _club_dialog(sport, con, club):
-    overlays.club_overview(sport, con, club)
-
-
 def clickable_club_table(df, clubs: Sequence, sport, con, key: str,
+                         nested: bool = False,
                          **dataframe_kwargs):
     """Render `df` and open a club overview when its club name is clicked."""
     action_column = df.columns[0] if len(df.columns) else None
@@ -388,4 +514,5 @@ def clickable_club_table(df, clubs: Sequence, sport, con, key: str,
     row = event["row"]
     club = clubs[row] if row < len(clubs) else None
     if club:
-        _club_dialog(sport, con, club)
+        _open_card({"kind": "club", "club": club, "label": str(club)},
+                   sport, con, nested=nested)

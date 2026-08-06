@@ -456,7 +456,7 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                 FROM {sc.games} WHERE {sc.player_id} = ?
                 GROUP BY {sc.season}, {sc.club_hist} ORDER BY {sc.season}"""
             seasons = _read_frame(seasons_sql, (pid,), revision, con)
-            if nested or seasons.empty:
+            if seasons.empty:
                 st.dataframe(seasons, hide_index=True, width="stretch",
                              height=300)
             else:
@@ -468,6 +468,7 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                     seasons, seasons["Season"].tolist(), sport, con,
                     key=sport.k(key_prefix, "seasons", pid),
                     clubs=seasons[V.club.capitalize()].tolist(),
+                    nested=nested,
                     height=300)
 
         tiles = [
@@ -495,7 +496,8 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
         st.caption(f"⚠ {warning}")
     metric_header = labels.title(metric)
     best_sql = f"""
-        SELECT {sc.player} AS Player, {sc.season} AS Season,
+        SELECT {sc.player_id} AS PlayerID,
+               {sc.player} AS Player, {sc.season} AS Season,
                {sc.round} AS Rnd, {sc.club_hist} AS For,
                {sc.opponent} AS Opponent,
                {sc.venue} AS "{V.venue.capitalize()}", {sc.result} AS Res,
@@ -504,7 +506,7 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
         WHERE {sc.player_id} = ? AND {metric} IS NOT NULL
         ORDER BY {metric} DESC, {sc.season} LIMIT 20"""
     best = _read_frame(best_sql, (pid,), revision, con)
-    if nested or best.empty:
+    if best.empty:
         st.dataframe(best.drop(columns=["Player"], errors="ignore"),
                      hide_index=True, width="stretch")
     else:
@@ -512,8 +514,9 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
         st.caption(f"Select a {V.game} for its full record.")
         components.clickable_game_table(
             best, sport, con, key=sport.k(key_prefix, "best_games", pid),
-            stat=metric_header,
-            column_order=[c for c in best.columns if c != "Player"])
+            stat=metric_header, nested=nested,
+            column_order=[c for c in best.columns
+                          if c not in ("Player", "PlayerID")])
 
 
 # ---------------------------------------------------- player comparison

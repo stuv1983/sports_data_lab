@@ -210,7 +210,8 @@ def _leaders(sport_key, season, club, revision, _con) -> pd.DataFrame:
         params += [club, club]
     try:
         return pd.read_sql_query(
-            f"SELECT g.{sc.player} AS Player, "
+            f"SELECT g.{sc.player_id} AS PlayerID, "
+            f"       g.{sc.player} AS Player, "
             f"       g.{sc.club_hist} AS \"{V.club.capitalize()}\", "
             f"       SUM(g.{sc.game_score}) AS \"{V.score.capitalize()}\" "
             f"FROM {sc.games} g WHERE {' AND '.join(where)} "
@@ -238,12 +239,21 @@ def _season_awards(sport_key, season, revision, _con) -> pd.DataFrame:
             select = ['award_name AS Award', 'player AS Player']
             if "club" in columns:
                 select.append("club AS Club")
+            if ("dg_person_id" in columns
+                    and _columns(_con, "person_links")):
+                select.append(
+                    "(SELECT player_id FROM person_links l "
+                    "WHERE l.dg_person_id = awards.dg_person_id "
+                    "AND l.match_status IN "
+                    "('from_draft','unique','resolved') LIMIT 1) AS PlayerID"
+                )
             return pd.read_sql_query(
                 f"SELECT {', '.join(select)} FROM awards WHERE season = ? "
                 "ORDER BY award_name, player", _con, params=(season,))
         if "award" in columns and "player_id" in columns:
             return pd.read_sql_query(
-                "SELECT a.award AS Award, p.player AS Player "
+                "SELECT a.award AS Award, p.player AS Player, "
+                "a.player_id AS PlayerID "
                 "FROM awards a LEFT JOIN players p "
                 "  ON p.player_id = a.player_id "
                 "WHERE a.season = ? ORDER BY a.award, p.player",
@@ -300,7 +310,7 @@ def _club_season_record(sport_key, season, club, revision, _con):
 
 # ------------------------------------------------------ season overview
 
-def season_overview(sport, con, season, club=None) -> None:
+def season_overview(sport, con, season, club=None, nested=False) -> None:
     """One season, and optionally one club's part in it.
 
     `club` is whatever the clicked row named -- a club-season row from a
@@ -355,13 +365,22 @@ def season_overview(sport, con, season, club=None) -> None:
         st.markdown(f"**Leading {V.score} in {season}**")
         st.caption(f"Every {V.game} recorded for the {V.season}, "
                    f"{V.postseason} included.")
-        st.dataframe(leaders, hide_index=True, width="stretch",
-                     height=min(38 * (len(leaders) + 1) + 3, 420))
+        import components
+        components.clickable_player_table(
+            leaders.drop(columns=["PlayerID"]), leaders["PlayerID"].tolist(),
+            sport, con, key=f"overlay_season_leaders_{season}_{club}",
+            nested=nested, height=min(38 * (len(leaders) + 1) + 3, 420))
 
     standings = _standings(sport.key, season, revision, con)
     if not standings.empty:
         with st.expander(f"{season} {V.club} records ({len(standings)})"):
-            st.dataframe(standings, hide_index=True, width="stretch")
+            import components
+            club_column = next(
+                (column for column in ("Club", "Team")
+                 if column in standings.columns), standings.columns[0])
+            components.clickable_club_table(
+                standings, standings[club_column].tolist(), sport, con,
+                key=f"overlay_season_standings_{season}", nested=nested)
 
     awards = _season_awards(sport.key, season, revision, con)
     if not awards.empty:
@@ -370,9 +389,21 @@ def season_overview(sport, con, season, club=None) -> None:
                 str(club), case=False, na=False)]
             if not mine.empty:
                 st.markdown(f"**{club} award winners**")
-                st.dataframe(mine, hide_index=True, width="stretch")
+                import components
+                ids = (mine["PlayerID"].tolist() if "PlayerID" in mine
+                       else [None] * len(mine))
+                components.clickable_player_table(
+                    mine.drop(columns=["PlayerID"], errors="ignore"), ids,
+                    sport, con, key=f"overlay_season_mine_{season}_{club}",
+                    nested=nested)
         with st.expander(f"{season} award winners ({len(awards)})"):
-            st.dataframe(awards, hide_index=True, width="stretch")
+            import components
+            ids = (awards["PlayerID"].tolist() if "PlayerID" in awards
+                   else [None] * len(awards))
+            components.clickable_player_table(
+                awards.drop(columns=["PlayerID"], errors="ignore"), ids,
+                sport, con, key=f"overlay_season_awards_{season}",
+                nested=nested)
 
 
 # -------------------------------------------------------- club overview
@@ -431,7 +462,8 @@ def _club_leaders(sport_key, club, revision, _con) -> pd.DataFrame:
     sc, V = sport.schema, sport.vocab
     try:
         return pd.read_sql_query(
-            f"SELECT g.{sc.player} AS Player, "
+            f"SELECT g.{sc.player_id} AS PlayerID, "
+            f"       g.{sc.player} AS Player, "
             f"       MIN(g.{sc.season}) || '–' || MAX(g.{sc.season}) AS Span, "
             f"       SUM(g.{sc.game_score}) AS \"{V.score.capitalize()}\" "
             f"FROM {sc.games} g "
@@ -531,9 +563,20 @@ def _club_award_winners(club, revision, _con) -> pd.DataFrame:
     player = "player" if "player" in columns else None
     if not award or not player:
         return pd.DataFrame()
+    player_id = "NULL AS PlayerID"
+    if "player_id" in columns:
+        player_id = "player_id AS PlayerID"
+    elif "dg_person_id" in columns and _columns(_con, "person_links"):
+        player_id = (
+            "(SELECT player_id FROM person_links l "
+            "WHERE l.dg_person_id = awards.dg_person_id "
+            "AND l.match_status IN ('from_draft','unique','resolved') "
+            "LIMIT 1) AS PlayerID"
+        )
     try:
         return pd.read_sql_query(
-            f"SELECT season AS Season, {award} AS Award, {player} AS Player "
+            f"SELECT season AS Season, {award} AS Award, {player} AS Player, "
+            f"{player_id} "
             "FROM awards WHERE LOWER(COALESCE(club, '')) = LOWER(?) "
             "OR ',' || LOWER(COALESCE(club, '')) || ',' LIKE "
             "'%,' || LOWER(?) || ',%' "
@@ -555,7 +598,10 @@ def _club_hall_of_famers(club, revision, _con) -> pd.DataFrame:
               if "is_legend" in columns else "NULL AS Status")
     try:
         return pd.read_sql_query(
-            f"SELECT name AS Name, {inducted}, {legend} FROM hall_of_fame "
+            f"SELECT name AS Name, {inducted}, {legend}, "
+            + ("player_id AS PlayerID " if "player_id" in columns
+               else "NULL AS PlayerID ")
+            + "FROM hall_of_fame "
             "WHERE LOWER(COALESCE(club, '')) LIKE '%' || LOWER(?) || '%' "
             "ORDER BY Inducted DESC, Name LIMIT 5",
             _con, params=(club,),
@@ -564,7 +610,7 @@ def _club_hall_of_famers(club, revision, _con) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def club_overview(sport, con, club) -> None:
+def club_overview(sport, con, club, nested=False) -> None:
     """One club's identity, history, recent form, honours and leaders."""
     V = sport.vocab
     revision = _revision(sport.db)
@@ -616,7 +662,10 @@ def club_overview(sport, con, club) -> None:
     recent = _club_recent_games(display_name, club_id, revision, con)
     if not recent.empty:
         st.markdown(f"**Last {len(recent)} {V.games}**")
-        st.dataframe(recent, hide_index=True, width="stretch")
+        import components
+        components.clickable_game_table(
+            recent, sport, con, key=f"overlay_club_games_{club_id or club}",
+            nested=nested)
 
     if titles:
         st.markdown(f"**{V.title_plural} ({len(titles)})**")
@@ -625,22 +674,34 @@ def club_overview(sport, con, club) -> None:
     award_winners = _club_award_winners(display_name, revision, con)
     if not award_winners.empty:
         st.markdown("**Latest 5 award winners**")
-        st.dataframe(award_winners, hide_index=True, width="stretch")
+        import components
+        components.clickable_player_table(
+            award_winners.drop(columns=["PlayerID"]),
+            award_winners["PlayerID"].tolist(), sport, con,
+            key=f"overlay_club_awards_{club_id or club}", nested=nested)
 
     hall = _club_hall_of_famers(display_name, revision, con)
     if not hall.empty:
         st.markdown("**Latest 5 Hall of Fame inductees**")
-        st.dataframe(hall, hide_index=True, width="stretch")
+        import components
+        components.clickable_player_table(
+            hall.drop(columns=["PlayerID"]), hall["PlayerID"].tolist(),
+            sport, con, key=f"overlay_club_hof_{club_id or club}",
+            nested=nested)
 
     leaders = _club_leaders(sport.key, games_name, revision, con)
     if not leaders.empty:
         st.markdown(f"**Leading {V.score}, all time**")
-        st.dataframe(leaders, hide_index=True, width="stretch")
+        import components
+        components.clickable_player_table(
+            leaders.drop(columns=["PlayerID"]), leaders["PlayerID"].tolist(),
+            sport, con, key=f"overlay_club_leaders_{club_id or club}",
+            nested=nested)
 
 
 # ---------------------------------------------------------- game record
 
-def game_card(sport, con, row, stat=None) -> None:
+def game_card(sport, con, row, stat=None, nested=False) -> None:
     """One row of the games table, as a scorecard.
 
     `row` is a mapping of the columns a page already showed, which is why
@@ -660,6 +721,16 @@ def game_card(sport, con, row, stat=None) -> None:
         get("For") or get("Club") or get("club_hist")) if v)
     if subtitle:
         st.caption(subtitle)
+
+    if nested:
+        import components
+        components.card_links(
+            sport, con, key_prefix="game_card_links",
+            player_id=get("PlayerID") or get("player_id"), player=player,
+            season=season,
+            clubs=[get("For") or get("Club") or get("club_hist"),
+                   get("Opponent") or get("opponent")],
+        )
 
     tiles = []
     opponent = get("Opponent") or get("opponent")

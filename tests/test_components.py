@@ -134,3 +134,23 @@ components.clickable_player_table(
 
     assert not app.exception
     assert "no career to show" in app.info[0].value
+
+
+def test_overlay_history_pushes_deduplicates_and_goes_back():
+    app = AppTest.from_string(
+        """
+import streamlit as st
+import components
+
+components._push_card({"kind": "club", "club": "Carlton", "label": "Carlton"})
+components._push_card({"kind": "club", "club": "Carlton", "label": "Carlton"})
+components._push_card({"kind": "player", "pid": 7, "label": "Player Seven"})
+components._back_overlay()
+st.write(st.session_state["_overlay_stack"])
+"""
+    ).run()
+
+    assert not app.exception
+    assert app.session_state["_overlay_stack"] == [
+        {"kind": "club", "club": "Carlton", "label": "Carlton"}
+    ]
