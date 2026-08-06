@@ -42,6 +42,7 @@ SCHEMA = C.SCHEMA
 ARGUMENTS = {
     "club": "Oklahoma City Thunder",
     "venue": "TD Garden",
+    "state": "Massachusetts",
     "stat": "points", "stat_a": "points", "stat_b": "assists",
     "x": 10, "y": 5, "x_a": 10, "x_b": 3,
     "games": 2, "goals": 10, "clubs": 2, "times": 1,

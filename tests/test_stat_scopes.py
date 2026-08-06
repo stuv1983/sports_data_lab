@@ -230,7 +230,7 @@ def test_every_scope_is_in_the_manual_builder():
 #: Arguments axis_widget renders with an explicit branch, and arguments it
 #: renders through the numeric fallback. Every builder argument in every
 #: sport must be one or the other.
-UI_HANDLED_ARGS = {"club", "venue", "player_id", "kind", "source", "award",
+UI_HANDLED_ARGS = {"club", "venue", "state", "player_id", "kind", "source", "award",
                    "times", "avg", "player", "stat", "stat_a", "stat_b",
                    "min_games", "derby", "event", "rivalry",
                    "award_axis", "position", "average",

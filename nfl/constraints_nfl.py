@@ -23,6 +23,7 @@ table reaches back to 1920 but a roster line is not an appearance.
 
 import core
 import sports
+import venue_states
 
 from . import nfl_reference
 
@@ -68,6 +69,10 @@ played_in_season_range = _G.played_in_season_range
 debuted_between = _G.debuted_between
 
 played_at_venue = _G.played_at_venue
+
+
+def played_in_state(state):
+    return _G.played_at_venues(venue_states.venues_for_state("nfl", state))
 
 # The playoffs are the NFL's post-season; only the wording differs.
 stat_in_a_playoff_game = _G.stat_in_a_postseason_game
@@ -307,6 +312,7 @@ BUILDERS = {
     "Multi-club player":          (multi_club_player, []),
     "First career game for club": (debut_club, ["club"]),
     "Played at venue":            (played_at_venue, ["venue"]),
+    "Played in state":            (played_in_state, ["state"]),
     "Won a final at venue":       (won_a_playoff_game_at, ["venue"]),
     "X+ finals games":            (playoff_games_min, ["x"]),
     "Played in a final":          (played_in_the_playoffs, []),

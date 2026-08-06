@@ -30,6 +30,7 @@ rather than present and wrong.
 
 import core
 import sports
+import venue_states
 
 # Declared in sports.py because the sport picker needs them before this
 # module is imported. CLUBS and VENUE_ALIASES come from the reference file
@@ -73,6 +74,10 @@ played_in_season_range = _G.played_in_season_range
 debuted_between = _G.debuted_between
 
 played_at_venue = _G.played_at_venue
+
+
+def played_in_state(state):
+    return _G.played_at_venues(venue_states.venues_for_state("nba", state))
 
 # The playoffs are the NBA's post-season. The semantics are the generic
 # ones; only the wording differs.
@@ -265,6 +270,7 @@ BUILDERS = {
     "Multi-club player":          (multi_club_player, []),
     "First career game for club": (debut_club, ["club"]),
     "Played at venue":            (played_at_venue, ["venue"]),
+    "Played in state":            (played_in_state, ["state"]),
     "Won a final at venue":       (won_a_playoff_game_at, ["venue"]),
     "X+ finals games":            (playoff_games_min, ["x"]),
     "Played in a final":          (played_in_the_playoffs, []),

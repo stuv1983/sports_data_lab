@@ -28,6 +28,7 @@ import db_pool
 import labels
 import sports
 import theme
+import venue_states
 
 # The page title needs the sport before any other Streamlit call, so read
 # the previous choice straight out of session state.
@@ -337,6 +338,14 @@ def axis_widget(key, default_type, defaults=None):
                                 format_func=lambda i, options=vs: options[i][1],
                                 key=wk)
             args.append(vs[pick][0])
+        elif a == "state":
+            states = list(venue_states.STATE_NAMES)
+            want = defaults.get("state", states[0])
+            idx = states.index(want) if want in states else 0
+            args.append(st.selectbox(
+                "State", states, index=idx, key=wk,
+                help="50 states plus Washington, D.C. and Puerto Rico. "
+                     "A jurisdiction with no recorded game returns no players."))
         elif a == "player_id":
             selected = player_picker(
                 wk, default_name=str(defaults.get("player", "")))
@@ -506,6 +515,8 @@ def axis_widget(key, default_type, defaults=None):
         verb = ("played at" if kind.startswith("Played")
                 else f"won a {V.postseason_one} at")
         label = f"{verb}\n{args[0]}"
+    elif kind == "Played in state":
+        label = f"played in\n{args[0]}"
     elif kind == "X+ finals games":
         label = f"{args[0]}+ {V.postseason} {V.games}"
     elif kind == "Goal average in finals":

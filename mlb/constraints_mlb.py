@@ -39,6 +39,7 @@ postseason series, not merely appeared in October.
 
 import core
 import sports
+import venue_states
 
 from . import mlb_reference
 
@@ -114,6 +115,10 @@ played_in_season_range = _G.played_in_season_range
 debuted_between = _G.debuted_between
 
 played_at_venue = _G.played_at_venue
+
+
+def played_in_state(state):
+    return _G.played_at_venues(venue_states.venues_for_state("mlb", state))
 
 # The postseason is baseball's finals. The semantics are the generic ones;
 # only the wording differs.
@@ -410,6 +415,7 @@ BUILDERS = {
     "Multi-club player":          (multi_club_player, []),
     "First career game for club": (debut_club, ["club"]),
     "Played at venue":            (played_at_venue, ["venue"]),
+    "Played in state":            (played_in_state, ["state"]),
     "Won a final at venue":       (won_postseason_at, ["venue"]),
     # MLB-only. The World Series is a named round the other two sports have
     # no equivalent of, and 3,000 hits is a milestone the schema's headline

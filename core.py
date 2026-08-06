@@ -512,6 +512,17 @@ class Generic:
                 f"WHERE {s.venue} LIKE ?",
                 [f"%{s.canonical_venue(venue)}%"])
 
+    def played_at_venues(self, venues):
+        """Played at any venue in a pre-resolved geographic group."""
+        s = self.s
+        names = tuple(dict.fromkeys(str(v) for v in venues if v))
+        if not names:
+            return (f"SELECT {s.player_id} FROM {s.games} WHERE 0", [])
+        placeholders = ",".join("?" for _ in names)
+        sql = (f"SELECT DISTINCT {s.player_id} FROM {s.games} "
+               f"WHERE {s.venue} IN ({placeholders})")
+        return sql, list(names)
+
     # -- post-season (generic shape; sports name it finals or playoffs) --
     def postseason_games_min(self, n):
         s = self.s
