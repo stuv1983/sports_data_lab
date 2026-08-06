@@ -8,9 +8,10 @@ and so a future overlay kind only has to be added once.
 
 There are four kinds now, one per thing a row can be: a player, a match, a
 season (optionally a club's season) and a club. A table opens the overlay
-for whatever its rows *are* -- Streamlit's dataframe selects a row, not a
-cell, so a row naming both a player and a season has to pick one, and the
-right one is the subject of the table.
+for whatever its rows *are*: player, season and club names are action cells,
+while matches and individual games have an Open action. A row naming both a
+player and a season makes its subject clickable, so an award roll opens the
+player while a season record opens the season.
 
 One dialog per script run
 -------------------------
@@ -30,52 +31,78 @@ import explore
 import overlays
 
 
-#: Session-state keys tracking which table's selection is the live one.
-_ROWS = "_overlay_rows"          # widget key -> the row it currently holds
-_ACTIVE = "_overlay_active"      # widget key whose selection changed last
+#: A ButtonColumn callback runs before Streamlit reruns the script. It leaves
+#: the clicked table and row here for that table to consume during the rerun.
+_PENDING = "_overlay_pending"
 
 
-def _select(df, key, dataframe_kwargs):
-    """Draw a selectable table; return the picked row when it owns the overlay.
+def _queue_click(event_key: str, table_key: str) -> None:
+    """Remember one transient ButtonColumn click for the following rerun."""
+    event = st.session_state.get(event_key)
+    if event is not None and event.get("row") is not None:
+        st.session_state[_PENDING] = {
+            "key": table_key,
+            "row": int(event["row"]),
+        }
 
-    A page can carry several clickable tables, and a dataframe holds its
-    selection until it is clicked again. Select a season, dismiss the
-    overview, then select a player and *both* tables have a selection --
-    which used to take the page down, because Streamlit allows exactly one
-    dialog per script run.
 
-    So the table whose selection just changed owns the overlay, and the
-    others stand down until they are clicked again. When the change is
-    noticed after some earlier table has already claimed the run, the run
-    is restarted: on the second pass the earlier table is no longer the
-    active one and the click the reader actually made is the one that
-    opens.
+def _select(df, key, dataframe_kwargs, action_column: str | None = None):
+    """Draw a table and return the row whose action cell was clicked.
 
-    Not opening on every rerun is a fix in its own right. The old version
-    reopened a dismissed dialog the moment anything else on the page was
-    touched, because the row underneath it was still selected.
+    Streamlit dataframe selections persist after a dialog is dismissed. That
+    makes clicking the same row again unreliable and means several tables can
+    all retain selections at once. ButtonColumn events are transient instead:
+    every click fires, including a second click on the same player or season,
+    and only the table named by the callback can consume the event.
+
+    When ``action_column`` is supplied, that visible value becomes the button
+    (for example, Player or Season). Otherwise a compact Open column is added
+    for rows such as matches and individual games.
     """
+    frame = df.copy()
     kwargs = {"hide_index": True, "width": "stretch"}
     kwargs.update(dataframe_kwargs)
-    table = st.dataframe(
-        df, on_select="rerun", selection_mode="single-row", key=key, **kwargs)
-    picked = table.selection.rows if table and table.selection else []
-    row = picked[0] if picked else None
 
-    rows = st.session_state.setdefault(_ROWS, {})
-    if rows.get(key, "unset") != row:
-        rows[key] = row
-        if row is not None:
-            previous = st.session_state.get(_ACTIVE)
-            st.session_state[_ACTIVE] = key
-            if previous is not None and previous != key:
-                st.rerun()
-        elif st.session_state.get(_ACTIVE) == key:
-            st.session_state[_ACTIVE] = None
+    if action_column not in frame.columns:
+        action_column = "_Open"
+        while action_column in frame.columns:
+            action_column = "_" + action_column
+        frame.insert(0, action_column, ":material/open_in_new: Open")
+        if "column_order" in kwargs:
+            kwargs["column_order"] = [
+                action_column, *list(kwargs["column_order"])
+            ]
+        label = ""
+        width = "small"
+    else:
+        # Button labels must be text. Keep the aligned seasons/player_ids
+        # sequences untouched; only the displayed copy is converted.
+        frame[action_column] = frame[action_column].map(
+            lambda value: "" if value is None else str(value)
+        )
+        label = action_column
+        width = None
 
-    if row is None or st.session_state.get(_ACTIVE) != key:
+    event_key = f"{key}__open"
+    column_config = dict(kwargs.pop("column_config", {}) or {})
+    column_config[action_column] = st.column_config.ButtonColumn(
+        label,
+        width=width,
+        pinned=True,
+        alignment="left",
+        type="tertiary",
+        on_click=_queue_click,
+        args=(event_key, key),
+        key=event_key,
+    )
+    st.dataframe(frame, key=key, column_config=column_config, **kwargs)
+
+    pending = st.session_state.get(_PENDING)
+    if not pending or pending.get("key") != key:
         return None
-    return row
+    del st.session_state[_PENDING]
+    row = pending.get("row")
+    return row if isinstance(row, int) and 0 <= row < len(frame) else None
 
 
 # --------------------------------------------------------------- player
@@ -88,7 +115,7 @@ def _player_dialog(sport, con, pid, key_prefix):
 
 def clickable_player_table(df, player_ids: Sequence, sport, con, key: str,
                            key_prefix: str | None = None, **dataframe_kwargs):
-    """Render `df` and open a player dialog when a row is clicked.
+    """Render `df` and open a player dialog when its player/name is clicked.
 
     `player_ids` must align with `df`'s rows position-for-position -- it is
     typically a hidden id column pulled off the frame before display, the
@@ -98,7 +125,11 @@ def clickable_player_table(df, player_ids: Sequence, sport, con, key: str,
     whose name could not be resolved to a player in this database, and
     those rows are still worth showing -- they just have no career to open.
     """
-    row = _select(df, key, dataframe_kwargs)
+    action_column = next(
+        (column for column in ("Player", "Name") if column in df.columns),
+        None,
+    )
+    row = _select(df, key, dataframe_kwargs, action_column=action_column)
     if row is None:
         return
     pid = player_ids[row] if row < len(player_ids) else None
@@ -144,7 +175,7 @@ def _default_match_body(match) -> None:
 def clickable_match_table(df, matches: Sequence, key: str,
                           render_body: Callable | None = None,
                           **dataframe_kwargs):
-    """Render `df` and open a match dialog when a row is clicked.
+    """Render `df` and open a match dialog from its Open action.
 
     `matches` must align with `df`'s rows position-for-position, same
     convention as `clickable_player_table`. `render_body(match)` draws the
@@ -185,14 +216,14 @@ def _season_dialog(sport, con, season, club):
 def clickable_season_table(df, seasons: Sequence, sport, con, key: str,
                            clubs: Sequence | None = None,
                            **dataframe_kwargs):
-    """Render `df` and open a season overview when a row is clicked.
+    """Render `df` and open a season overview when its season is clicked.
 
     `seasons` aligns with the rows. `clubs` optionally does too: a row of a
     player's career or of a club's record names a club as well as a season,
     and the overview then shows that club's part in the season alongside
     the champion.
     """
-    row = _select(df, key, dataframe_kwargs)
+    row = _select(df, key, dataframe_kwargs, action_column="Season")
     if row is None:
         return
     season = seasons[row] if row < len(seasons) else None
@@ -211,8 +242,9 @@ def _club_dialog(sport, con, club):
 
 def clickable_club_table(df, clubs: Sequence, sport, con, key: str,
                          **dataframe_kwargs):
-    """Render `df` and open a club overview when a row is clicked."""
-    row = _select(df, key, dataframe_kwargs)
+    """Render `df` and open a club overview when its club name is clicked."""
+    action_column = df.columns[0] if len(df.columns) else None
+    row = _select(df, key, dataframe_kwargs, action_column=action_column)
     if row is None:
         return
     club = clubs[row] if row < len(clubs) else None
