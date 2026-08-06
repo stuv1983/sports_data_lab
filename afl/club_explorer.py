@@ -8,6 +8,9 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
+import components
+import labels
+
 from . import club_fields as CF
 from . import club_history as CH
 from . import club_logos as CL
@@ -42,22 +45,40 @@ _PLUMBING = {
 }
 
 
-#: Words .title() gets wrong. 'rbis' becomes 'Rbis' and 'tds' 'Tds'.
-_ACRONYMS = {
-    "rbis": "RBIs", "tds": "TDs", "td": "TD", "fgm": "FGM", "fga": "FGA",
-    "fg3m": "3PM", "fg3a": "3PA", "ftm": "FTM", "fta": "FTA",
-    "oreb": "OREB", "dreb": "DREB", "era": "ERA", "i50": "I50",
-    "fg": "FG", "def": "Def",
-}
-
-
-def _label(column: str) -> str:
-    return " ".join(_ACRONYMS.get(word, word.title())
-                    for word in column.split("_"))
+#: Header spelling lives in labels.py now, so the Club Explorer, the Stats
+#: Explorer and the grid all print a column the same way.
+_label = labels.title
 
 
 def _columns(con, table: str) -> list:
     return [row[1] for row in con.execute(f"PRAGMA table_info({table})")]
+
+
+#: Link statuses whose player_id is trusted enough to open a career on.
+#:
+#: 'derived' belongs here and is the strongest of them: the NBA, MLB and
+#: NFL club tables are built out of the player rows themselves by
+#: utils/derive_club_tables.py, so there was never a name to resolve. The
+#: scraped AFL tables are the ones with 'unique' rows and, for a couple of
+#: hundred of them, no id at all.
+_TRUSTED = ("unique", "resolved", "from_draft", "derived")
+
+
+def _split_links(frame: pd.DataFrame):
+    """Pull the id column off a club table and return (frame, player_ids).
+
+    A club table keeps the scraped name beside the id the linker resolved
+    it to, and an unresolved row keeps a NULL id. Those rows stay in the
+    table -- the player did play for the club -- they simply have no career
+    to open, which clickable_player_table says for itself.
+    """
+    if "player_id" not in frame.columns:
+        return frame, [None] * len(frame)
+    ids = frame["player_id"]
+    if "Link" in frame.columns:
+        ids = ids.where(frame["Link"].isin(_TRUSTED))
+    return (frame.drop(columns=["player_id"]),
+            [None if pd.isna(v) else v for v in ids])
 
 
 def _stat_selection(con, table: str) -> str:
@@ -73,6 +94,7 @@ def _stat_selection(con, table: str) -> str:
             continue
         parts.append(f'{column} AS "{_label(column)}"')
     parts.append("match_status AS Link")
+    parts.append("player_id")
     return ", ".join(parts)
 
 
@@ -128,7 +150,8 @@ def _record_line(rec) -> str:
             f"(W-D-L) · {pct}")
 
 
-def _past_games_tab(con, sport, club_id: str, club_name: str) -> None:
+def _past_games_tab(con, sport, club_id: str, club_name: str,
+                    games_name: str | None = None) -> None:
     """Searchable past results for one club, over the all-games rows.
 
     The source carries one row per club per match, so every figure here is
@@ -154,6 +177,7 @@ def _past_games_tab(con, sport, club_id: str, club_name: str) -> None:
         st.info(f"No {sport.vocab.games} recorded for {club_name}.")
         return
 
+    V = sport.vocab
     splits = {s.split: s for s in CH.home_away_splits(con, club_id)}
     cols = st.columns(4)
     all_time = CH.season_records(con, club_id, scope="all")
@@ -161,14 +185,15 @@ def _past_games_tab(con, sport, club_id: str, club_name: str) -> None:
     wins = sum(r.wins for r in all_time)
     draws = sum(r.draws for r in all_time)
     losses = sum(r.losses for r in all_time)
-    cols[0].metric("Matches", f"{played:,}")
-    cols[1].metric("Record", f"{wins}-{draws}-{losses}", help="W-D-L, all time")
+    cols[0].metric(V.games.capitalize(), f"{played:,}")
+    cols[1].metric("Record", f"{wins}-{draws}-{losses}",
+                   help="W-D-L, all time")
     for i, name in enumerate(("home", "away"), start=2):
         rec = splits.get(name)
         cols[i].metric(
             name.title(),
             f"{rec.wins}-{rec.draws}-{rec.losses}" if rec else "—",
-            help=f"{rec.played} matches" if rec else None)
+            help=f"{rec.played} {V.games}" if rec else None)
 
     excluded = CH.excluded(con)
     if excluded:
@@ -176,7 +201,7 @@ def _past_games_tab(con, sport, club_id: str, club_name: str) -> None:
             "Excluded as not cleanly linked: "
             + ", ".join(f"{n:,} {status}" for status, n in excluded.items()))
 
-    st.markdown("#### Search past results")
+    st.markdown(f"#### Search past {V.games}")
     f1, f2, f3 = st.columns(3)
     club_ids = CH.clubs_with_history(con)
     opponent = f1.selectbox(
@@ -184,7 +209,7 @@ def _past_games_tab(con, sport, club_id: str, club_name: str) -> None:
         format_func=lambda c: c if c == "Any" else c.replace("_", " ").title(),
         key=f"pg_opp_{club_id}")
     lo, hi = f2.select_slider(
-        "Seasons", options=sorted(seasons),
+        f"{V.season.capitalize()}s", options=sorted(seasons),
         value=(min(seasons), max(seasons)), key=f"pg_seasons_{club_id}")
     result = f3.selectbox(
         "Result", ["Any", "W", "D", "L"],
@@ -194,13 +219,14 @@ def _past_games_tab(con, sport, club_id: str, club_name: str) -> None:
 
     g1, g2, g3 = st.columns(3)
     scope = g1.selectbox(
-        "Match type", ["all", "home_and_away", "finals"],
-        format_func=lambda s: {"all": "All matches",
+        f"{V.game.capitalize()} type", ["all", "home_and_away", "finals"],
+        format_func=lambda s: {"all": f"All {V.games}",
                                "home_and_away": "Home and away",
-                               "finals": "Finals"}[s],
+                               "finals": V.postseason.capitalize()}[s],
         key=f"pg_scope_{club_id}")
     venue = g2.selectbox(
-        "Venue", ["Any", *CH.venues_available(con)], key=f"pg_venue_{club_id}")
+        V.venue.capitalize(), ["Any", *CH.venues_available(con)],
+        key=f"pg_venue_{club_id}")
     order = g3.selectbox(
         "Sort by", ["date_desc", "date_asc", "margin_desc", "margin_asc",
                     "crowd_desc"],
@@ -220,13 +246,14 @@ def _past_games_tab(con, sport, club_id: str, club_name: str) -> None:
         scope=scope, order=order, limit=2000)
 
     if not matches:
-        st.info("No matches for those filters.")
+        st.info(f"No {V.games} for those filters.")
         return
 
     won = sum(m.result == "W" for m in matches)
     drew = sum(m.result == "D" for m in matches)
     st.caption(
-        f"{len(matches):,} matches · {won}-{drew}-{len(matches) - won - drew} "
+        f"{len(matches):,} {V.games} · "
+        f"{won}-{drew}-{len(matches) - won - drew} "
         f"(W-D-L)"
         + ("  ·  showing the first 2,000" if len(matches) == 2000 else ""))
 
@@ -236,24 +263,36 @@ def _past_games_tab(con, sport, club_id: str, club_name: str) -> None:
         "H/A": m.where.title(), "Result": m.result, "Score": m.score,
         "Margin": m.margin, "Venue": m.venue, "Crowd": m.attendance,
     } for m in matches])
-    st.dataframe(table, hide_index=True, width="stretch",
-                 column_config={
-                     "Crowd": st.column_config.NumberColumn(format="%d"),
-                     "Margin": st.column_config.NumberColumn(format="%+d"),
-                 })
+    st.caption("Select a row to see that match's full detail.")
+    components.clickable_match_table(
+        table, matches, key=f"ce_pg_{club_id}",
+        column_config={
+            "Crowd": st.column_config.NumberColumn(format="%d"),
+            "Margin": st.column_config.NumberColumn(format="%+d"),
+        })
     st.download_button(
         "Download results CSV", table.to_csv(index=False),
         file_name=f"{club_id}_past_games.csv", mime="text/csv",
         key=f"pg_dl_{club_id}")
 
-    with st.expander("Season-by-season record"):
+    with st.expander(f"{V.season.capitalize()}-by-{V.season} record"):
         by_season = CH.season_records(con, club_id, scope="home_and_away")
-        st.dataframe(pd.DataFrame([{
+        seasons_table = pd.DataFrame([{
             "Season": r.season, "P": r.played, "W": r.wins, "D": r.draws,
             "L": r.losses, "For": r.points_for, "Against": r.points_against,
             "%": round(r.percentage, 1) if r.percentage is not None else None,
             "Pts": r.premiership_points,
-        } for r in by_season]), hide_index=True, width="stretch")
+        } for r in by_season])
+        if seasons_table.empty:
+            st.caption("No season records for this club.")
+        else:
+            # A row here is this club's season, so it opens that season:
+            # who won it, how this club went and who led the scoring.
+            st.caption(f"Select a {sport.vocab.season} for its overview.")
+            components.clickable_season_table(
+                seasons_table, seasons_table["Season"].tolist(), sport, con,
+                key=f"ce_seasons_{club_id}",
+                clubs=[games_name or club_name] * len(seasons_table))
 
     with st.expander("Longest streaks"):
         for kind in ("winning", "losing", "unbeaten"):
@@ -315,10 +354,12 @@ def _source_status(con, club_id: str) -> pd.DataFrame:
 
 
 def club_explorer_page(sport, con: sqlite3.Connection) -> None:
-    st.markdown("# Club Explorer")
+    V = sport.vocab
+    st.markdown(f"# {V.title_case('club')} Explorer")
     st.caption(
-        "Current-club metadata, all-time player registers, career totals and "
-        "season/game record leaderboards from locally cached source pages."
+        f"Current-{V.club} metadata, all-time player registers, career "
+        f"totals and {V.season}/{V.game} record leaderboards from locally "
+        "cached source pages."
     )
     if not sport.has_club_explorer:
         st.info(f"{sport.vocab.title_case('club')} Explorer needs the "
@@ -331,13 +372,27 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
         return
 
     clubs = _read(con, """
-        SELECT club_id, name, abbreviation
+        SELECT club_id, name, abbreviation, db_club_now
         FROM clubs WHERE active=1 ORDER BY name
     """)
     club_id = st.selectbox(
-        "Club", clubs["club_id"].tolist(),
+        sport.vocab.title_case("club"), clubs["club_id"].tolist(),
         format_func=lambda cid: clubs.loc[clubs.club_id == cid, "name"].iloc[0],
     )
+
+    # Every club as a table as well as a picker: a row opens that club's
+    # overview -- badge, span, titles and leading scorers -- without
+    # changing which club the tabs below are showing.
+    with st.expander(f"All {len(clubs)} {sport.vocab.clubs}"):
+        listing = clubs.rename(columns={
+            "name": sport.vocab.title_case("club"),
+            "abbreviation": "Abbr"}).drop(columns=["club_id", "db_club_now"])
+        st.caption(f"Select a {sport.vocab.club} for its overview.")
+        components.clickable_club_table(
+            listing,
+            [row.db_club_now or row.name for row in clubs.itertuples()],
+            sport, con, key="ce_all_clubs")
+
     club = clubs.loc[clubs.club_id == club_id].iloc[0]
     fields = _field_map(con, club_id)
 
@@ -359,8 +414,8 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
     _headline(c4, fields, "premierships", sport.vocab.title_plural)
 
     tabs = st.tabs([
-        "Overview", "Past games", "Player totals", "All-time players",
-        "Records", "Sources"
+        "Overview", f"Past {V.games}", "Player totals",
+        f"All-time {V.club} players", "Records", "Sources"
     ])
 
     with tabs[0]:
@@ -400,7 +455,11 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
                     hide_index=True, width="stretch")
 
     with tabs[1]:
-        _past_games_tab(con, sport, club_id, club["name"])
+        # `db_club_now` is the club's name as the `games` rows spell it,
+        # which is what a season overview has to be asked for -- the
+        # display name and the games-table name are not always the same.
+        _past_games_tab(con, sport, club_id, club["name"],
+                        games_name=club.get("db_club_now") or club["name"])
 
     with tabs[2]:
         totals = _read(con, f"""
@@ -409,14 +468,17 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
             WHERE club_id=?
             ORDER BY games DESC, player_name
         """, (club_id,))
-        totals = _drop_empty(totals)
+        totals = _drop_empty(totals, keep=("Player", "player_id"))
         if totals.empty:
             st.info("Player totals have not been loaded for this club.")
         else:
-            st.caption(f"{len(totals):,} player-club career rows")
-            st.dataframe(totals, hide_index=True, width="stretch")
+            table, ids = _split_links(totals)
+            st.caption(f"{len(table):,} player-club career rows · select a "
+                       "row to see that player's full career")
+            components.clickable_player_table(
+                table, ids, sport, con, key=f"ce_totals_{club_id}")
             st.download_button(
-                "Download player totals CSV", totals.to_csv(index=False),
+                "Download player totals CSV", table.to_csv(index=False),
                 file_name=f"{club_id}_player_totals.csv", mime="text/csv",
             )
 
@@ -427,20 +489,24 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
                    weight_kg AS "Weight kg", games AS Games, wins AS Wins,
                    draws AS Draws, losses AS Losses, goals AS Goals,
                    seasons_text AS Seasons, debut_age_text AS "Debut age",
-                   last_age_text AS "Last age", match_status AS Link
+                   last_age_text AS "Last age", match_status AS Link,
+                   player_id
             FROM club_player_register
             WHERE club_id=?
             ORDER BY games DESC, cap_number
         """, (club_id,))
-        register = _drop_empty(register)
+        register = _drop_empty(register, keep=("Player", "player_id"))
         if register.empty:
             st.info("The all-time player list has not been loaded for "
                     "this club.")
         else:
-            st.caption(f"{len(register):,} all-time club players")
-            st.dataframe(register, hide_index=True, width="stretch")
+            table, ids = _split_links(register)
+            st.caption(f"{len(table):,} all-time club players · select a row "
+                       "to see that player's full career")
+            components.clickable_player_table(
+                table, ids, sport, con, key=f"ce_register_{club_id}")
             st.download_button(
-                "Download all-time players CSV", register.to_csv(index=False),
+                "Download all-time players CSV", table.to_csv(index=False),
                 file_name=f"{club_id}_all_time_players.csv", mime="text/csv",
             )
 
@@ -463,12 +529,16 @@ def club_explorer_page(sport, con: sqlite3.Connection) -> None:
                        season AS Season, round AS Round, opponent AS Opponent,
                        match_date AS Date, match_description AS Match,
                        source_team AS "Source team",
-                       match_status AS Link
+                       match_status AS Link, player_id
                 FROM club_player_records
                 WHERE club_id=? AND scope=? AND stat=?
                 ORDER BY source_rank
             """, (club_id, scope, stat))
-            st.dataframe(records, hide_index=True, width="stretch")
+            table, ids = _split_links(records)
+            st.caption("Select a row to see that player's full career.")
+            components.clickable_player_table(
+                table, ids, sport, con,
+                key=f"ce_records_{club_id}_{scope}_{stat}")
 
     with tabs[5]:
         sources = _source_status(con, club_id)

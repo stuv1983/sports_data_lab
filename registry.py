@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Sequence
 
 import core
+import labels
 import obscurity
 
 @dataclass(frozen=True)
@@ -180,7 +181,7 @@ class Sport:
         if first is None:
             return None
         if season_from is None or season_from < first:
-            return (f"{stat.replace('_', ' ')} was not recorded before "
+            return (f"{labels.words(stat)} was not recorded before "
                     f"{first} — players from earlier {self.vocab.season}s "
                     f"cannot satisfy this square.")
         return None

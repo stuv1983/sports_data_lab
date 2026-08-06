@@ -21,6 +21,8 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 
+import labels
+
 
 @dataclass(frozen=True)
 class Profile:
@@ -209,7 +211,7 @@ def era_gap(a: Profile, b: Profile, stats: list[str]) -> list[str]:
             continue
         have, lack = (a, b) if in_a else (b, a)
         notes.append(
-            f"{stat.replace('_', ' ')}: recorded for {have.player} "
+            f"{labels.words(stat)}: recorded for {have.player} "
             f"({have.covered[stat][0]}–{have.covered[stat][1]}) but not for "
             f"{lack.player} ({lack.span}) — not comparable.")
     return notes
@@ -247,7 +249,7 @@ def head_to_head_rows(a: Profile, b: Profile, stats: list[str]) -> list[dict]:
     for stat in stats:
         ta, tb = a.totals[stat], b.totals[stat]
         rows.append({
-            "Statistic": stat.replace("_", " "),
+            "Statistic": labels.title(stat),
             a.player: ta,
             b.player: tb,
             "Difference": ta - tb,

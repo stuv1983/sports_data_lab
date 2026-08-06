@@ -124,6 +124,40 @@ class Schema:
             (f"p.{self.obscurity}", "Obscurity"),
         ]
 
+    def solve_index(self, column):
+        """Where `column` sits in a solve_columns() row, or None.
+
+        Positional, because that is how the rows come back: solve() and
+        square() return raw tuples in solve_columns() order, and every
+        sport orders and names its own columns.
+        """
+        expression = f"p.{column}"
+        for i, (expr, _) in enumerate(self.solve_columns()):
+            if expr == expression:
+                return i
+        return None
+
+    def career_span(self, row):
+        """`'1990–2004'` for one solve_columns() row, or "" if it cannot say.
+
+        The grid tile shows a single name, and a name alone does not say
+        whether the answer is a contemporary or someone from the 1920s --
+        which is most of what a solver wants to know before typing it in.
+        """
+        if not row:
+            return ""
+        first = self.solve_index(self.debut_season)
+        last = self.solve_index(self.final_season)
+        if first is None or last is None:
+            return ""
+        debut = row[first] if first < len(row) else None
+        final = row[last] if last < len(row) else None
+        if debut is None and final is None:
+            return ""
+        if debut is None or final is None:
+            return str(debut if debut is not None else final)
+        return str(debut) if debut == final else f"{debut}–{final}"
+
     def _header_for(self, column, fallback):
         """The display header solve_columns() gave one column."""
         expression = f"p.{column}"

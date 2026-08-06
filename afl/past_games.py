@@ -94,10 +94,11 @@ def _match_dialog_body(m) -> None:
 
 
 def past_games_page(sport, con: sqlite3.Connection) -> None:
-    st.markdown("# Past Games")
+    V = sport.vocab
+    st.markdown(f"# Past {V.games.capitalize()}")
     st.caption(
-        "Every match in the database, searchable by club, opponent, season, "
-        "date and ground."
+        f"Every {V.game} in the database, searchable by {V.club}, opponent, "
+        f"{V.season}, date and {V.venue}."
     )
 
     if not sport.has_past_games:
@@ -116,33 +117,36 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
     venues = CH.venues_available(con)
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Matches", f"{cov['matches']:,}")
-    m2.metric("Seasons", f"{cov['season_from']}–{cov['season_to']}")
-    m3.metric("Clubs", len(clubs))
-    m4.metric("Grounds", len(venues))
+    m1.metric(V.games.capitalize(), f"{cov['matches']:,}")
+    m2.metric(f"{V.season.capitalize()}s",
+              f"{cov['season_from']}–{cov['season_to']}")
+    m3.metric(V.clubs.capitalize(), len(clubs))
+    m4.metric(V.venues.capitalize(), len(venues))
     if cov["excluded"]:
         st.caption("Excluded as not cleanly linked: " + ", ".join(
             f"{n:,} {status}" for status, n in cov["excluded"].items()))
 
     # -- filters ---------------------------------------------------------
     f1, f2, f3 = st.columns(3)
-    club = f1.selectbox("Club", [ANY, *clubs], format_func=lambda c:
+    club = f1.selectbox(V.club.capitalize(), [ANY, *clubs],
+                        format_func=lambda c:
                         c if c == ANY else _label(c), key="pg_club")
     opponent_choices = [c for c in clubs if c != club]
     opponent = f2.selectbox("Opponent", [ANY, *opponent_choices],
                             format_func=lambda c: c if c == ANY else _label(c),
                             key="pg_opponent")
-    venue = f3.selectbox("Ground", [ANY, *venues], key="pg_venue")
+    venue = f3.selectbox(V.venue.capitalize(), [ANY, *venues], key="pg_venue")
 
     g1, g2 = st.columns([2, 1])
     lo, hi = g1.select_slider(
         "Years", options=sorted(seasons),
         value=(min(seasons), max(seasons)), key="pg_years")
     scope = g2.selectbox(
-        "Match type", ["all", "home_and_away", "finals"],
-        format_func=lambda s: {"all": "All matches",
+        f"{V.game.capitalize()} type", ["all", "home_and_away", "finals"],
+        format_func=lambda s: {"all": f"All {V.games}",
                                "home_and_away": "Home and away",
-                               "finals": "Finals"}[s], key="pg_scope")
+                               "finals": V.postseason.capitalize()}[s],
+        key="pg_scope")
 
     with st.expander("More filters"):
         d1, d2, d3 = st.columns(3)
@@ -160,11 +164,13 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
             format_func=lambda r: {ANY: "Any", "W": "Wins", "D": "Draws",
                                    "L": "Losses"}[r],
             key="pg_result", disabled=(club == ANY),
-            help="Needs a club — a result is from someone's point of view.")
+            help=f"Needs a {V.club} — a result is from someone's point of "
+                 "view.")
         where = d2.selectbox(
             "Home or away", [ANY, "H", "A", "F"],
-            format_func=lambda p: {ANY: "Any", "H": "Home", "A": "Away",
-                                   "F": "Finals (no home side)"}[p],
+            format_func=lambda p: {
+                ANY: "Any", "H": "Home", "A": "Away",
+                "F": f"{V.postseason.capitalize()} (no home side)"}[p],
             key="pg_where", disabled=(club == ANY))
         min_margin = d3.number_input(
             "Minimum margin", min_value=0, max_value=200, value=0, step=5,
@@ -208,10 +214,10 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
         matches = [m for m in matches if m.match_date == wanted]
 
     if not matches:
-        st.info("No matches for those filters.")
+        st.info(f"No {V.games} for those filters.")
         return
 
-    summary = f"{len(matches):,} matches"
+    summary = f"{len(matches):,} {V.games}"
     if club_id:
         won = sum(m.result == "W" for m in matches)
         drew = sum(m.result == "D" for m in matches)
@@ -233,10 +239,10 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
     # meaningless when it was the one thing holding the series together.
     if club_id is None and any(m.team_position == "F" for m in matches):
         st.caption(
-            "Finals have no home side in the source, so for rows marked "
-            "Final the two columns are simply the two clubs, in a fixed "
-            "order — not a home-and-away split.")
-    st.caption("Select a row to see that match's full detail.")
+            f"{V.postseason.capitalize()} have no home side in the source, "
+            f"so for rows marked Final the two columns are simply the two "
+            f"{V.clubs}, in a fixed order — not a home-and-away split.")
+    st.caption(f"Select a row to see that {V.game}'s full detail.")
     components.clickable_match_table(
         table, matches, key="pg_matches", render_body=_match_dialog_body,
         column_config={
@@ -249,7 +255,7 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
 
     if crowds and len(crowds) < len(matches):
         st.caption(
-            f"{len(matches) - len(crowds):,} of these matches have no "
+            f"{len(matches) - len(crowds):,} of these {V.games} have no "
             "recorded attendance. They are left blank rather than counted "
             "as a crowd of zero, and are excluded from the average above.")
 

@@ -21,8 +21,12 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
+import components
+
 #: Link statuses the rest of the codebase treats as resolved.
 TRUSTED = ("from_draft", "unique", "resolved")
+
+ANY = "Any"
 
 #: Awards grouped for the picker, in the order a reader would look for
 #: them. Anything in the table but not named here still appears, under
@@ -84,6 +88,35 @@ def _honour_roll(con: sqlite3.Connection, slug: str) -> pd.DataFrame:
         con, params=(*TRUSTED, slug))
 
 
+def _clubs_for(con: sqlite3.Connection, slug: str) -> list[str]:
+    """Clubs this award has actually been won by, for the filter.
+
+    Read from the award's own rows rather than from the club list: the
+    source spells a club as it was spelled at the time ('Brisbane', 'South
+    Melbourne'), and offering the current eighteen would filter half the
+    honour roll to nothing.
+    """
+    return [row[0] for row in con.execute(
+        "SELECT DISTINCT club FROM awards "
+        "WHERE award_slug = ? AND club IS NOT NULL AND TRIM(club) != '' "
+        "ORDER BY club", (slug,))]
+
+
+def _filter_roll(roll: pd.DataFrame, club: str, seasons, name: str
+                 ) -> pd.DataFrame:
+    """Apply the honour-roll filters, each one optional."""
+    out = roll
+    if club and club != ANY and "Club" in out.columns:
+        out = out[out["Club"].astype(str).str.strip() == club]
+    if seasons and "Season" in out.columns:
+        lo, hi = seasons
+        out = out[(out["Season"] >= lo) & (out["Season"] <= hi)]
+    if name.strip() and "Player" in out.columns:
+        out = out[out["Player"].astype(str).str.contains(
+            name.strip(), case=False, na=False)]
+    return out
+
+
 def _multiple_winners(con: sqlite3.Connection, slug: str) -> pd.DataFrame:
     return pd.read_sql_query(
         """SELECT a.player AS Player, COUNT(*) AS Wins,
@@ -94,15 +127,23 @@ def _multiple_winners(con: sqlite3.Connection, slug: str) -> pd.DataFrame:
 
 
 def _all_australian(con: sqlite3.Connection, season: int) -> pd.DataFrame:
+    """One season's side, with the player link the roll uses."""
     return pd.read_sql_query(
-        """SELECT position AS Position, player AS Player, club AS Club,
-                  times_aa AS "Times AA",
-                  CASE WHEN is_captain THEN 'Captain'
-                       WHEN is_vice_captain THEN 'Vice-captain'
-                       ELSE '' END AS Role
-           FROM all_australian WHERE season = ?
-           ORDER BY is_captain DESC, is_vice_captain DESC, position, player""",
-        con, params=(season,))
+        """SELECT a.position AS Position, a.player AS Player, a.club AS Club,
+                  a.times_aa AS "Times AA",
+                  CASE WHEN a.is_captain THEN 'Captain'
+                       WHEN a.is_vice_captain THEN 'Vice-captain'
+                       ELSE '' END AS Role,
+                  l.player_id AS player_id
+           FROM all_australian a
+           LEFT JOIN person_links l
+             ON l.dg_person_id = a.dg_person_id
+            AND l.match_status IN (?, ?, ?)
+            AND l.player_id IS NOT NULL
+           WHERE a.season = ?
+           ORDER BY a.is_captain DESC, a.is_vice_captain DESC,
+                    a.position, a.player""",
+        con, params=(*TRUSTED, season))
 
 
 def _drop_empty(frame: pd.DataFrame) -> pd.DataFrame:
@@ -119,13 +160,20 @@ def _drop_empty(frame: pd.DataFrame) -> pd.DataFrame:
 
 def awards_page(sport, con: sqlite3.Connection) -> None:
     st.markdown("# Awards")
+
+    # The strapline names this page's actual contents, which are the AFL's.
+    # It used to be printed for every sport, so the NBA and the NFL -- which
+    # have no award data at all and fall through to this page because they
+    # declare no module of their own -- announced All-Australian selections
+    # before saying they had nothing.
+    if not sport.has_awards_page:
+        st.info(f"No award data is loaded for {sport.label}. "
+                f"{sport.vocab.title_case('club')} honours for this sport "
+                "have not been imported yet.")
+        return
     st.caption(
         "Honour rolls for AFL/VFL, state-league and club awards, plus "
         "All-Australian selections and Hall of Fame inductees.")
-
-    if not sport.has_awards_page:
-        st.info(f"No award data is loaded for {sport.label}.")
-        return
     if not awards_data_available(con):
         st.info("Award data is not loaded. Run `python -m afl.load_draftguru`, "
                 "then `python -m afl.link_people`.")
@@ -177,17 +225,50 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
                     "award went unawarded.")
 
             roll = _honour_roll(con, slug)
-            unlinked = int(roll["player_id"].isna().sum())
-            table = _drop_empty(roll.drop(columns=["player_id"]))
-            st.dataframe(table, hide_index=True, width="stretch")
-            st.download_button(
-                "Download CSV", table.to_csv(index=False),
-                file_name=f"{slug}.csv", mime="text/csv", key=f"dl_{slug}")
-            if unlinked:
-                st.caption(
-                    f"{unlinked} of {len(roll)} rows could not be resolved to "
-                    "a player in this database. They are listed because the "
-                    "award was still won.")
+
+            # Search within the roll. A roll is a century of winners, and
+            # "who won it for Carlton", "who won it in the eighties" and
+            # "did this player ever win it" were all questions the page
+            # could show the answer to but not let anyone ask.
+            s1, s2, s3 = st.columns([1.2, 1.6, 1.2])
+            clubs = _clubs_for(con, slug)
+            club = s1.selectbox(f"{sport.vocab.title_case('club')}",
+                                [ANY, *clubs], key=f"aw_club_{slug}",
+                                disabled=not clubs,
+                                help=None if clubs else
+                                "The source records no club for this award.")
+            all_seasons = sorted({int(s) for s in roll["Season"].dropna()})
+            if len(all_seasons) > 1:
+                seasons = s2.select_slider(
+                    "Seasons", options=all_seasons,
+                    value=(all_seasons[0], all_seasons[-1]),
+                    key=f"aw_years_{slug}")
+            else:
+                seasons = None
+            name = s3.text_input("Player contains", key=f"aw_name_{slug}",
+                                 placeholder="surname…")
+
+            shown = _filter_roll(roll, club, seasons, name)
+            if shown.empty:
+                st.info("No winners match those filters.")
+            else:
+                if len(shown) != len(roll):
+                    st.caption(f"{len(shown)} of {len(roll)} rows shown.")
+                unlinked = int(shown["player_id"].isna().sum())
+                player_ids = shown["player_id"].tolist()
+                table = _drop_empty(shown.drop(columns=["player_id"]))
+                st.caption("Select a row to see that player's full career.")
+                components.clickable_player_table(
+                    table, player_ids, sport, con, key=f"aw_roll_{slug}")
+                st.download_button(
+                    "Download CSV", table.to_csv(index=False),
+                    file_name=f"{slug}.csv", mime="text/csv",
+                    key=f"dl_{slug}")
+                if unlinked:
+                    st.caption(
+                        f"{unlinked} of {len(shown)} rows could not be "
+                        "resolved to a player in this database. They are "
+                        "listed because the award was still won.")
 
             repeats = _multiple_winners(con, slug)
             if not repeats.empty:
@@ -202,9 +283,26 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
             seasons = [r[0] for r in con.execute(
                 "SELECT DISTINCT season FROM all_australian "
                 "ORDER BY season DESC")]
-            season = st.selectbox("Season", seasons, key="aw_aa_season")
-            st.dataframe(_all_australian(con, season), hide_index=True,
-                         width="stretch")
+            a1, a2 = st.columns([1, 2])
+            season = a1.selectbox("Season", seasons, key="aw_aa_season")
+            club_filter = a2.selectbox(
+                "Club", [ANY, *[r[0] for r in con.execute(
+                    "SELECT DISTINCT club FROM all_australian "
+                    "WHERE club IS NOT NULL AND TRIM(club) != '' "
+                    "ORDER BY club")]],
+                key="aw_aa_club")
+            side = _all_australian(con, season)
+            if club_filter != ANY:
+                side = side[side["Club"].astype(str).str.strip()
+                            == club_filter]
+            if side.empty:
+                st.info("No selections match those filters.")
+            else:
+                player_ids = side["player_id"].tolist()
+                st.caption("Select a row to see that player's full career.")
+                components.clickable_player_table(
+                    side.drop(columns=["player_id"]), player_ids, sport, con,
+                    key=f"aw_aa_{season}")
             with st.expander("Most selections, all time"):
                 st.dataframe(pd.read_sql_query(
                     """SELECT player AS Player, COUNT(*) AS Selections,
@@ -220,25 +318,38 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
         if bnf.empty:
             st.info("No club best-and-fairest awards are loaded.")
         else:
-            slug = st.selectbox(
+            b1, b2, b3 = st.columns([1.6, 1.6, 1.2])
+            slug = b1.selectbox(
                 "Club award", list(bnf.award_slug),
                 format_func=lambda s: (f"{by_slug[s].award_name} "
                                        f"({s.replace('_', ' ').title()})"),
                 key="aw_bnf")
-            st.dataframe(
-                _drop_empty(_honour_roll(con, slug).drop(
-                    columns=["player_id"])),
-                hide_index=True, width="stretch")
+            roll = _honour_roll(con, slug)
+            years = sorted({int(s) for s in roll["Season"].dropna()})
+            span = (b2.select_slider(
+                "Seasons", options=years, value=(years[0], years[-1]),
+                key=f"aw_bnf_years_{slug}") if len(years) > 1 else None)
+            name = b3.text_input("Player contains", key=f"aw_bnf_name_{slug}",
+                                 placeholder="surname…")
+            shown = _filter_roll(roll, ANY, span, name)
+            if shown.empty:
+                st.info("No winners match those filters.")
+            else:
+                st.caption("Select a row to see that player's full career.")
+                components.clickable_player_table(
+                    _drop_empty(shown.drop(columns=["player_id"])),
+                    shown["player_id"].tolist(), sport, con,
+                    key=f"aw_bnf_roll_{slug}")
 
     # ------------------------------------------------------ hall of fame
     if "Hall of Fame" in tab:
         with tab["Hall of Fame"]:
-            _hall_of_fame(con)
+            _hall_of_fame(sport, con)
 
     # ----------------------------------------------- teams of the century
     if "Teams of the Century" in tab:
         with tab["Teams of the Century"]:
-            _teams_of_the_century(con)
+            _teams_of_the_century(sport, con)
 
     # -------------------------------------------------------- catalogue
     with tab["All awards"]:
@@ -252,7 +363,7 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
             hide_index=True, width="stretch")
 
 
-def _hall_of_fame(con: sqlite3.Connection) -> None:
+def _hall_of_fame(sport, con: sqlite3.Connection) -> None:
     total, legends, linked = con.execute(
         "SELECT COUNT(*), SUM(is_legend), "
         "SUM(player_id IS NOT NULL) FROM hall_of_fame").fetchone()
@@ -263,19 +374,45 @@ def _hall_of_fame(con: sqlite3.Connection) -> None:
               help="Inductees include coaches, umpires and administrators, "
                    "who have no player record by definition.")
 
-    only_legends = st.checkbox("Legends only", key="aw_hof_legend")
-    where = " WHERE is_legend = 1" if only_legends else ""
-    st.dataframe(pd.read_sql_query(
+    h1, h2, h3 = st.columns([1, 1.6, 1.2])
+    only_legends = h1.checkbox("Legends only", key="aw_hof_legend")
+    clubs = [r[0] for r in con.execute(
+        "SELECT DISTINCT club FROM hall_of_fame "
+        "WHERE club IS NOT NULL AND TRIM(club) != '' ORDER BY club")]
+    club = h2.selectbox(f"{sport.vocab.title_case('club')}", [ANY, *clubs],
+                        key="aw_hof_club", disabled=not clubs)
+    name = h3.text_input("Name contains", key="aw_hof_name",
+                         placeholder="surname…")
+
+    where, params = [], []
+    if only_legends:
+        where.append("is_legend = 1")
+    if club != ANY:
+        where.append("club = ?")
+        params.append(club)
+    if name.strip():
+        where.append("name LIKE ?")
+        params.append(f"%{name.strip()}%")
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+
+    frame = pd.read_sql_query(
         f"""SELECT name AS Name, inducted_year AS Inducted,
                    CASE WHEN is_legend THEN 'Legend' ELSE '' END AS Status,
-                   category AS Category, source_url AS Source
-            FROM hall_of_fame{where}
-            ORDER BY is_legend DESC, name""", con),
-        hide_index=True, width="stretch",
+                   club AS Club, category AS Category, source_url AS Source,
+                   player_id
+            FROM hall_of_fame{clause}
+            ORDER BY is_legend DESC, name""", con, params=tuple(params))
+    if frame.empty:
+        st.info("No inductees match those filters.")
+        return
+    st.caption("Select a row to see that player's full career.")
+    components.clickable_player_table(
+        _drop_empty(frame.drop(columns=["player_id"])),
+        frame["player_id"].tolist(), sport, con, key="aw_hof_table",
         column_config={"Source": st.column_config.LinkColumn("Source")})
 
 
-def _teams_of_the_century(con: sqlite3.Connection) -> None:
+def _teams_of_the_century(sport, con: sqlite3.Connection) -> None:
     teams = [r[0] for r in con.execute(
         "SELECT DISTINCT team_name FROM team_selections ORDER BY team_name")]
     if not teams:
@@ -288,8 +425,10 @@ def _teams_of_the_century(con: sqlite3.Connection) -> None:
            FROM team_selections WHERE team_name = ?
            ORDER BY sort_order, name""", con, params=(team,))
     unlinked = int(frame["player_id"].isna().sum())
-    st.dataframe(_drop_empty(frame.drop(columns=["player_id"])),
-                 hide_index=True, width="stretch")
+    st.caption("Select a row to see that player's full career.")
+    components.clickable_player_table(
+        _drop_empty(frame.drop(columns=["player_id"])),
+        frame["player_id"].tolist(), sport, con, key=f"aw_toc_{team}")
     if unlinked:
         st.caption(f"{unlinked} of {len(frame)} selections could not be "
                    "resolved to a player in this database.")

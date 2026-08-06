@@ -28,6 +28,8 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
+ANY = "Any"
+
 #: Awards grouped for the picker, in the order a reader looks for them.
 #: Anything in the table but not named here appears under "Other awards",
 #: so a new award in a later Lahman release shows up without this file
@@ -92,16 +94,36 @@ def _honour_roll(con: sqlite3.Connection, award: str) -> pd.DataFrame:
     LEFT JOIN, not JOIN: an award row whose player is somehow absent from
     `players` is still a win that happened, and dropping it would quietly
     shorten the honour roll rather than showing a gap.
+
+    The winner's franchise comes from `games`: Lahman's awards table has no
+    club column, but a player's season with a team is exactly what one of
+    its `games` rows is, so the club the award was won at is recoverable
+    where the player played for a single team that year.
     """
     return pd.read_sql_query(
-        """SELECT a.season AS Season, p.player AS Player,
+        """WITH won AS (
+               SELECT DISTINCT player_id, season FROM awards WHERE award = ?),
+           club_of AS (
+               SELECT g.player_id, g.season, g.club_hist,
+                      ROW_NUMBER() OVER (
+                          PARTITION BY g.player_id, g.season
+                          ORDER BY SUM(g.games) DESC, g.club_hist) AS rn
+               FROM games g
+               JOIN won w ON w.player_id = g.player_id
+                         AND w.season = g.season
+               WHERE g.is_postseason = 0
+               GROUP BY g.player_id, g.season, g.club_hist)
+           SELECT a.season AS Season, p.player AS Player,
+                  c.club_hist AS Club,
                   a.lgID AS League, a.tie AS Tie, a.notes AS Notes,
                   a.player_id AS player_id
            FROM awards a
            LEFT JOIN players p ON p.player_id = a.player_id
+           LEFT JOIN club_of c ON c.player_id = a.player_id
+                              AND c.season = a.season AND c.rn = 1
            WHERE a.award = ?
            ORDER BY a.season DESC, p.player""",
-        con, params=(award,))
+        con, params=(award, award))
 
 
 def _multiple_winners(con: sqlite3.Connection, award: str) -> pd.DataFrame:
@@ -125,7 +147,8 @@ def _hall_of_fame(con: sqlite3.Connection) -> pd.DataFrame:
     return pd.read_sql_query(
         """SELECT h.season AS Inducted, p.player AS Player,
                   h.category AS Category, h.votedBy AS "Voted by",
-                  h.votes AS Votes, h.ballots AS Ballots
+                  h.votes AS Votes, h.ballots AS Ballots,
+                  h.player_id AS player_id
            FROM hall_of_fame h
            LEFT JOIN players p ON p.player_id = h.player_id
            WHERE UPPER(TRIM(h.inducted)) = 'Y'
@@ -189,8 +212,43 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
         st.info("No rows for that award.")
         return
 
-    player_ids = roll["player_id"].tolist()
-    table = _drop_empty(roll.drop(columns=["player_id"]))
+    # Search within the roll. Some of these rolls are thousands of rows --
+    # Player of the Week runs weekly since 1973 -- and the page could show
+    # them all while letting nobody ask "who won it for the Cubs in 1998".
+    # Widget keys carry the award: the clubs and the seasons are different
+    # for every one of them, and a slider holding a 1975 value from the
+    # previous award is a value its new options do not contain.
+    f1, f2, f3 = st.columns([1.4, 1.6, 1.2])
+    slug = award.lower().replace(" ", "_")
+    clubs = sorted(c for c in roll["Club"].dropna().unique() if str(c).strip())
+    club = f1.selectbox(sport.vocab.title_case("club"), [ANY, *clubs],
+                        key=sport.k("mlb_aw_club", slug), disabled=not clubs)
+    years = sorted({int(s) for s in roll["Season"].dropna()})
+    span = (f2.select_slider(f"{sport.vocab.title_case('season')}s",
+                             options=years, value=(years[0], years[-1]),
+                             key=sport.k("mlb_aw_years", slug))
+            if len(years) > 1 else None)
+    name = f3.text_input("Player contains",
+                         key=sport.k("mlb_aw_name", slug),
+                         placeholder="surname…")
+
+    shown = roll
+    if club != ANY:
+        shown = shown[shown["Club"].astype(str).str.strip() == club]
+    if span:
+        shown = shown[(shown["Season"] >= span[0])
+                      & (shown["Season"] <= span[1])]
+    if name.strip():
+        shown = shown[shown["Player"].astype(str).str.contains(
+            name.strip(), case=False, na=False)]
+    if shown.empty:
+        st.info("No winners match those filters.")
+        return
+    if len(shown) != len(roll):
+        st.caption(f"{len(shown):,} of {len(roll):,} rows shown.")
+
+    player_ids = shown["player_id"].tolist()
+    table = _drop_empty(shown.drop(columns=["player_id"]))
     st.caption("Select a row to see that player's full career.")
     components.clickable_player_table(
         table, player_ids, sport, con, key=sport.k("mlb_aw_roll"))
@@ -212,5 +270,8 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
         else:
             st.caption(f"{len(hof):,} inducted members. The source table is "
                        "a ballot record, so players who appeared on a ballot "
-                       "without being elected are not listed here.")
-            st.dataframe(hof, hide_index=True, width="stretch")
+                       "without being elected are not listed here. Select a "
+                       "row to see that player's full career.")
+            components.clickable_player_table(
+                hof.drop(columns=["player_id"]), hof["player_id"].tolist(),
+                sport, con, key=sport.k("mlb_hof"))

@@ -24,6 +24,7 @@ import pandas as pd
 import streamlit as st
 
 import core
+import labels
 
 SCOPES = {
     "Single game": "game",
@@ -71,7 +72,7 @@ def _era_note(sport, stats=None):
         return None
     by_year = {}
     for stat, year in sorted(late.items(), key=lambda kv: (kv[1], kv[0])):
-        by_year.setdefault(year, []).append(stat.replace("_", " "))
+        by_year.setdefault(year, []).append(labels.words(stat))
     parts = [f"{', '.join(names)} from {year}"
              for year, names in sorted(by_year.items())]
     return "Not recorded for the full database: " + "; ".join(parts) + "."
@@ -301,7 +302,13 @@ def _career_blurb(V, debut, final, games, n_clubs, draft_year=None):
     codes ("RB", "G"), not nouns, and "this rb played..." reads as a typo
     rather than prose. The position still shows in the bio rows above,
     where it is a label rather than a sentence subject.
+
+    Returns "" for a player the database knows of but has no games for --
+    thousands of the NFL's -- because "played 0 games for 0 teams between
+    None and None" is worse than saying nothing.
     """
+    if not (debut and final and games):
+        return ""
     club_clause = f"one {V.club}" if n_clubs == 1 else f"{n_clubs} {V.clubs}"
     prefix = f"Drafted in {int(draft_year)}, " if draft_year else ""
     sentence = (f"{prefix}this player played {games:,} {V.games} for "
@@ -310,7 +317,7 @@ def _career_blurb(V, debut, final, games, n_clubs, draft_year=None):
 
 
 def render_player_profile(sport, con, pid, key_prefix="explore",
-                          heading_level="##"):
+                          heading_level="##", nested=False):
     """One player's career, rendered as a trading-card back wherever it is
     asked for.
 
@@ -322,6 +329,11 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
     each need their own "ranked by" selectbox. `heading_level` is accepted
     for backward compatibility but no longer used -- the card banner
     carries its own heading treatment regardless of caller.
+
+    `nested` says this profile is itself inside a dialog. Streamlit opens
+    at most one dialog per script run, so the season and game tables below
+    are drawn plain in that case rather than raising when a click inside
+    the card tries to open a second overlay.
     """
     V, sc = sport.vocab, sport.schema
     revision = _db_revision(sport.db)
@@ -342,7 +354,15 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
     if not p:
         return
     bio = dict(zip((name for name, _ in bio_fields), p[9:]))
-    n_clubs = len(p[6].split("|")) if p[6] else 0
+    # Every one of these is optional in at least one build. 13,670 of the
+    # NFL's players are known to the rosters without ever appearing in a
+    # game row, so they have no club history, no debut or final season and
+    # no career games -- and this card is reachable for them from the
+    # player picker and from any table that lists them.
+    clubs_hist = p[6] or ""
+    debut, final = p[1], p[2]
+    career_games = p[3] or 0
+    n_clubs = len(clubs_hist.split("|")) if clubs_hist else 0
 
     # Trusted captain appointments, shown in the bio column when a sport
     # has them. Gated on the constraints module declaring the layer rather
@@ -376,14 +396,18 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
     # can actually answer it.
     titles = _titles_won(sport, con, pid, revision)
 
+    span = (f"{debut}–{final}" if debut and final
+            else str(debut or final or ""))
+    subtitle = " · ".join(
+        part for part in (span, clubs_hist.replace("|", ", ")) if part)
+
     with st.container(border=True):
         st.markdown(
             f"<div class='card-banner'>"
             f"<div class='card-banner-name'>{p[0]}</div>"
             f"<div class='card-banner-stars'>{core.stars_html(p[8])}</div>"
             f"</div>"
-            f"<div class='card-banner-sub'>{p[1]}–{p[2]} · "
-            f"{p[6].replace('|', ', ')}</div>",
+            f"<div class='card-banner-sub'>{subtitle}</div>",
             unsafe_allow_html=True)
         if captain_line:
             st.caption(captain_line)
@@ -412,8 +436,10 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                     f"<div class='bio-row'><span class='bio-label'>{label}"
                     f"</span><span class='bio-value'>{val}</span></div>",
                     unsafe_allow_html=True)
-            st.caption(_career_blurb(
-                V, p[1], p[2], p[3], n_clubs, bio.get("draft_year")))
+            blurb = _career_blurb(V, debut, final, career_games, n_clubs,
+                                  bio.get("draft_year"))
+            if blurb:
+                st.caption(blurb)
 
         with stat_col:
             st.markdown(
@@ -430,13 +456,24 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                 FROM {sc.games} WHERE {sc.player_id} = ?
                 GROUP BY {sc.season}, {sc.club_hist} ORDER BY {sc.season}"""
             seasons = _read_frame(seasons_sql, (pid,), revision, con)
-            st.dataframe(seasons, hide_index=True, width="stretch",
-                        height=300)
+            if nested or seasons.empty:
+                st.dataframe(seasons, hide_index=True, width="stretch",
+                             height=300)
+            else:
+                # A row here is one club's season, so it opens that season
+                # for that club: who won it, how the club went, who led it.
+                import components
+                st.caption(f"Select a {V.season} for its overview.")
+                components.clickable_season_table(
+                    seasons, seasons["Season"].tolist(), sport, con,
+                    key=sport.k(key_prefix, "seasons", pid),
+                    clubs=seasons[V.club.capitalize()].tolist(),
+                    height=300)
 
         tiles = [
-            (V.games.capitalize(), f"{p[3]:,}"),
+            (V.games.capitalize(), f"{career_games:,}"),
             (V.score.capitalize(), f"{int(p[4] or 0):,}"),
-            (V.postseason.capitalize(), p[5]),
+            (V.postseason.capitalize(), p[5] if p[5] is not None else 0),
         ]
         if titles is not None:
             tiles.append((V.title_plural, titles))
@@ -451,20 +488,32 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
 
     st.markdown(f"### Biggest {V.games}")
     metric = st.selectbox("Ranked by", list(sc.stats),
+                          format_func=labels.title,
                           key=sport.k(key_prefix, "best", pid))
     warning = sport.stat_era_warning(metric)
     if warning:
         st.caption(f"⚠ {warning}")
+    metric_header = labels.title(metric)
     best_sql = f"""
-        SELECT {sc.season} AS Season, {sc.round} AS Rnd,
-               {sc.club_hist} AS For, {sc.opponent} AS Opponent,
+        SELECT {sc.player} AS Player, {sc.season} AS Season,
+               {sc.round} AS Rnd, {sc.club_hist} AS For,
+               {sc.opponent} AS Opponent,
                {sc.venue} AS "{V.venue.capitalize()}", {sc.result} AS Res,
-               {metric} AS "{metric}"
+               {metric} AS "{metric_header}"
         FROM {sc.games}
         WHERE {sc.player_id} = ? AND {metric} IS NOT NULL
         ORDER BY {metric} DESC, {sc.season} LIMIT 20"""
     best = _read_frame(best_sql, (pid,), revision, con)
-    st.dataframe(best, hide_index=True, width="stretch")
+    if nested or best.empty:
+        st.dataframe(best.drop(columns=["Player"], errors="ignore"),
+                     hide_index=True, width="stretch")
+    else:
+        import components
+        st.caption(f"Select a {V.game} for its full record.")
+        components.clickable_game_table(
+            best, sport, con, key=sport.k(key_prefix, "best_games", pid),
+            stat=metric_header,
+            column_order=[c for c in best.columns if c != "Player"])
 
 
 # ---------------------------------------------------- player comparison
@@ -545,7 +594,7 @@ def _compare_players(sport, con, player_picker):
             lo_a, hi_a = a.covered[stat]
             lo_b, hi_b = b.covered[stat]
             rows.append({
-                "Statistic": stat.replace("_", " "),
+                "Statistic": labels.title(stat),
                 a.player: float(x), b.player: float(y),
                 "Leader": a.player if x > y else (b.player if y > x else "—"),
                 "Recorded": f"{lo_a}–{hi_a} vs {lo_b}–{hi_b}",
@@ -611,7 +660,8 @@ def leaderboard_page(sport, con):
                "filters.")
 
     c1, c2, c3 = st.columns([1.2, 1.2, 1])
-    stat = c1.selectbox("Statistic", list(sc.stats), key=sport.k("lb_stat"))
+    stat = c1.selectbox("Statistic", list(sc.stats),
+                        format_func=labels.title, key=sport.k("lb_stat"))
     scope = c2.selectbox("Scope", list(SCOPES), key=sport.k("lb_scope"))
     limit = c3.number_input("Rows", 5, 200, 30, step=5,
                             key=sport.k("lb_limit"))
@@ -622,13 +672,14 @@ def leaderboard_page(sport, con):
 
     where, params = _filters(sport, con, sport.k("lb"))
     mode = SCOPES[scope]
+    stat_header = labels.title(stat)
 
     if mode == "game":
         q = f"""SELECT g.{sc.player} AS Player, g.{sc.season} AS Season,
                        g.{sc.round} AS Rnd, g.{sc.club_hist} AS For,
                        g.{sc.opponent} AS Opponent,
                        g.{sc.venue} AS "{V.venue.capitalize()}",
-                       g.{stat} AS "{stat}",
+                       g.{stat} AS "{stat_header}",
                        p.{sc.career_games} AS "Career {V.games}",
                        p.{sc.obscurity} AS Obsc,
                        p.{sc.player_id} AS PlayerID
@@ -640,7 +691,7 @@ def leaderboard_page(sport, con):
         q = f"""SELECT g.{sc.player} AS Player, g.{sc.season} AS Season,
                        g.{sc.club_hist} AS For,
                        COUNT(*) AS "{V.games.capitalize()}",
-                       SUM(g.{stat}) AS "{stat}",
+                       SUM(g.{stat}) AS "{stat_header}",
                        ROUND(AVG(g.{stat}),1) AS "per {V.game}",
                        p.{sc.obscurity} AS Obsc,
                        p.{sc.player_id} AS PlayerID
@@ -654,7 +705,7 @@ def leaderboard_page(sport, con):
                        MIN(g.{sc.season}) || '-' || MAX(g.{sc.season})
                          AS Career,
                        COUNT(*) AS "{V.games.capitalize()}",
-                       SUM(g.{stat}) AS "{stat}",
+                       SUM(g.{stat}) AS "{stat_header}",
                        ROUND(AVG(g.{stat}),1) AS "per {V.game}",
                        p.{sc.obscurity} AS Obsc,
                        p.{sc.player_id} AS PlayerID
@@ -756,6 +807,7 @@ def random_page(sport, con):
     stat = None
     if kind == "Notable performance":
         stat = st.selectbox("Performance statistic", list(sc.stats),
+                            format_func=labels.title,
                             key=sport.k("random_stat"))
 
     result_key = sport.k("random_result")
@@ -790,7 +842,7 @@ def random_page(sport, con):
         if not r:
             return
         st.markdown(f"## {r[0]} — {int(r[7]) if r[7] is not None else '—'} "
-                    f"{saved_stat.replace('_', ' ')}")
+                    f"{labels.words(saved_stat)}")
         st.write(f"**{r[1]} {r[2]}** · {r[3]} v {r[4]} · {r[5]} · {r[6]}")
         st.caption("Selected randomly from the top 200 performances for the "
                    "chosen statistic.")

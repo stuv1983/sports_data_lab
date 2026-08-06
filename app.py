@@ -25,6 +25,7 @@ import streamlit as st
 import components
 import core
 import db_pool
+import labels
 import sports
 import theme
 
@@ -283,7 +284,7 @@ st.markdown(theme.css(PALETTE), unsafe_allow_html=True)
 # ------------------------------------------------------- axis definition
 def _stat_label(stat):
     """'frees_against' -> 'frees against', for a board header."""
-    return str(stat).replace("_", " ")
+    return labels.words(stat)
 
 
 #: Builder name -> how its square reads on the board. The generic builders
@@ -446,8 +447,8 @@ def axis_widget(key, default_type, defaults=None):
             stats = list(SCHEMA.stats)
             want = defaults.get(a, stats[0])
             idx = stats.index(want) if want in stats else 0
-            chosen = st.selectbox(a.replace("_", " "), stats, key=wk,
-                                  index=idx)
+            chosen = st.selectbox(labels.words(a), stats, key=wk,
+                                  index=idx, format_func=labels.title)
             # Era honesty: say so before the square answers, not after.
             warning = SPORT.stat_era_warning(chosen)
             if warning:
@@ -561,7 +562,17 @@ NAV_ITEMS = [
 requested_page = st.query_params.get("page")
 if "page" not in st.session_state and requested_page == "search":
     st.session_state["page"] = "Advanced Search"
-PAGE = st.sidebar.radio("Navigate", NAV_ITEMS, key="page")
+
+#: The two nav items whose name is a sport's word rather than a fixed one.
+#: The values stay as they are -- they are what the page dispatch and the
+#: `?page=` links are written against -- and only the label changes, so an
+#: NBA reader is offered "Team Explorer" and not "Club Explorer".
+_NAV_LABELS = {
+    "Club Explorer": f"{V.club.capitalize()} Explorer",
+    "Past Games": f"Past {V.games.capitalize()}",
+}
+PAGE = st.sidebar.radio("Navigate", NAV_ITEMS, key="page",
+                        format_func=lambda item: _NAV_LABELS.get(item, item))
 
 if PAGE != "Grid Solver":
     import explore
@@ -958,10 +969,19 @@ for r in range(3):
             # solver nothing about which square to attack first. On the
             # absolute scale the tiles differ, and comparing squares is the
             # only question a board-level rating can answer.
+            #
+            # The years the shown answer played. A name on its own does not
+            # say whether the best pick is a current player or someone from
+            # the 1920s, which is the first thing a solver wants to know
+            # about a name they do not recognise. Read positionally from the
+            # schema's own solve columns, so it is right for whichever sport
+            # is loaded rather than assuming the AFL's column order.
+            span = SCHEMA.career_span(sq.best)
             face = (
                 f"<div class='square{' is-open' if open_here else ''}'>"
                 f"<div class='square-name'>{sq.best_name}</div>"
-                f"<div>{core.stars_html(sq.obscurity)}</div>"
+                + (f"<div class='square-meta'>{span}</div>" if span else "")
+                + f"<div>{core.stars_html(sq.obscurity)}</div>"
                 f"<div class='square-meta'>{sq.eligible:,} eligible</div>"
                 f"</div>")
             action = "open" if not open_here else "showing"

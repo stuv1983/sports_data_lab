@@ -24,6 +24,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import labels
+
 #: Optional link layers: table -> (label, id column, script hint).
 LINK_LAYERS = {
     "captaincies": ("Captaincy", "player_id", "afl/load_captains.py"),
@@ -737,13 +739,17 @@ def health_page(SPORT, con) -> None:
             f"{mc['finals']:,} finals observations · link outcomes: "
             + ", ".join(f"{n:,} {s}" for s, n in mc["statuses"].items()))
 
-    st.subheader("What is in the database")
-    st.caption("Every table, what it holds and how many rows.")
-    st.dataframe(
-        [{"Table": name, "Rows": f"{n:,}" if n >= 0 else "unreadable",
-          "Holds": TABLE_PURPOSE.get(name, "—")}
-         for name, n in report["tables"]],
-        width="stretch", hide_index=True)
+    # Collapsed by default: this is the longest table on the page -- one
+    # row per table in the database -- and it pushed the coverage panels
+    # that follow it below the fold on every sport.
+    with st.expander(f"What is in the database "
+                     f"({len(report['tables'])} tables)"):
+        st.caption("Every table, what it holds and how many rows.")
+        st.dataframe(
+            [{"Table": name, "Rows": f"{n:,}" if n >= 0 else "unreadable",
+              "Holds": TABLE_PURPOSE.get(name, "—")}
+             for name, n in report["tables"]],
+            width="stretch", hide_index=True)
 
     coverage_rows = report["stat_coverage"]
     with st.expander("Statistic coverage by era"):
@@ -753,12 +759,19 @@ def health_page(SPORT, con) -> None:
             "satisfied by an earlier player — that is a gap in the record, "
             "not in the player.")
         if coverage_rows:
-            st.dataframe(coverage_rows, width="stretch", hide_index=True)
+            # Prettified here rather than in stat_coverage_rows: that
+            # function also feeds the `--json` report, which is read by
+            # machines and wants the column name the database uses.
+            st.dataframe(
+                [{**row, "Statistic": labels.title(row["Statistic"])}
+                 for row in coverage_rows],
+                width="stretch", hide_index=True)
         else:
             st.info("Run `python load_stat_coverage.py` for measured "
                     "coverage with population percentages.")
             st.dataframe(
-                [{"Statistic": stat, "First recorded": season or "never"}
+                [{"Statistic": labels.title(stat),
+                  "First recorded": season or "never"}
                  for stat, season in report["stat_eras"]],
                 width="stretch", hide_index=True)
 
@@ -776,11 +789,9 @@ def health_page(SPORT, con) -> None:
                              f"Player-{SPORT.vocab.games}", "Players"]
                 ).set_index(SPORT.vocab.title_case("season")))
 
-    with st.expander("Tables and row counts"):
-        st.dataframe([{"Table": name, "Rows": f"{count:,}"}
-                      for name, count in report["tables"]],
-                     width="stretch", hide_index=True)
-
+    # No second table list here: "What is in the database" above is the
+    # same rows with a purpose column, and now that it collapses there is
+    # nothing for a bare row-count expander to add.
     if report["meta"]:
         with st.expander("Source refresh dates"):
             st.dataframe([{"Key": k, "Value": v} for k, v in report["meta"]],

@@ -37,6 +37,8 @@ whole reason the label is loud.
 import re
 from dataclasses import dataclass, field
 
+import labels
+
 from . import constraints as C
 from . import parse_criteria as P
 
@@ -326,7 +328,7 @@ def _era_warnings(sport, sql):
         # \b rather than a substring test: '_' is a word character, so
         # this fires on `marks` and not on `contested_marks`.
         if re.search(rf"\b{re.escape(stat)}\b", sql):
-            out.append(f"{stat.replace('_', ' ')} was not recorded before "
+            out.append(f"{labels.words(stat)} was not recorded before "
                        f"{first}.")
     return out
 
