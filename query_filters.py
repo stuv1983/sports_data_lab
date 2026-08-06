@@ -8,6 +8,7 @@ can become SQL identifiers; user values always remain bound parameters.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import re
 import shlex
 from typing import Any
@@ -46,6 +47,8 @@ def _number(value: str) -> int | float:
         number = float(value)
     except ValueError as exc:
         raise QuerySyntaxError(f"Expected a number, got {value!r}") from exc
+    if not math.isfinite(number):
+        raise QuerySyntaxError(f"Expected a finite number, got {value!r}")
     return int(number) if number.is_integer() else number
 
 
@@ -94,7 +97,9 @@ def _parse(query: str) -> tuple[list[tuple[str, str, str]], QuerySpec]:
         if key == "sort":
             spec.sort = value.lower().replace(" ", "_")
         elif key == "limit":
-            limit = int(_number(value))
+            limit = _number(value)
+            if not isinstance(limit, int):
+                raise QuerySyntaxError("limit must be a whole number")
             if not 1 <= limit <= 500:
                 raise QuerySyntaxError("limit must be between 1 and 500")
             spec.limit = limit
@@ -408,12 +413,12 @@ def query_from_params(query_params: dict) -> str:
         "played": ("played_from", "played_to"),
         "captain_year": ("captain_from", "captain_to"),
     }
-    for field, (lo_key, hi_key) in pairs.items():
+    for filter_name, (lo_key, hi_key) in pairs.items():
         lo, hi = values(lo_key), values(hi_key)
         if lo or hi:
             left = lo[-1] if lo else hi[-1]
             right = hi[-1] if hi else lo[-1]
-            tokens.append(f"{field}:{left}..{right}")
+            tokens.append(f"{filter_name}:{left}..{right}")
 
     # Structured game-stat parameters: game_disposals_min=30.
     for key in query_params:

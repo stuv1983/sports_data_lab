@@ -14,6 +14,8 @@ _os.chdir(_ROOT)
 
 import sqlite3
 
+import pytest
+
 import core
 import query_filters as Q
 
@@ -81,6 +83,13 @@ def run():
     else:
         raise AssertionError("unknown stat should be rejected")
     print("query filter tests: passed")
+
+
+@pytest.mark.parametrize("query", ["limit:1.5", "limit:nan", "games>=inf"])
+def test_non_integral_or_non_finite_numbers_are_rejected(query):
+    con, schema = fixture()
+    with pytest.raises(Q.QuerySyntaxError):
+        Q.compile_query(schema, query, con=con)
 
 
 if __name__ == "__main__":

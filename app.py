@@ -333,7 +333,8 @@ def axis_widget(key, default_type, defaults=None):
             want = defaults.get("venue", names[0] if names else "")
             idx = names.index(want) if want in names else 0
             pick = st.selectbox(V.venue.capitalize(), range(len(vs)),
-                                index=idx, format_func=lambda i: vs[i][1],
+                                index=idx,
+                                format_func=lambda i, options=vs: options[i][1],
                                 key=wk)
             args.append(vs[pick][0])
         elif a == "player_id":
@@ -400,7 +401,9 @@ def axis_widget(key, default_type, defaults=None):
             want = defaults.get("award_axis")
             idx = keys.index(want) if want in keys else 0
             pick = st.selectbox("Award", range(len(choices)), index=idx,
-                                format_func=lambda i: choices[i][0], key=wk)
+                                format_func=lambda i, options=choices:
+                                    options[i][0],
+                                key=wk)
             args.append(choices[pick][0] if choices else None)
         elif a == "position":
             positions = list(getattr(C, "POSITIONS", ()))
@@ -413,6 +416,15 @@ def axis_widget(key, default_type, defaults=None):
                 "Batting average", min_value=0.0, max_value=1.0,
                 value=float(defaults.get("average", 0.300)),
                 step=0.005, format="%.3f", key=wk))
+        elif a == "war":
+            # WAR is a decimal statistic. Letting it fall through to the
+            # generic integer input made both MLB WAR builders impossible to
+            # configure with values such as 4.5 and silently coerced saved
+            # defaults with int().
+            fallback = 5.0 if kind == "X+ WAR in a season" else 50.0
+            args.append(st.number_input(
+                "Minimum WAR", value=float(defaults.get("war", fallback)),
+                step=0.5, format="%.1f", key=wk))
         elif a == "min_plate_appearances":
             args.append(st.number_input(
                 "Minimum plate appearances", min_value=1, step=1,
@@ -427,7 +439,9 @@ def axis_widget(key, default_type, defaults=None):
             want = defaults.get("derby")
             idx = keys.index(want) if want in keys else 0
             pick = st.selectbox("Derby", range(len(choices)), index=idx,
-                                format_func=lambda i: choices[i][1], key=wk)
+                                format_func=lambda i, options=choices:
+                                    options[i][1],
+                                key=wk)
             args.append(choices[pick][0] if choices else None)
         elif a == "event":
             events = marquee_event_options(SPORT.key, SPORT.db, DB_REVISION)
@@ -441,7 +455,9 @@ def axis_widget(key, default_type, defaults=None):
             want = defaults.get("rivalry")
             idx = keys.index(want) if want in keys else 0
             pick = st.selectbox("Rivalry", range(len(choices)), index=idx,
-                                format_func=lambda i: choices[i][1], key=wk)
+                                format_func=lambda i, options=choices:
+                                    options[i][1],
+                                key=wk)
             args.append(choices[pick][0] if choices else None)
         elif a in ("stat", "stat_a", "stat_b"):
             stats = list(SCHEMA.stats)
@@ -519,6 +535,10 @@ def axis_widget(key, default_type, defaults=None):
         label = f"{args[0]}+ {V.score}\ntwo diff {V.clubs}"
     elif kind == "Fewer than X career games":
         label = f"under {args[0]} {V.games}"
+    elif kind == "X+ WAR in a season":
+        label = f"{args[0]:g}+ WAR\nin a {V.season}"
+    elif kind == "X+ career WAR":
+        label = f"{args[0]:g}+ career WAR"
     elif kind == "Two stats in the same game":
         label = f"{args[1]}+ {args[0]} &\n{args[3]}+ {args[2]}"
     elif kind == "X+ games with Y+ of a stat":
@@ -950,14 +970,14 @@ for r in range(3):
         cell = row[c + 1]
 
         if sq is None:
-            face = (f"<div class='square is-empty'>"
-                    f"<div class='square-name'>—</div>"
-                    f"<div class='square-meta'>define both axes</div></div>")
+            face = ("<div class='square is-empty'>"
+                    "<div class='square-name'>—</div>"
+                    "<div class='square-meta'>define both axes</div></div>")
             action = "unavailable"
         elif sq.eligible == 0:
-            face = (f"<div class='square is-empty'>"
-                    f"<div class='square-name'>No answer</div>"
-                    f"<div class='square-meta'>0 eligible</div></div>")
+            face = ("<div class='square is-empty'>"
+                    "<div class='square-name'>No answer</div>"
+                    "<div class='square-meta'>0 eligible</div></div>")
             action = "no answers"
         else:
             # Absolute stars here, within-square stars in the results table
