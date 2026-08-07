@@ -190,6 +190,7 @@ def write_all_nba(db):
     import sqlite3
 
     from nba import scrape_all_nba
+    from utils.shared import load_wiki_awards
 
     con = sqlite3.connect(db)
     try:
@@ -206,6 +207,15 @@ def write_all_nba(db):
               None, None)
              for pid, season, league, tier in ALL_NBA if pid in ids])
         for statement in scrape_all_nba.INDEXES:
+            con.execute(statement)
+        con.execute(load_wiki_awards.DDL)
+        con.execute(
+            "INSERT INTO wiki_awards VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("nba_mvp", "Most Valuable Player", 1971, "1971–72",
+             "Slick Watkins", "player", ids["p1"],
+             "Example Team", "G", "unique", 1, "mvp.csv", 2,
+             "{}", "fixture"))
+        for statement in load_wiki_awards.INDEXES:
             con.execute(statement)
         con.commit()
     finally:

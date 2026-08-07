@@ -69,8 +69,14 @@ SPORT = Sport(
     stat_eras=nba_reference.stat_eras(),
     optional_layers={"Draft data": "draft_available",
                      "Award data": "awards_available"},
+    loader_hints={
+        "awards_available": ("Run `python -m utils.shared.load_wiki_awards "
+                             "--sport nba --root <wiki-scrape-root>`.")
+    },
     obscurity_model=MODEL,
     has_club_explorer=True,
+    has_awards_page=True,
+    awards_page_module="utils.shared.wiki_awards_page",
     has_past_games=True,
     past_games_hint=("Run `python -m utils.nba.load_club_history` to project the "
                      "schedule already in the database into club-history "
@@ -81,7 +87,7 @@ SPORT = Sport(
         "clubs", "club_source_snapshots", "club_wikipedia_fields",
         "club_player_totals", "club_player_register", "club_player_records",
     }),
-    club_data_hint=("Run `python -m utils.shared.derive_club_tables --sport nba` "
+    club_data_hint=("Run `python utils/derive_club_tables.py --sport nba` "
                     "for Team Explorer."),
     search_examples=(
         'club:"Boston Celtics" games>=500 sort:obscurity',

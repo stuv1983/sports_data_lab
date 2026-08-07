@@ -93,6 +93,7 @@ SPORT = Sport(
     #: recorded in build_warnings while the build succeeds -- so "not
     #: loaded" is a real answer the panel has to be able to give.
     optional_layers={"Draft data": "draft_available",
+                     "Award data": "awards_available",
                      "Rosters (1920 on)": "rosters_available",
                      "Weekly rosters (2002 on)": "rosters_weekly_available",
                      "Snap counts (2012 on)": "snap_counts_available",
@@ -103,15 +104,21 @@ SPORT = Sport(
                      "Contracts": "contracts_available",
                      "Trades": "trades_available"},
     loader_hints={
+        "awards_available": ("Run `python -m utils.shared.load_wiki_awards "
+                             "--sport nfl --root <wiki-scrape-root>`."),
+        **{
         probe: "Rebuild with `python build_nfl_db.py --all-history "
                "--extended --replace`, then `python -m utils.nfl.patch_nfl_db`."
         for probe in ("rosters_weekly_available", "snap_counts_available",
                       "injuries_available", "depth_charts_available",
                       "officials_available", "combine_available",
                       "contracts_available", "trades_available")
+        }
     },
     obscurity_model=MODEL,
     has_club_explorer=True,
+    has_awards_page=True,
+    awards_page_module="utils.shared.wiki_awards_page",
     has_past_games=True,
     past_games_hint=("Run `python -m utils.nfl.load_club_history` to project the "
                      "schedule already in the database into club-history "
@@ -121,7 +128,7 @@ SPORT = Sport(
         "clubs", "club_source_snapshots", "club_wikipedia_fields",
         "club_player_totals", "club_player_register", "club_player_records",
     }),
-    club_data_hint=("Run `python -m utils.shared.derive_club_tables --sport nfl` "
+    club_data_hint=("Run `python utils/derive_club_tables.py --sport nfl` "
                     "for Team Explorer."),
     #: nflverse's player list is every known identity, most of whom retired
     #: before the weekly statistics begin. A player with no game is not an

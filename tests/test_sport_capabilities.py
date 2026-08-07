@@ -280,7 +280,7 @@ def test_afl_criterion_parser_and_game_lab_modules_import():
 
 # --------------------------------------------------------------- the NBA
 
-def test_nba_declares_none_of_the_afl_only_pages():
+def test_nba_declares_only_the_shared_pages_it_supports():
     """Club Explorer and Past Games are no longer among them.
 
     Club Explorer reads six tables that utils/shared/derive_club_tables.py now
@@ -292,7 +292,8 @@ def test_nba_declares_none_of_the_afl_only_pages():
     assert sports.NBA.grid_library is False
     assert sports.NBA.criterion_parser == ""
     assert sports.NBA.game_lab_module == ""
-    assert sports.NBA.has_awards_page is False
+    assert sports.NBA.has_awards_page is True
+    assert sports.NBA.awards_page_module == "utils.shared.wiki_awards_page"
 
 
 @pytest.mark.parametrize(
@@ -303,9 +304,18 @@ def test_past_games_sports_say_how_to_load_them(sport):
     assert sport.past_games_hint, sport.key
 
 
-def test_nba_has_no_loader_hints_because_it_has_no_loaders():
-    """Naming a script that does not exist is worse than saying nothing."""
-    assert sports.NBA.loader_hints == {}
+def test_nba_award_hint_names_the_shared_loader():
+    hint = sports.NBA.loader_hints["awards_available"]
+    assert "utils.shared.load_wiki_awards" in hint
+    assert "--sport nba" in hint
+
+
+def test_nfl_declares_the_wikipedia_awards_page_and_loader():
+    assert sports.NFL.has_awards_page is True
+    assert sports.NFL.awards_page_module == "utils.shared.wiki_awards_page"
+    hint = sports.NFL.loader_hints["awards_available"]
+    assert "utils.shared.load_wiki_awards" in hint
+    assert "--sport nfl" in hint
 
 
 @pytest.mark.parametrize("sport", [sports.NBA, sports.MLB, sports.NFL])
@@ -355,14 +365,14 @@ def test_missing_layer_hints_yields_the_afl_hints_when_layers_are_absent():
     con.close()
 
 
-def test_the_nba_status_panel_reports_its_layers_as_not_loaded(nba_db):
+def test_the_nba_status_panel_reports_the_loaded_award_layer(nba_db):
     con = sqlite3.connect(f"file:{nba_db}?mode=ro", uri=True)
     try:
         rows = dict(sports.NBA.status(con))
     finally:
         con.close()
     assert rows["Draft data"] == "not loaded"
-    assert rows["Award data"] == "not loaded"
+    assert rows["Award data"] == "ready (1)"
     assert "Players" in rows
 
 

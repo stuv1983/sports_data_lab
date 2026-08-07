@@ -73,6 +73,19 @@ def _honours(con: sqlite3.Connection, player_id: int) -> list[tuple[str, str]]:
     """
     out: list[tuple[str, str]] = []
 
+    if _table_exists(con, "wiki_awards"):
+        rows = con.execute(
+            """SELECT award_name, COUNT(*), GROUP_CONCAT(season)
+                 FROM wiki_awards
+                WHERE player_id=? AND match_status IN ('unique','resolved')
+                GROUP BY award_key, award_name
+                ORDER BY COUNT(*) DESC, award_name""", (player_id,)
+        ).fetchall()
+        for name, n, seasons in rows:
+            years = ", ".join(sorted(value for value in (seasons or "").split(",")
+                                     if value))
+            out.append((name, f"{n}× ({years})" if n > 1 else years))
+
     if _table_exists(con, "awards") and _table_exists(con, "person_links"):
         rows = con.execute(
             """SELECT a.award_name, COUNT(*), GROUP_CONCAT(a.season)

@@ -401,7 +401,7 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
             metrics.append(("Best season bWAR", f"{best_war[0]:,.1f}"))
     honours: dict[str, set] = {}
 
-    if sport_key == "afl":
+    if sport.has_draftguru_player_cards:
         if {"draft", "draft_links"} <= tables:
             draft = _con.execute(
                 """SELECT d.draft_year, d.draft_type, d.pick, d.club
@@ -462,6 +462,13 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
                 parts.append(str(values["draft_team"]))
             if parts:
                 bio.append(("Draft", " · ".join(parts)))
+
+    if "wiki_awards" in tables:
+        for name, season in _con.execute(
+                """SELECT award_name, season FROM wiki_awards
+                    WHERE player_id=? AND match_status IN ('unique','resolved')""",
+                (pid,)):
+            honours.setdefault(_clean_award_name(name), set()).add(season)
 
     honour_rows = [
         {"Honour": label, "Times": len(seasons),

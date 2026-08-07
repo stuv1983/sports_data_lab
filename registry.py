@@ -138,6 +138,10 @@ class Sport:
     search_examples: tuple = ()
     grid_defaults: tuple = ()
     venue_display: dict = field(default_factory=dict)
+    #: Player-card data supplied by Draftguru's linked people tables.  This
+    #: is a data-shape capability, not a synonym for a particular sport: a
+    #: shared page must never infer table semantics from ``sport.key``.
+    has_draftguru_player_cards: bool = False
 
     @property
     def star_disclaimer(self):

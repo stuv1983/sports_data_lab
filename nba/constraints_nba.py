@@ -245,6 +245,13 @@ def all_nba_with_club(club):
             [*identities, *identities])
 
 
+def won_wiki_award(award):
+    """Won the selected award in the normalized Wikipedia layer."""
+    return ("SELECT DISTINCT player_id FROM wiki_awards "
+            "WHERE award_key=? AND player_id IS NOT NULL "
+            "AND match_status IN ('unique','resolved')", [award])
+
+
 def born_outside_the_us():
     """Born outside the 50 states and DC.
 
@@ -320,14 +327,27 @@ BUILDERS = {
     "Born outside the US":        (born_outside_the_us, []),
     "All-NBA selection":          (all_nba_selection, []),
     "All-NBA with club":          (all_nba_with_club, ["club"]),
+    "Won an NBA award":           (won_wiki_award, ["award"]),
 }
 
 #: Builders needing an optional layer. Both empty for these milestones --
 #: app.py filters BUILDERS by these sets, and an empty set means nothing is
 #: hidden rather than everything.
 DRAFT_BUILDERS = set()
-AWARD_BUILDER_NAMES = set()
-AWARD_SLUGS = {}
+AWARD_BUILDER_NAMES = {"Won an NBA award"}
+AWARD_SLUGS = {
+    "Most Valuable Player": "nba_mvp",
+    "Rookie of the Year": "nba_rookie_of_year",
+    "Defensive Player of the Year": "nba_defensive_player_of_year",
+    "Sixth Man of the Year": "nba_sixth_man",
+    "Clutch Player of the Year": "nba_clutch_player_of_year",
+    "NBA Cup MVP": "nba_cup_mvp",
+    "All-Defensive First Team": "nba_all_defensive_first_team",
+    "All-Defensive Second Team": "nba_all_defensive_second_team",
+    "All-Rookie First Team": "nba_all_rookie_first_team",
+    "All-Rookie Second Team": "nba_all_rookie_second_team",
+    "Naismith Hall of Fame": "naismith_hall_of_fame",
+}
 
 #: Draft categories offered in the UI. Empty because no NBA draft layer is
 #: loaded; app.py reads this instead of hardcoding the AFL's eight.
@@ -354,8 +374,16 @@ def draft_available(con):
 
 
 def awards_available(con):
-    """True when an NBA award layer has been imported. Not in this build."""
-    return core.have_tables(con, "nba_awards")
+    """True when linked Wikipedia award recipients have been imported."""
+    if not core.have_tables(con, "wiki_awards"):
+        return False
+    return bool(con.execute(
+        "SELECT 1 FROM wiki_awards WHERE player_id IS NOT NULL LIMIT 1"
+    ).fetchone())
+
+
+def awards_count(con):
+    return con.execute("SELECT COUNT(*) FROM wiki_awards").fetchone()[0]
 
 
 def _has_player_column(con, column):

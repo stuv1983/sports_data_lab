@@ -195,13 +195,13 @@ def test_teammates_are_absent_rather_than_answered_wrongly():
 
 def test_optional_layer_probes_answer_false_without_raising(con):
     assert C.draft_available(con) is False
-    assert C.awards_available(con) is False
+    assert C.awards_available(con) is True
 
 
-def test_no_builder_needs_a_layer_that_is_not_loaded():
+def test_optional_builders_are_declared_for_ui_gating():
     """DRAFT_BUILDERS and AWARD_BUILDER_NAMES gate the axis dropdown."""
     assert C.DRAFT_BUILDERS == set()
-    assert C.AWARD_BUILDER_NAMES == set()
+    assert C.AWARD_BUILDER_NAMES == {"Won an NBA award"}
     assert C.DRAFT_TYPES == ()
 
 

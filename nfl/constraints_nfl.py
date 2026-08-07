@@ -293,6 +293,13 @@ def listed_out_on_an_injury_report():
 
 # ---------------------------------------------------------------- registry
 
+def won_wiki_award(award):
+    """Won the selected award in the normalized Wikipedia layer."""
+    return ("SELECT DISTINCT player_id FROM wiki_awards "
+            "WHERE award_key=? AND player_id IS NOT NULL "
+            "AND match_status IN ('unique','resolved')", [award])
+
+
 BUILDERS = {
     "Played for club":            (played_for, ["club"]),
     "150+ / X+ career games":     (career_games_min, ["games"]),
@@ -363,6 +370,7 @@ BUILDERS = {
     "Contract worth $X million+":     (contract_worth_at_least, ["x"]),
     "Named in a trade":               (was_traded, []),
     "Ruled out on an injury report":  (listed_out_on_an_injury_report, []),
+    "Won an NFL award":               (won_wiki_award, ["award"]),
 }
 
 #: Builder -> the availability probe app.py gates it on. A build without
@@ -386,8 +394,13 @@ LAYER_BUILDERS = {
 DRAFT_BUILDERS = {"Drafted in round X", "Draft pick between",
                   "Drafted by club", "Drafted between years",
                   "Undrafted (no draft record)"}
-AWARD_BUILDER_NAMES = set()
-AWARD_SLUGS = {}
+AWARD_BUILDER_NAMES = {"Won an NFL award"}
+AWARD_SLUGS = {
+    "AP Most Valuable Player": "nfl_mvp",
+    "AP Offensive Player of the Year": "nfl_offensive_player_of_year",
+    "AP Defensive Player of the Year": "nfl_defensive_player_of_year",
+    "AP Rookie of the Year": "nfl_rookie_of_year",
+}
 #: The NFL has one draft, so there is no type to choose between.
 DRAFT_TYPES = ()
 TEAM_SEASON_BUILDERS = set()
@@ -409,6 +422,18 @@ def draft_count(con):
     return con.execute(
         "SELECT COUNT(*) FROM players WHERE draft_year IS NOT NULL"
     ).fetchone()[0]
+
+
+def awards_available(con):
+    if not core.have_tables(con, "wiki_awards"):
+        return False
+    return bool(con.execute(
+        "SELECT 1 FROM wiki_awards WHERE player_id IS NOT NULL LIMIT 1"
+    ).fetchone())
+
+
+def awards_count(con):
+    return con.execute("SELECT COUNT(*) FROM wiki_awards").fetchone()[0]
 
 
 # ------------------------------------------------------- source layers

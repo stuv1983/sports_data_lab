@@ -59,6 +59,7 @@ that wants a table can do `pd.DataFrame(r.__dict__ for r in rows)`.
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 from dataclasses import dataclass
 from typing import Iterable, Literal
 
@@ -843,8 +844,10 @@ def reconcile(con: sqlite3.Connection,
 
     2. `team_seasons`, built independently from the fitzRoy player-stats
        source, against the home-and-away record aggregated here. Two
-       different sources agreeing on a club's season is a real check; this
-       module deriving its own numbers twice would not be.
+       different sources agreeing on a completed club season is a real
+       check; this module deriving its own numbers twice would not be. The
+       active season is omitted because the feeds refresh independently
+       and can legitimately be one round apart.
     """
     problems: list[str] = []
     trust_sql, trust_params = _trust(include_unlinked)
@@ -887,7 +890,15 @@ def reconcile(con: sqlite3.Connection,
     derived = {(r.club_id, r.season): r for r in
                season_records(con, scope="home_and_away",
                               include_unlinked=include_unlinked)}
+    this_year = date.today().year
+    season_finished = con.execute(
+        f"""SELECT 1 FROM {SOURCE_TABLE}
+             WHERE season = ? AND UPPER(TRIM(round)) IN ('GF', 'GRAND FINAL')
+             LIMIT 1""", (this_year,)).fetchone()
+    active_season = None if season_finished else this_year
     for club, season, played, w, d, l, pf, pa in ladder:
+        if int(season) == active_season:
+            continue
         row = derived.get((club, season))
         if row is None:
             continue

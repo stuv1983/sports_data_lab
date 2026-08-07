@@ -112,13 +112,14 @@ SPORT = Sport(
     has_past_games=True,
     ground_explorer_module="afl.ground_explorer",
     has_ground_explorer=True,
+    has_draftguru_player_cards=True,
     past_games_hint=("Run `python -m utils.afl.fetch_club_sources`, then "
                      "`python -m utils.afl.load_club_all_games`."),
     #: A grand final is one match, so a win in it is a premiership.
     title_round="GF",
     loader_hints={
-        "draft_available": "Run `python -m utils.afl.load_draftguru`, then `python -m afl.link_draft`.",
-        "awards_available": "Run `python -m utils.afl.load_draftguru`, then `python -m afl.link_people`.",
+        "draft_available": "Run `python afl/load_draftguru.py`, then `python -m afl.link_draft`.",
+        "awards_available": "Run `python afl/load_draftguru.py`, then `python -m afl.link_people`.",
         "captain_available": "Run `python -m utils.afl.load_captains` for club-captain data.",
         "rising_star_available": ("Run `afl/fetch_footywire_rising_star.py`, "
                                   "then `python -m utils.afl.load_rising_star`."),
