@@ -583,7 +583,7 @@ def test_widget_parameters():
     # reference it by name for this check to pass.
     handled = {"club", "player", "player_id", "stat", "stat_a", "stat_b",
                "venue", "kind", "source", "avg", "award", "times", "season",
-               "place", "votes"}
+               "place", "votes", "ground_status", "ground_metric"}
     numeric = {"games", "goals", "n", "n_a", "n_b", "clubs", "from", "to"}
     unknown = set()
     for kind, (fn, argnames) in C.BUILDERS.items():

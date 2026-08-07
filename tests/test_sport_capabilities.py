@@ -54,6 +54,7 @@ IMPLEMENTED_IDS = [s.key for s in IMPLEMENTED]
 
 CAPABILITIES = ("criterion_parser", "grid_library", "game_lab_module",
                 "has_club_explorer", "has_awards_page", "has_past_games",
+                "has_ground_explorer",
                 "loader_hints", "club_data_tables", "club_data_hint",
                 "past_games_hint", "family_hint", "search_examples",
                 "grid_defaults", "venue_display")
@@ -255,6 +256,8 @@ def test_afl_declares_the_pages_it_actually_has():
     assert sports.AFL.has_club_explorer is True
     assert sports.AFL.has_awards_page is True
     assert sports.AFL.has_past_games is True
+    assert sports.AFL.has_ground_explorer is True
+    assert sports.AFL.ground_explorer_module == "afl.ground_explorer"
 
 
 def test_afl_club_data_tables_are_the_six_app_py_used_to_hardcode():
@@ -270,7 +273,8 @@ def test_afl_has_a_hint_for_every_layer_it_declares():
 
 def test_afl_criterion_parser_and_game_lab_modules_import():
     import importlib
-    for name in (sports.AFL.criterion_parser, sports.AFL.game_lab_module):
+    for name in (sports.AFL.criterion_parser, sports.AFL.game_lab_module,
+                 sports.AFL.ground_explorer_module):
         assert importlib.import_module(name)
 
 

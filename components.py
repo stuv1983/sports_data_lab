@@ -115,6 +115,12 @@ def _entity_columns(df, *, player=False, season=True, clubs=True) -> dict:
         ):
             if column in df.columns:
                 actions[column] = "club"
+        # Pair-comparison tables qualify the same entity with a player's
+        # name ("Patrick Dangerfield club") so the two sides remain clear.
+        for column in df.columns:
+            key = str(column).casefold()
+            if key.endswith(" club") or key.endswith(" opponent"):
+                actions[column] = "club"
     for column in ("Round", "Rnd", "Rd"):
         if column in df.columns:
             actions[column] = "round"

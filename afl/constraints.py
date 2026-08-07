@@ -92,6 +92,73 @@ def _venue(name):
     return SCHEMA.canonical_venue(name)
 
 
+# A compound ground criterion lets a grid square express much more than
+# merely appearing there: e.g. 10 wins at the MCG or 50 career marks at
+# Kardinia Park.  The values, rather than free-form SQL, are exposed to the
+# UI so saved grids remain deterministic and safe.
+GROUND_STATUS_CHOICES = (
+    ("all", "All games"),
+    ("wins", "Wins"),
+    ("losses", "Losses"),
+    ("draws", "Draws"),
+    ("finals", "Finals"),
+    ("final_wins", "Finals wins"),
+)
+GROUND_METRIC_CHOICES = (
+    ("games", "Games played"),
+    ("wins", "Games won"),
+    ("goals", "Goals"),
+    ("behinds", "Behinds"),
+    ("score", "Player score (points)"),
+    ("marks", "Marks"),
+    ("disposals", "Disposals"),
+    ("kicks", "Kicks"),
+    ("handballs", "Handballs"),
+    ("tackles", "Tackles"),
+    ("brownlow", "Brownlow votes"),
+)
+
+_GROUND_STATUS_SQL = {
+    "all": "1=1",
+    "wins": "g.result = 'W'",
+    "losses": "g.result = 'L'",
+    "draws": "g.result = 'D'",
+    "finals": "g.is_final = 1",
+    "final_wins": "g.is_final = 1 AND g.result = 'W'",
+}
+_GROUND_METRIC_SQL = {
+    "games": "COUNT(*)",
+    "wins": "SUM(g.result = 'W')",
+    "goals": "SUM(g.goals)",
+    "behinds": "SUM(g.behinds)",
+    "score": "SUM(COALESCE(g.goals, 0) * 6 + COALESCE(g.behinds, 0))",
+    "marks": "SUM(g.marks)",
+    "disposals": "SUM(g.disposals)",
+    "kicks": "SUM(g.kicks)",
+    "handballs": "SUM(g.handballs)",
+    "tackles": "SUM(g.tackles)",
+    "brownlow": "SUM(g.brownlow)",
+}
+
+
+def ground_performance(venue, ground_status, ground_metric, minimum):
+    """Players reaching a cumulative performance threshold at one ground."""
+    if ground_status not in _GROUND_STATUS_SQL:
+        raise ValueError(f"Unknown ground status: {ground_status}")
+    if ground_metric not in _GROUND_METRIC_SQL:
+        raise ValueError(f"Unknown ground metric: {ground_metric}")
+    ground = SCHEMA.canonical_venue(venue)
+    expression = _GROUND_METRIC_SQL[ground_metric]
+    stat_column = "goals" if ground_metric == "score" else ground_metric
+    availability = ("" if ground_metric in {"games", "wins"} else
+                    f"AND g.{stat_column} IS NOT NULL")
+    return (f"""SELECT g.player_id FROM games g
+                 WHERE g.venue = ? AND {_GROUND_STATUS_SQL[ground_status]}
+                   {availability}
+                 GROUP BY g.player_id
+                 HAVING {expression} >= ?""", [ground, minimum])
+
+
 # -------------------------------------------------------- AFL-specific
 # A grand final is one nominated round, not simply the last post-season
 # game, so these read `round` rather than the generic is_final flag.
@@ -222,6 +289,9 @@ BUILDERS = {
     "Multi-club player":          (multi_club_player, []),
     "First career game for club": (debut_club, ["club"]),
     "Played at venue":            (played_at_venue, ["venue"]),
+    "Ground performance":         (ground_performance,
+                                    ["venue", "ground_status",
+                                     "ground_metric", "x"]),
     "Won a final at venue":       (won_a_final_at, ["venue"]),
     "X+ finals games":            (finals_games_min, ["x"]),
     "Played in a final":          (played_in_a_final, []),

@@ -111,6 +111,9 @@ class Sport:
     has_club_explorer: bool = False
     has_awards_page: bool = False
     has_past_games: bool = False
+    #: Optional sport-owned page for venue/ground history and records.
+    ground_explorer_module: str = ""
+    has_ground_explorer: bool = False
     #: The `games.round` value whose win means the sport's title -- 'GF' for
     #: the AFL, 'WS' for the MLB, 'SB' for the NFL. The player profile counts
     #: distinct seasons won to show a premiership/World Series/Super Bowl

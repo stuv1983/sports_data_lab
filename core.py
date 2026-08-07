@@ -476,32 +476,38 @@ class Generic:
 
     # -- teammates --------------------------------------------------
     def teammate_of_id(self, player_id):
-        """Teammate lookup by id -- unambiguous even for namesakes."""
+        """Players who appeared in the same match for the same club."""
         s = self.s
         return (f"""SELECT DISTINCT g.{s.player_id} FROM {s.games} g
-                    JOIN (SELECT DISTINCT {s.club_now}, {s.season}
+                    JOIN (SELECT DISTINCT {s.club_hist}, {s.season},
+                                          {s.date}, {s.opponent}
                           FROM {s.games} WHERE {s.player_id} = ?) w
-                      ON g.{s.club_now} = w.{s.club_now}
+                      ON g.{s.club_hist} = w.{s.club_hist}
                      AND g.{s.season} = w.{s.season}
+                     AND g.{s.date} = w.{s.date}
+                     AND g.{s.opponent} = w.{s.opponent}
                     WHERE g.{s.player_id} <> ?""", [player_id, player_id])
 
     def teammate_of(self, name):
         """
         Name-based teammate lookup, kept for grid labels that only give a
         surname. Matches the full name first and falls back to a surname
-        match, which unions the club-seasons of every namesake -- a
+        match, which unions the actual matches of every namesake -- a
         superset, never a missed answer. Prefer teammate_of_id().
         """
         s = self.s
         return (f"""SELECT DISTINCT g.{s.player_id} FROM {s.games} g
-                    JOIN (SELECT DISTINCT {s.club_now}, {s.season}, {s.player}
+                    JOIN (SELECT DISTINCT {s.club_hist}, {s.season},
+                                          {s.date}, {s.opponent}, {s.player}
                           FROM {s.games}
                           WHERE LOWER({s.player}) = LOWER(?)
                              OR (LOWER({s.player}) LIKE ? AND NOT EXISTS (
                                    SELECT 1 FROM {s.players}
                                    WHERE LOWER({s.player}) = LOWER(?)))) w
-                      ON g.{s.club_now} = w.{s.club_now}
+                      ON g.{s.club_hist} = w.{s.club_hist}
                      AND g.{s.season} = w.{s.season}
+                     AND g.{s.date} = w.{s.date}
+                     AND g.{s.opponent} = w.{s.opponent}
                     WHERE LOWER(g.{s.player}) <> LOWER(w.{s.player})""",
                 [name, f"% {name.lower()}", name])
 

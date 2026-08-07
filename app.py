@@ -476,6 +476,24 @@ def axis_widget(key, default_type, defaults=None):
                                     options[i][1],
                                 key=wk)
             args.append(choices[pick][0] if choices else None)
+        elif a in ("ground_status", "ground_metric"):
+            choices = list(getattr(
+                C, "GROUND_STATUS_CHOICES" if a == "ground_status"
+                else "GROUND_METRIC_CHOICES", ()))
+            values = [value for value, _ in choices]
+            want = defaults.get(a)
+            idx = values.index(want) if want in values else 0
+            pick = st.selectbox(
+                "Match status" if a == "ground_status" else "Measure",
+                range(len(choices)), index=idx,
+                format_func=lambda i, options=choices: options[i][1], key=wk)
+            chosen = choices[pick][0] if choices else None
+            if a == "ground_metric" and chosen not in (None, "games", "wins"):
+                warning = SPORT.stat_era_warning(
+                    "goals" if chosen == "score" else chosen)
+                if warning:
+                    st.caption(f"⚠ {warning}")
+            args.append(chosen)
         elif a in ("stat", "stat_a", "stat_b"):
             stats = list(SCHEMA.stats)
             want = defaults.get(a, stats[0])
@@ -523,6 +541,11 @@ def axis_widget(key, default_type, defaults=None):
         verb = ("played at" if kind.startswith("Played")
                 else f"won a {V.postseason_one} at")
         label = f"{verb}\n{args[0]}"
+    elif kind == "Ground performance":
+        statuses = dict(getattr(C, "GROUND_STATUS_CHOICES", ()))
+        metrics = dict(getattr(C, "GROUND_METRIC_CHOICES", ()))
+        label = (f"{args[3]}+ {metrics.get(args[2], args[2])}\n"
+                 f"{statuses.get(args[1], args[1]).lower()} at {args[0]}")
     elif kind == "Played in state":
         label = f"played in\n{args[0]}"
     elif kind == "X+ finals games":
@@ -597,6 +620,7 @@ NAV_ITEMS = [
     "Home",
     "Player Search",
     "Club Explorer",
+    "Ground Explorer",
     "Past Games",
     "Awards",
     "Advanced Search",
@@ -606,6 +630,8 @@ NAV_ITEMS = [
     "Game Lab",
     "Database Health",
 ]
+if not SPORT.has_ground_explorer:
+    NAV_ITEMS.remove("Ground Explorer")
 requested_page = st.query_params.get("page")
 if "page" not in st.session_state and requested_page == "search":
     st.session_state["page"] = "Advanced Search"
@@ -630,6 +656,11 @@ if PAGE != "Grid Solver":
     elif PAGE == "Club Explorer":
         from afl import club_explorer
         club_explorer.club_explorer_page(SPORT, con)
+    elif PAGE == "Ground Explorer":
+        import importlib
+
+        module = importlib.import_module(SPORT.ground_explorer_module)
+        module.ground_explorer_page(SPORT, con)
     elif PAGE == "Past Games":
         from afl import past_games
         past_games.past_games_page(SPORT, con)

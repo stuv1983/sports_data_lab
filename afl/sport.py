@@ -110,6 +110,8 @@ SPORT = Sport(
     has_awards_page=True,
     awards_page_module="afl.awards_page",
     has_past_games=True,
+    ground_explorer_module="afl.ground_explorer",
+    has_ground_explorer=True,
     past_games_hint=("Run `python utils/fetch_club_sources.py`, then "
                      "`python utils/load_club_all_games.py`."),
     #: A grand final is one match, so a win in it is a premiership.

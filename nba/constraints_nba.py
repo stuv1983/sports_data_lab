@@ -19,13 +19,10 @@ new label entry and a new scope-label entry to say the same thing.
 
 TEAMMATES ARE DELIBERATELY ABSENT
 ---------------------------------
-core.Generic.teammate_of_id matches players who share a (club, season), and
-in the NBA that is wrong often enough to matter: a player traded in
-February and a player traded away in December share a team and a season and
-were never on the floor together. The AFL's trade window makes this a rare
-edge case; the NBA's does not. Answering it properly needs shared *matches*,
-which is a later milestone, so "Teammate of…" is missing from BUILDERS
-rather than present and wrong.
+The generic matcher now requires shared match-level rows. This build does
+not yet expose its stable match identity through the schema, so "Teammate
+of…" remains absent from BUILDERS rather than present with roster-level
+semantics.
 """
 
 import core

@@ -12,8 +12,8 @@ renders those keys through the sport's Vocab -- "X+ career goals" reads as
 
 WHAT IS DELIBERATELY MISSING
 ---------------------------
-`teammate_of_id` matches players sharing a (club, season), which the NFL's
-53-man rosters and mid-season trades make far too loose to answer honestly.
+The generic teammate matcher requires exact shared matches. This module
+does not offer it until the weekly rows have a stable shared match identity.
 
 Everything here reads `games`, whose weekly player statistics begin in 1999.
 A square is therefore a question about a player's statistics-era career, not

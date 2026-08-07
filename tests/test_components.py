@@ -108,6 +108,17 @@ def test_entity_columns_make_round_and_venue_cells_navigable():
     }
 
 
+def test_entity_columns_recognise_player_qualified_club_columns():
+    frame = pd.DataFrame({
+        "Patrick Dangerfield club": ["Geelong"],
+        "Joel Selwood opponent": ["Adelaide"],
+    })
+    assert components._entity_columns(frame) == {
+        "Patrick Dangerfield club": "club",
+        "Joel Selwood opponent": "club",
+    }
+
+
 def test_round_action_carries_its_row_season(monkeypatch):
     opened = []
     monkeypatch.setattr(components, "_open_card",

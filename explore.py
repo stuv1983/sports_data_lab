@@ -178,6 +178,24 @@ def home_page(sport, con, draft_ok, awards_ok):
             f"<div class='feature-card'><h4>{title}</h4><p>{copy}</p></div>",
             unsafe_allow_html=True)
 
+    if sport.has_ground_explorer:
+        row3 = st.columns(3)
+        extra = [
+            ("Ground Explorer",
+             "Search every ground for overall and head-to-head records, "
+             "match history, leading players and best performances."),
+            (f"Past {V.games.capitalize()}",
+             f"Search the complete match archive by season, round, "
+             f"{V.club}, opponent and {V.venue}."),
+            ("Player Connections",
+             "Choose any two players to find every match they played as "
+             "teammates or opponents."),
+        ]
+        for col, (title, copy) in zip(row3, extra):
+            col.markdown(
+                f"<div class='feature-card'><h4>{title}</h4><p>{copy}</p></div>",
+                unsafe_allow_html=True)
+
     with st.expander("Coverage notes"):
         note = _era_note(sport)
         st.write(f"{V.score.capitalize()} and {V.club} history cover the "
@@ -233,11 +251,14 @@ def player_page(sport, con, player_picker):
     st.caption("Search the full player database, then inspect the selected "
                "player's career and best performances — or put two careers "
                "side by side.")
-    one, two = st.tabs(["One player", "Compare two"])
+    one, two, together = st.tabs(
+        ["One player", "Compare two", "Played with / against"])
     with one:
         _player_profile(sport, con, player_picker)
     with two:
         _compare_players(sport, con, player_picker)
+    with together:
+        _player_connections(sport, con, player_picker)
 
 
 def _player_profile(sport, con, player_picker):
@@ -677,6 +698,84 @@ def _compare_players(sport, con, player_picker):
                             f"{both.get('against_to')}") if against else None)
         else:
             st.caption("These two never played in the same match.")
+
+
+def _player_connections(sport, con, player_picker):
+    """Search the exact matches shared by any two selected players."""
+    sc = sport.schema
+    game_columns = {row[1] for row in con.execute(
+        f"PRAGMA table_info({sc.games})")}
+    if "match_id" not in game_columns:
+        st.info("Shared-match search is not available for this sport's data.")
+        return
+
+    left, right = st.columns(2)
+    with left:
+        a_sel = player_picker(sport.k("connections_a"), label="First player")
+    with right:
+        b_sel = player_picker(sport.k("connections_b"), label="Second player")
+    if a_sel is None or b_sel is None:
+        st.caption("Pick two players to find every match they played together or against each other.")
+        return
+    if a_sel[0] == b_sel[0]:
+        st.info("Pick two different players.")
+        return
+
+    stat_columns = [name for name in
+                    ("goals", "marks", "disposals", "kicks", "tackles", "brownlow")
+                    if name in game_columns]
+    stat_sql = "".join(
+        f', ga.{name} AS "A {labels.title(name)}", '
+        f'gb.{name} AS "B {labels.title(name)}"'
+        for name in stat_columns)
+    score_sql = ""
+    if {"points_for", "points_against"}.issubset(game_columns):
+        score_sql = (", CAST(ga.points_for AS INTEGER) || '–' || "
+                     "CAST(ga.points_against AS INTEGER) AS Score")
+    rows = pd.read_sql_query(
+        f"""SELECT ga.season AS Season, ga.round AS Round, ga.date AS Date,
+                   ga.venue AS Ground,
+                   CASE WHEN ga.club_hist = gb.club_hist
+                        THEN 'Teammates' ELSE 'Opponents' END AS Relationship,
+                   ga.club_hist AS "A Club", gb.club_hist AS "B Club",
+                   ga.opponent AS "A Opponent", ga.result AS "A Result"
+                   {score_sql}{stat_sql}
+              FROM {sc.games} ga
+              JOIN {sc.games} gb ON gb.match_id = ga.match_id
+             WHERE ga.{sc.player_id} = ? AND gb.{sc.player_id} = ?
+             ORDER BY ga.date DESC, ga.season DESC""",
+        con, params=(a_sel[0], b_sel[0]))
+
+    if rows.empty:
+        st.info(f"{a_sel[1]} and {b_sel[1]} never played in the same match.")
+        return
+    together = int((rows["Relationship"] == "Teammates").sum())
+    against = len(rows) - together
+    with st.container(horizontal=True):
+        st.metric("Shared matches", f"{len(rows):,}", border=True)
+        st.metric("As teammates", f"{together:,}", border=True)
+        st.metric("As opponents", f"{against:,}", border=True)
+        st.metric("Seasons", f"{rows['Season'].nunique():,}", border=True)
+
+    relationship = st.segmented_control(
+        "Relationship", ["All", "Teammates", "Opponents"], default="All",
+        key=sport.k("connections_relationship"))
+    shown = rows if relationship == "All" else rows.loc[
+        rows["Relationship"] == relationship]
+    shown = shown.rename(columns={
+        "A Club": f"{a_sel[1]} club", "B Club": f"{b_sel[1]} club",
+        "A Opponent": f"{a_sel[1]} opponent",
+        "A Result": f"{a_sel[1]} result",
+        **{f"A {labels.title(stat)}": f"{a_sel[1]} {labels.title(stat)}"
+           for stat in stat_columns},
+        **{f"B {labels.title(stat)}": f"{b_sel[1]} {labels.title(stat)}"
+           for stat in stat_columns},
+    })
+    st.caption("Select a round, ground or club in the table to open its full record.")
+    import components
+    components.clickable_entity_table(
+        shown, sport, con,
+        key=sport.k("connections", a_sel[0], b_sel[0], relationship))
 
 
 # ------------------------------------------------------ stats explorer

@@ -27,10 +27,8 @@ and wrong:
     total by a row count -- a season here. The per-game squares below
     divide by SUM(games) instead, which is the real denominator and is a
     column Lahman does give us.
-  * teammates -- core.Generic.teammate_of_id matches players sharing a
-    (club, season), which in baseball's trade market means two players who
-    were never in the same clubhouse. The NBA module declines this for the
-    same reason.
+  * teammates -- the generic matcher requires per-game player rows, while
+    this Lahman build stores player-team-season totals.
 
 The postseason squares are real: BattingPost, PitchingPost and SeriesPost
 give the build a per-round `result`, so "won a final" means won a
