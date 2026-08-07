@@ -99,6 +99,25 @@ def bbref_crosswalk(folder: Path) -> dict[str, str]:
                 and row["bbrefID"].strip() != row["playerID"].strip()}
 
 
+def team_crosswalk(folder: Path) -> dict[tuple[int, str], str]:
+    """(season, Baseball-Reference team id) -> Lahman season team name."""
+    path = folder / "Teams.csv"
+    if not path.exists():
+        return {}
+    with open(path, newline="", encoding="utf-8-sig") as handle:
+        output = {}
+        for row in csv.DictReader(handle):
+            team = (row.get("teamIDBR") or "").strip()
+            name = (row.get("name") or "").strip()
+            try:
+                season = int(row["yearID"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if team and name:
+                output[(season, team)] = name
+        return output
+
+
 def read_war(path: Path) -> dict[tuple[str, int, str], float]:
     """(player, season, team) -> WAR, summed over stints.
 
@@ -152,19 +171,66 @@ def load(con: sqlite3.Connection, folder: Path) -> dict:
 
     crosswalk = bbref_crosswalk(folder)
 
-    # `games` is keyed by the club's display name, the WAR files by
-    # Retrosheet-style team code, so the season+player pair does the
-    # matching and the team only disambiguates a split season.
+    # `games` is keyed by the club's display name, while the WAR files use
+    # Baseball-Reference team codes. Lahman's Teams.csv carries both
+    # (`teamIDBR` and `name`), which preserves traded-player stints instead
+    # of writing a combined season WAR onto every club row.
+    team_names = team_crosswalk(folder)
     by_player_season: dict[tuple[str, int], float] = defaultdict(float)
-    for (player, season, _team), value in war.items():
+    mapped: dict[tuple[str, int, str], float] = defaultdict(float)
+    fallback: dict[tuple[str, int], float] = defaultdict(float)
+    mapped_pairs = set()
+    for (player, season, team), value in war.items():
         player_id = crosswalk.get(player, player)
         by_player_season[(player_id, season)] += value
+        club = team_names.get((season, team))
+        if club:
+            mapped[(player_id, season, club)] += value
+            mapped_pairs.add((player_id, season))
+        else:
+            fallback[(player_id, season)] += value
 
-    rows = [(value, player_id, season)
-            for (player_id, season), value in by_player_season.items()]
+    # Materialize once and let SQLite join the indexed set. The old
+    # executemany issued more than 100,000 UPDATE statements and took
+    # minutes on the production database.
+    con.execute("DROP TABLE IF EXISTS temp._war_load")
+    con.execute("""CREATE TEMP TABLE _war_load (
+        player_id TEXT, season INTEGER, club_hist TEXT, war REAL,
+        PRIMARY KEY (player_id, season, club_hist))""")
     con.executemany(
-        "UPDATE games SET war = ? WHERE player_id = ? AND season = ? "
-        "AND is_postseason = 0", rows)
+        "INSERT INTO _war_load VALUES (?,?,?,?)",
+        [(player_id, season, club, value)
+         for (player_id, season, club), value in mapped.items()])
+    # A missing team-code mapping is safe only when the database has one
+    # club for that player-season. Current-year rows absent from Lahman and
+    # ambiguous split seasons stay unmatched rather than being guessed.
+    fallback_rows = [
+        (player_id, season, None, value)
+        for (player_id, season), value in fallback.items()
+        if (player_id, season) not in mapped_pairs
+    ]
+    con.executemany(
+        "INSERT INTO _war_load VALUES (?,?,?,?)", fallback_rows)
+
+    # Resolve only the small fallback set, not every games row. A correlated
+    # fallback on games made SQLite repeat this uniqueness test hundreds of
+    # thousands of times.
+    con.execute("""
+        UPDATE _war_load AS w SET club_hist = (
+            SELECT MIN(g.club_hist) FROM games g
+             WHERE g.player_id=w.player_id AND g.season=w.season
+               AND g.is_postseason=0
+            HAVING COUNT(DISTINCT g.club_hist)=1)
+         WHERE w.club_hist IS NULL
+    """)
+    con.execute("DELETE FROM _war_load WHERE club_hist IS NULL")
+    con.execute("""
+        UPDATE games AS g SET war=w.war
+          FROM _war_load AS w
+         WHERE g.is_postseason=0 AND g.player_id=w.player_id
+           AND g.season=w.season AND g.club_hist=w.club_hist
+    """)
+    con.execute("DROP TABLE temp._war_load")
 
     # A career total is summed from what actually landed on `games`, not
     # from the file, so it can never claim WAR for a season this database

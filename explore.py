@@ -286,9 +286,29 @@ def _titles_won(sport, con, pid, revision):
     page down.
     """
     round_value = getattr(sport, "title_round", "")
-    if not round_value:
-        return None
     sc = sport.schema
+    if not round_value:
+        # The NBA title is a best-of-seven series, so there is no single
+        # title-winning game row. Its derived team-season table carries the
+        # series outcome instead.
+        team_columns = {
+            row[1] for row in con.execute("PRAGMA table_info(team_seasons)")
+        }
+        needed = {"season", "club_now", "champion"}
+        if not needed <= team_columns:
+            return None
+        phase = " AND t.phase = 'regular'" if "phase" in team_columns else ""
+        try:
+            row = _fetchone(
+                f"""SELECT COUNT(DISTINCT g.{sc.season})
+                      FROM {sc.games} g JOIN team_seasons t
+                        ON t.season = g.{sc.season}
+                       AND t.club_now = g.{sc.club_now}
+                     WHERE g.{sc.player_id} = ? AND t.champion = 1{phase}""",
+                (pid,), revision, con)
+        except sqlite3.Error:
+            return None
+        return row[0] if row else 0
     try:
         row = _fetchone(
             f"SELECT COUNT(DISTINCT {sc.season}) FROM {sc.games} "
@@ -298,6 +318,172 @@ def _titles_won(sport, con, pid, revision):
     except sqlite3.Error:
         return None
     return row[0] if row else 0
+
+
+_CARD_METRICS = {
+    "afl": (("career_brownlow", "Brownlow votes", "int"),),
+    "mlb": (("career_hits", "Hits", "int"),
+            ("career_war", "Career bWAR", "decimal")),
+    "nba": (("career_rebounds", "Rebounds", "int"),
+            ("career_assists", "Assists", "int"),
+            ("career_steals", "Steals", "int"),
+            ("career_blocks", "Blocks", "int")),
+    "nfl": (("career_passing_yards", "Passing yards", "int"),
+            ("career_rushing_yards", "Rushing yards", "int"),
+            ("career_receiving_yards", "Receiving yards", "int"),
+            ("career_tackles", "Tackles", "int"),
+            ("career_sacks", "Sacks", "decimal"),
+            ("career_interceptions", "Interceptions", "int")),
+}
+
+
+def _clean_award_name(value):
+    text = str(value or "").strip()
+    for suffix in (" (AFL)", " (AFLCA)", " (AFLPA)"):
+        if text.endswith(suffix):
+            return text[:-len(suffix)]
+    return text
+
+
+def _honour_order(sport_key, label):
+    priorities = {
+        "afl": ("norm smith", "all-australian", "brownlow", "gary ayres",
+                "leigh matthews", "aflca", "best and fairest", "medal"),
+        "mlb": ("most valuable player", "cy young", "world series mvp",
+                "gold glove", "silver slugger", "rookie of the year",
+                "all-star", "triple crown"),
+    }.get(sport_key, ())
+    lowered = label.casefold()
+    return next((i for i, token in enumerate(priorities) if token in lowered),
+                len(priorities))
+
+
+@st.cache_data(show_spinner=False, max_entries=512)
+def _player_card_enrichment(sport_key, pid, revision, _con):
+    """Extra career totals, draft detail and honours for a player card."""
+    import sports
+
+    sport = sports.get(sport_key)
+    sc = sport.schema
+    player_columns = {
+        row[1] for row in _con.execute(f"PRAGMA table_info({sc.players})")
+    }
+    requested = [item for item in _CARD_METRICS.get(sport_key, ())
+                 if item[0] in player_columns]
+    metrics = []
+    if requested:
+        row = _con.execute(
+            f"SELECT {', '.join(col for col, _, _ in requested)} "
+            f"FROM {sc.players} WHERE {sc.player_id} = ?", (pid,)
+        ).fetchone()
+        for (_, label, kind), value in zip(requested, row or ()):
+            if value is None:
+                continue
+            if isinstance(value, (int, float)) and value <= 0:
+                continue
+            display = (f"{float(value):,.1f}" if kind == "decimal"
+                       else f"{int(round(value)):,}")
+            metrics.append((label, display))
+
+    bio = []
+    tables = {row[0] for row in _con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    game_columns = {
+        row[1] for row in _con.execute(f"PRAGMA table_info({sc.games})")
+    }
+    if sport_key == "mlb" and "war" in game_columns:
+        best_war = _con.execute(
+            f"""SELECT ROUND(MAX(season_war), 1) FROM (
+                  SELECT SUM(war) AS season_war FROM {sc.games}
+                   WHERE {sc.player_id}=? AND war IS NOT NULL
+                   GROUP BY {sc.season})""", (pid,)).fetchone()
+        if best_war and best_war[0] is not None:
+            metrics.append(("Best season bWAR", f"{best_war[0]:,.1f}"))
+    honours: dict[str, set] = {}
+
+    if sport_key == "afl":
+        if {"draft", "draft_links"} <= tables:
+            draft = _con.execute(
+                """SELECT d.draft_year, d.draft_type, d.pick, d.club
+                     FROM draft d JOIN draft_links l ON l.draft_rowid=d.rowid
+                    WHERE l.player_id=? AND l.match_status IN
+                          ('from_draft','unique','resolved')
+                    ORDER BY CASE WHEN LOWER(d.draft_type) LIKE '%national%'
+                                  THEN 0 ELSE 1 END, d.draft_year LIMIT 1""",
+                (pid,)).fetchone()
+            if draft:
+                year, draft_type, pick, club = draft
+                parts = [f"Pick {int(pick)}" if pick is not None else None,
+                         str(int(year)) if year is not None else None,
+                         str(draft_type) if draft_type else None]
+                value = " · ".join(part for part in parts if part)
+                if club:
+                    value += f" · {club}"
+                bio.append(("Draft", value))
+
+        if {"awards", "person_links"} <= tables:
+            for name, season in _con.execute(
+                """SELECT a.award_name, a.season
+                     FROM awards a JOIN person_links l
+                       ON l.dg_person_id=a.dg_person_id
+                    WHERE l.player_id=? AND l.match_status IN
+                          ('from_draft','unique','resolved')""", (pid,)):
+                honours.setdefault(_clean_award_name(name), set()).add(season)
+        if {"all_australian", "person_links"} <= tables:
+            seasons = {row[0] for row in _con.execute(
+                """SELECT aa.season FROM all_australian aa JOIN person_links l
+                       ON l.dg_person_id=aa.dg_person_id
+                    WHERE l.player_id=? AND l.match_status IN
+                          ('from_draft','unique','resolved')""", (pid,))}
+            if seasons:
+                honours["All-Australian"] = seasons
+
+    elif sport_key == "mlb" and "awards" in tables:
+        for name, season in _con.execute(
+                "SELECT award, season FROM awards WHERE player_id=?", (pid,)):
+            honours.setdefault(_clean_award_name(name), set()).add(season)
+
+    elif sport_key == "nfl":
+        wanted = [col for col in ("draft_year", "draft_round", "draft_pick",
+                                  "draft_team") if col in player_columns]
+        if wanted:
+            row = _con.execute(
+                f"SELECT {', '.join(wanted)} FROM {sc.players} "
+                f"WHERE {sc.player_id}=?", (pid,)).fetchone()
+            values = dict(zip(wanted, row or ()))
+            parts = []
+            if values.get("draft_pick") is not None:
+                parts.append(f"Pick {int(values['draft_pick'])}")
+            if values.get("draft_round") is not None:
+                parts.append(f"round {int(values['draft_round'])}")
+            if values.get("draft_year") is not None:
+                parts.append(str(int(values["draft_year"])))
+            if values.get("draft_team"):
+                parts.append(str(values["draft_team"]))
+            if parts:
+                bio.append(("Draft", " · ".join(parts)))
+
+    honour_rows = [
+        {"Honour": label, "Times": len(seasons),
+         "Seasons": ", ".join(str(s) for s in sorted(
+             season for season in seasons if season is not None))}
+        for label, seasons in honours.items() if label
+    ]
+    honour_rows.sort(key=lambda row: (
+        _honour_order(sport_key, row["Honour"]), -row["Times"], row["Honour"]))
+    return {"metrics": metrics, "bio": bio, "honours": honour_rows}
+
+
+def _render_card_tiles(tiles):
+    """Render data-rich footer metrics without squeezing past four columns."""
+    for start in range(0, len(tiles), 4):
+        group = tiles[start:start + 4]
+        columns = st.columns(len(group))
+        for col, (label, value) in zip(columns, group):
+            col.markdown(
+                f"<div class='count'>{value}</div>"
+                f"<div class='count-label'>{label}</div>",
+                unsafe_allow_html=True)
 
 
 def _format_height(value, unit):
@@ -416,6 +602,7 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
     # Premierships / World Series / Super Bowls, for the sports whose data
     # can actually answer it.
     titles = _titles_won(sport, con, pid, revision)
+    enrichment = _player_card_enrichment(sport.key, pid, revision, con)
 
     span = (f"{debut}–{final}" if debut and final
             else str(debut or final or ""))
@@ -450,8 +637,11 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                 bio_rows.append(("Weight", weight))
             if bio.get("college"):
                 bio_rows.append(("College", bio["college"]))
-            if bio.get("draft_year"):
+            if (bio.get("draft_year")
+                    and not any(label == "Draft"
+                                for label, _ in enrichment["bio"])):
                 bio_rows.append(("Drafted", int(bio["draft_year"])))
+            bio_rows.extend(enrichment["bio"])
             for label, val in bio_rows:
                 st.markdown(
                     f"<div class='bio-row'><span class='bio-label'>{label}"
@@ -466,14 +656,43 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
             st.markdown(
                 "<div class='card-section-label'>Season by season</div>",
                 unsafe_allow_html=True)
+            game_columns = {
+                row[1] for row in con.execute(
+                    f"PRAGMA table_info({sc.games})")
+            }
+            has_player_war = (
+                sport.key == "mlb" and "war" in game_columns
+                and con.execute(
+                    f"SELECT 1 FROM {sc.games} WHERE {sc.player_id}=? "
+                    "AND war IS NOT NULL LIMIT 1", (pid,)).fetchone()
+            )
+            war_select = (", ROUND(SUM(war), 1) AS bWAR"
+                          if has_player_war else "")
+            if sport.key == "mlb" and "games" in game_columns:
+                season_games_sql = (
+                    f"SUM(CASE WHEN {sc.is_final}=0 THEN games ELSE 0 END)")
+                season_score_sql = (
+                    f"SUM(CASE WHEN {sc.is_final}=0 "
+                    f"THEN {sc.game_score} ELSE 0 END)")
+                season_average_sql = (
+                    f"ROUND(CAST({season_score_sql} AS REAL) / "
+                    f"NULLIF({season_games_sql}, 0), 2)")
+                postseason_sql = (
+                    f"SUM(CASE WHEN {sc.is_final}=1 THEN games ELSE 0 END)")
+            else:
+                season_games_sql = "COUNT(*)"
+                season_score_sql = f"SUM({sc.game_score})"
+                season_average_sql = f"ROUND(AVG({sc.game_score}), 2)"
+                postseason_sql = f"SUM({sc.is_final})"
             seasons_sql = f"""
                 SELECT {sc.season} AS Season, {sc.club_hist} AS "{V.club.capitalize()}",
-                       COUNT(*) AS "{V.games.capitalize()}",
-                       SUM({sc.game_score}) AS "{V.score.capitalize()}",
-                       ROUND(AVG({sc.game_score}),2) AS "{V.score}/{V.game}",
+                       {season_games_sql} AS "{V.games.capitalize()}",
+                       {season_score_sql} AS "{V.score.capitalize()}",
+                       {season_average_sql} AS "{V.score}/{V.game}",
                        SUM(CASE WHEN {sc.result}='W' THEN 1 ELSE 0 END) AS W,
                        SUM(CASE WHEN {sc.result}='L' THEN 1 ELSE 0 END) AS L,
-                       SUM({sc.is_final}) AS "{V.postseason.capitalize()}"
+                       {postseason_sql} AS "{V.postseason.capitalize()}"
+                       {war_select}
                 FROM {sc.games} WHERE {sc.player_id} = ?
                 GROUP BY {sc.season}, {sc.club_hist} ORDER BY {sc.season}"""
             seasons = _read_frame(seasons_sql, (pid,), revision, con)
@@ -492,6 +711,19 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                     nested=nested,
                     height=300)
 
+        honours = enrichment["honours"]
+        if honours:
+            st.markdown("<div class='card-section-label'>Career honours</div>",
+                        unsafe_allow_html=True)
+            summary = " · ".join(
+                f"{row['Times']}× {row['Honour']}" for row in honours[:6])
+            st.markdown(summary)
+            if len(honours) > 6:
+                with st.expander(
+                        f"All honours ({len(honours)} types)",
+                        icon=":material/military_tech:"):
+                    st.dataframe(pd.DataFrame(honours), hide_index=True)
+
         tiles = [
             (V.games.capitalize(), f"{career_games:,}"),
             (V.score.capitalize(), f"{int(p[4] or 0):,}"),
@@ -499,14 +731,11 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
         ]
         if titles is not None:
             tiles.append((V.title_plural, titles))
+        tiles.extend(enrichment["metrics"])
 
         st.markdown("<div class='card-footer-divider'></div>",
                    unsafe_allow_html=True)
-        footer_cols = st.columns(len(tiles))
-        for col, (lab, val) in zip(footer_cols, tiles):
-            col.markdown(f"<div class='count'>{val}</div>"
-                         f"<div class='count-label'>{lab}</div>",
-                         unsafe_allow_html=True)
+        _render_card_tiles(tiles)
 
     # Brownlow voting is an optional AFL-only enrichment. Keep it as its own
     # compact season record rather than repeating one season total on every
