@@ -1,0 +1,3 @@
+match_id,season,season_label,date,phase,round,home_team_id,away_team_id,home_score,away_score,venue,attendance
+g2006a,2006,2006-07,2006-11-02,regular,,okc:sea,lal,98,92,KeyArena,
+g2006b,2006,2006-07,2006-11-09,regular,,lal,okc:sea,105,88,Staples Center,

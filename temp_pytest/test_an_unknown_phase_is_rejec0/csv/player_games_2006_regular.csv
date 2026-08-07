@@ -1,0 +1,6 @@
+source_player_id,match_id,team_id,points,rebounds,assists,steals,blocks,turnovers,fgm,fga,fg3m,fg3a,ftm,fta,oreb,dreb,minutes,plus_minus,fouls
+p2,g2006a,okc:sea,31,5,7,2,1,,,,4,,,,,,38,,
+p2,g2006b,okc:sea,18,4,5,1,0,,,,2,,,,,,35,,
+p3,g2006a,okc:sea,9,3,1,0,0,,,,1,,,,,,16,,
+p3,g2006a,okc:sea,9,3,1,0,0,,,,1,,,,,,16,,
+p5,g2006b,lal,4,1,0,0,0,,,,0,,,,,,8,,

@@ -1,0 +1,3 @@
+source_player_id,match_id,team_id,points,rebounds,assists,steals,blocks,turnovers,fgm,fga,fg3m,fg3a,ftm,fta,oreb,dreb,minutes,plus_minus,fouls
+p1,g1971a,okc:sea,22,8,3,,,,,,,,,,,,34,,
+p1,g1971b,okc:sea,14,6,2,,,,,,,,,,,,30,,

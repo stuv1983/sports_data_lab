@@ -1,0 +1,5 @@
+team_id,franchise_id,name,city,nickname,abbreviation,first_season,last_season,is_current
+okc:sea,okc,Seattle SuperSonics,Seattle,SuperSonics,SEA,1967,2007,0
+okc,okc,Oklahoma City Thunder,Oklahoma City,Thunder,OKC,2008,,1
+bos,bos,Boston Celtics,Boston,Celtics,BOS,1946,,1
+lal,lal,Los Angeles Lakers,Los Angeles,Lakers,LAL,1960,,1

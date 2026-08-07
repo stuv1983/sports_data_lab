@@ -1,0 +1,5 @@
+match_id,season,season_label,date,phase,round,home_team_id,away_team_id,home_score,away_score,venue,attendance
+g2009a,2009,2009-10,2009-12-01,regular,,okc,bos,96,101,Chesapeake Energy Arena,
+g2009b,2009,2009-10,2010-01-15,regular,,bos,okc,112,104,TD Garden,
+g2009p,2009,2009-10,2010-05-20,playoff,CF,bos,okc,99,90,TD Garden,
+g2009f,2009,2009-10,2010-06-10,playoff,GF,bos,lal,103,98,TD Garden,

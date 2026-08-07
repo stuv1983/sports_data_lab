@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-08-07T09:13:14+00:00",
+  "db": "C:\\sports_data_lab\\temp_pytest\\test_adding_a_season_does_not_0\\b\\nba.db",
+  "seasons": [
+    1971,
+    2010
+  ],
+  "teams": [
+    "Boston Celtics",
+    "Los Angeles Lakers",
+    "Oklahoma City Thunder"
+  ],
+  "club_lineage": {
+    "Oklahoma City Thunder": [
+      "Oklahoma City Thunder",
+      "Seattle SuperSonics"
+    ]
+  },
+  "venue_aliases": {
+    "boston garden": "Boston Garden",
+    "td garden": "TD Garden",
+    "fleetcenter": "TD Garden",
+    "td banknorth garden": "TD Garden",
+    "key arena": "KeyArena",
+    "keyarena": "KeyArena",
+    "seattle center coliseum": "KeyArena"
+  },
+  "stat_eras": {
+    "points": 1971,
+    "rebounds": 1971,
+    "assists": 1971,
+    "steals": 2006,
+    "blocks": 2006,
+    "fg3m": 2006,
+    "minutes": 1971
+  }
+}
