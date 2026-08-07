@@ -512,6 +512,23 @@ def _brownlow_voting(sport, con: sqlite3.Connection) -> None:
             file_name=f"brownlow-{season}.csv", mime="text/csv",
             key=f"bm_download_{season}")
 
+    rounds = pd.read_sql_query(
+        """SELECT round_number AS Round,
+                  SUM(COALESCE(votes,0)) AS "Votes awarded",
+                  SUM(COALESCE(votes,0)>0) AS "Players polling",
+                  SUM(votes=3) AS "3 votes", SUM(votes=2) AS "2 votes",
+                  SUM(votes=1) AS "1 vote"
+             FROM brownlow_round_votes
+            WHERE season=? AND played=1
+            GROUP BY round_number ORDER BY round_number""",
+        con, params=(season,))
+    if not rounds.empty:
+        st.markdown("#### Round by round")
+        st.caption("Select a round to see every result and its Brownlow pollers.")
+        components.clickable_round_table(
+            rounds, [season] * len(rounds), sport, con,
+            key=f"bm_rounds_{season}")
+
     with st.expander("Career voting leaders"):
         leaders = pd.read_sql_query(
             """SELECT player AS Player, SUM(votes) AS Votes,

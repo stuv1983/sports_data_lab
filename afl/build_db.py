@@ -605,6 +605,19 @@ def refresh_layers(db_path, verbose=True):
 
     step("full-history match-score audit", match_scores)
 
+    def venues():
+        from . import load_venues
+        raw = raw_dir("afl") / "venues"
+        if not (raw / "overall.html").is_file():
+            raise RuntimeError(f"no cached AFL Tables venue catalogue at {raw}")
+        with sqlite3.connect(db_path) as con:
+            counts = load_venues.load(con, raw)
+        if verbose:
+            print("   " + ", ".join(
+                f"{count:,} {label}" for label, count in counts.items()))
+
+    step("AFL Tables venue profiles", venues)
+
     def player_index():
         from . import player_index_audit
         from .load_player_profiles import cached_profile_players

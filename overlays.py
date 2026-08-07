@@ -406,6 +406,199 @@ def season_overview(sport, con, season, club=None, nested=False) -> None:
                 nested=nested)
 
 
+# -------------------------------------------------- round / venue overview
+
+def _round_key(value) -> str:
+    text = str(value).strip().upper()
+    return text[1:] if text.startswith("R") and text[1:].isdigit() else text
+
+
+@st.cache_data(show_spinner=False)
+def _round_results(season, round_value, revision, _con) -> pd.DataFrame:
+    if not _has_table(_con, "matches"):
+        return pd.DataFrame()
+    key = _round_key(round_value)
+    try:
+        return pd.read_sql_query(
+            """SELECT season AS Season, round AS Round, match_date AS Date,
+                      home_team AS Home, away_team AS Away,
+                      CAST(home_score AS INTEGER) || '–' ||
+                        CAST(away_score AS INTEGER) AS Score,
+                      CASE WHEN home_q1 IS NOT NULL THEN home_q1 || '–' || away_q1 END AS Q1,
+                      CASE WHEN home_q2 IS NOT NULL THEN home_q2 || '–' || away_q2 END AS Q2,
+                      CASE WHEN home_q3 IS NOT NULL THEN home_q3 || '–' || away_q3 END AS Q3,
+                      CASE WHEN home_q4 IS NOT NULL THEN home_q4 || '–' || away_q4 END AS Q4,
+                      ABS(CAST(home_score AS INTEGER)-CAST(away_score AS INTEGER)) AS Margin,
+                      venue AS Venue, attendance AS Crowd,
+                      CASE data_status WHEN 'player_stats' THEN 'Complete'
+                        WHEN 'partial_player_stats' THEN 'Partial player stats'
+                        WHEN 'score_only' THEN 'Score only' ELSE data_status END AS Status
+                 FROM matches
+                WHERE season=? AND UPPER(CASE
+                      WHEN round GLOB 'R[0-9]*' THEN SUBSTR(round,2)
+                      ELSE round END)=?
+                ORDER BY match_date, home_team""",
+            _con, params=(int(season), key),
+        ).dropna(axis=1, how="all")
+    except (sqlite3.Error, pd.errors.DatabaseError):
+        return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def _round_votes(season, round_value, revision, _con) -> pd.DataFrame:
+    key = _round_key(round_value)
+    if not key.isdigit() or not _has_table(_con, "brownlow_round_votes"):
+        return pd.DataFrame()
+    try:
+        return pd.read_sql_query(
+            """SELECT r.player AS Player, r.clubs AS Club, v.votes AS Votes,
+                      r.player_id AS PlayerID
+                 FROM brownlow_round_votes v
+                 JOIN brownlow_results r ON r.result_id=v.result_id
+                WHERE v.season=? AND v.round_number=? AND v.votes>0
+                  AND r.match_status IN ('unique','resolved')
+                ORDER BY v.votes DESC, r.player""",
+            _con, params=(int(season), int(key)),
+        )
+    except (sqlite3.Error, pd.errors.DatabaseError):
+        return pd.DataFrame()
+
+
+def round_overview(sport, con, season, round_value, nested=False) -> None:
+    """A round card combining every result with available award voting."""
+    season, key = int(season), _round_key(round_value)
+    label = f"Round {key}" if key.isdigit() else key
+    st.markdown(f"### {season} · {label}")
+    revision = _revision(sport.db)
+    results = _round_results(season, key, revision, con)
+    votes = _round_votes(season, key, revision, con)
+    if results.empty:
+        st.info("No match results are recorded for this round.")
+        return
+    crowds = pd.to_numeric(results.get("Crowd"), errors="coerce").dropna()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Matches", f"{len(results):,}")
+    c2.metric("Venues", f"{results['Venue'].nunique():,}")
+    c3.metric("Total crowd", f"{int(crowds.sum()):,}" if len(crowds) else "—")
+    st.markdown("**Results**")
+    import components
+    components.clickable_entity_table(
+        results, sport, con, key=f"overlay_round_results_{season}_{key}",
+        nested=nested,
+        column_config={"Crowd": st.column_config.NumberColumn(format="%d")})
+    if not votes.empty:
+        st.markdown("**Brownlow votes**")
+        st.caption("Round totals from the AFL Tables Brownlow count.")
+        components.clickable_player_table(
+            votes.drop(columns=["PlayerID"]), votes["PlayerID"].tolist(),
+            sport, con, key=f"overlay_round_votes_{season}_{key}",
+            nested=nested)
+    elif key.isdigit():
+        st.caption("No Brownlow round votes are available for this season and round.")
+
+
+def _venue_candidates(sport, venue) -> list[str]:
+    candidates = [str(venue).strip()]
+    display = getattr(sport, "venue_display", {}) or {}
+    candidates.extend(raw for raw, shown in display.items()
+                      if str(shown).casefold() == str(venue).strip().casefold())
+    try:
+        candidates.append(sport.schema.canonical_venue(venue))
+    except Exception:
+        pass
+    return list(dict.fromkeys(value for value in candidates if value))
+
+
+@st.cache_data(show_spinner=False)
+def _venue_data(sport_key, venue, candidates, revision, _con):
+    marks = ",".join("?" for _ in candidates)
+    summary = None
+    if _has_table(_con, "venue_summary"):
+        summary = _con.execute(
+            f"SELECT * FROM venue_summary WHERE LOWER(venue) IN ({marks}) LIMIT 1",
+            tuple(value.casefold() for value in candidates)).fetchone()
+    resolved = summary[0] if summary else venue
+    frames = {}
+    queries = {
+        "teams": """SELECT team AS Club, played AS P, wins AS W, draws AS D,
+                    losses AS L, percentage AS '%', win_percentage AS 'Win %',
+                    scores_100_for AS '100+ for', scores_100_against AS '100+ against'
+                    FROM venue_team_records WHERE venue=? ORDER BY rank""",
+        "records": """SELECT CASE category WHEN 'biggest_win' THEN 'Biggest win'
+                    WHEN 'highest_score' THEN 'Highest score' ELSE 'Lowest score' END AS Record,
+                    record_value AS Value, team AS Team, team_score AS Score,
+                    opponent AS Opponent, opponent_score AS 'Opponent score', match_date AS Date
+                    FROM venue_match_records WHERE venue=? ORDER BY category, rank""",
+        "leaders": """SELECT CASE category WHEN 'most_games' THEN 'Games'
+                    ELSE 'Goals' END AS Record, record_value AS Value,
+                    player AS Player, clubs AS Clubs FROM venue_player_records
+                    WHERE venue=? ORDER BY category, rank""",
+        "single": """SELECT CASE category WHEN 'most_goals_game' THEN 'Goals in a game'
+                    ELSE 'Disposals in a game' END AS Record,
+                    record_value AS Value, player AS Player,
+                    match_description AS Match FROM venue_player_game_records
+                    WHERE venue=? ORDER BY category, rank""",
+    }
+    for name, query in queries.items():
+        try:
+            frames[name] = pd.read_sql_query(query, _con, params=(resolved,))
+        except (sqlite3.Error, pd.errors.DatabaseError):
+            frames[name] = pd.DataFrame()
+    try:
+        recent = pd.read_sql_query(
+            """SELECT season AS Season, round AS Round, match_date AS Date,
+                      home_team AS Home, away_team AS Away,
+                      CAST(home_score AS INTEGER) || '–' || CAST(away_score AS INTEGER) AS Score,
+                      venue AS Venue, attendance AS Crowd
+                 FROM matches WHERE LOWER(venue) IN (""" + marks + ") "
+            "ORDER BY match_date DESC LIMIT 20",
+            _con, params=tuple(value.casefold() for value in candidates))
+    except (sqlite3.Error, pd.errors.DatabaseError):
+        recent = pd.DataFrame()
+    return summary, resolved, frames, recent
+
+
+def venue_overview(sport, con, venue, nested=False) -> None:
+    """Venue card with AFL Tables history, records, leaders and matches."""
+    candidates = _venue_candidates(sport, venue)
+    summary, resolved, frames, recent = _venue_data(
+        sport.key, venue, tuple(candidates), _revision(sport.db), con)
+    st.markdown(f"### {resolved}")
+    if summary:
+        (_name, in_use, games, _goals, _behinds, _points, average,
+         scores_100, profile_url, _source_url) = summary
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Used", in_use or "—")
+        c2.metric("Matches", f"{games:,}" if games is not None else "—")
+        c3.metric("Average score", f"{average:.2f}" if average is not None else "—")
+        c4.metric("Scores of 100+", f"{scores_100:,}" if scores_100 is not None else "—")
+        st.link_button("AFL Tables source", profile_url,
+                       icon=":material/open_in_new:", type="tertiary")
+    else:
+        st.caption("No AFL Tables venue profile is loaded for this ground.")
+
+    import components
+    if not recent.empty:
+        st.markdown("**Latest matches**")
+        components.clickable_entity_table(
+            recent, sport, con, key=f"overlay_venue_recent_{resolved}",
+            nested=nested,
+            column_config={"Crowd": st.column_config.NumberColumn(format="%d")})
+    if not frames["teams"].empty:
+        with st.expander(f"Club records ({len(frames['teams'])})"):
+            components.clickable_entity_table(
+                frames["teams"], sport, con,
+                key=f"overlay_venue_teams_{resolved}", nested=nested,
+                column_config={"%": st.column_config.NumberColumn(format="%.2f"),
+                               "Win %": st.column_config.NumberColumn(format="%.2f")})
+    for label, key in (("Record matches", "records"),
+                       ("Career leaders", "leaders"),
+                       ("Single-game leaders", "single")):
+        if not frames[key].empty:
+            with st.expander(f"{label} ({len(frames[key])})"):
+                st.dataframe(frames[key], hide_index=True, width="stretch")
+
+
 # -------------------------------------------------------- club overview
 
 @st.cache_data(show_spinner=False)
@@ -715,9 +908,11 @@ def game_card(sport, con, row, stat=None, nested=False) -> None:
 
     player = get("Player") or get("player") or "—"
     season = get("Season") or get("season")
+    round_value = get("Rnd") or get("Round") or get("round")
+    venue = get(V.venue.capitalize()) or get("Venue") or get("venue")
     st.markdown(f"### {player}")
     subtitle = " · ".join(str(v) for v in (
-        season, get("Rnd") or get("Round") or get("round"),
+        season, round_value,
         get("For") or get("Club") or get("club_hist")) if v)
     if subtitle:
         st.caption(subtitle)
@@ -727,7 +922,7 @@ def game_card(sport, con, row, stat=None, nested=False) -> None:
         components.card_links(
             sport, con, key_prefix="game_card_links",
             player_id=get("PlayerID") or get("player_id"), player=player,
-            season=season,
+            season=season, round_value=round_value, venue=venue,
             clubs=[get("For") or get("Club") or get("club_hist"),
                    get("Opponent") or get("opponent")],
         )
@@ -736,7 +931,6 @@ def game_card(sport, con, row, stat=None, nested=False) -> None:
     opponent = get("Opponent") or get("opponent")
     if opponent:
         tiles.append(("Opponent", opponent))
-    venue = get(V.venue.capitalize()) or get("Venue") or get("venue")
     if venue:
         tiles.append((V.venue.capitalize(), venue))
     result = get("Res") or get("Result") or get("result")

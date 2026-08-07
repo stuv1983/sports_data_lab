@@ -386,6 +386,19 @@ def player_index_count(con) -> int:
     return count(con)
 
 
+def venue_profiles_available(con) -> bool:
+    try:
+        total, profiles = con.execute(
+            "SELECT COUNT(*), COUNT(profile_url) FROM venue_summary").fetchone()
+        return bool(total and total == profiles)
+    except Exception:
+        return False
+
+
+def venue_profiles_count(con) -> int:
+    return con.execute("SELECT COUNT(*) FROM venue_summary").fetchone()[0]
+
+
 def extra_status(con) -> list[tuple[str, str]]:
     """Explain the difference between matches and player-game rows."""
     try:

@@ -98,7 +98,8 @@ SPORT = Sport(
                      "Rising Star": "rising_star_available",
                      "Brownlow voting": "brownlow_available",
                      "Match score audit": "match_scores_available",
-                     "Player index audit": "player_index_available"},
+                     "Player index audit": "player_index_available",
+                     "Venue profiles": "venue_profiles_available"},
     obscurity_model=MODEL,
     club_data_table="clubs",
     family_probe="family_relationships_available",
@@ -126,6 +127,9 @@ SPORT = Sport(
         "player_index_available": (
             "Run `python -m afl.player_index_audit --fetch` for the low-rate "
             "AFL Tables identity audit."),
+        "venue_profiles_available": (
+            "Run `python -m afl.load_venues --fetch` for the low-rate AFL "
+            "Tables venue archive."),
     },
     club_data_tables=frozenset({
         "clubs", "club_source_snapshots", "club_wikipedia_fields",

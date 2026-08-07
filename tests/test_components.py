@@ -100,6 +100,40 @@ def test_entity_columns_include_player_club_and_each_season_column():
     }
 
 
+def test_entity_columns_make_round_and_venue_cells_navigable():
+    frame = pd.DataFrame({"Season": [2025], "Round": [1],
+                          "Venue": ["M.C.G."]})
+    assert components._entity_columns(frame) == {
+        "Season": "season", "Round": "round", "Venue": "venue",
+    }
+
+
+def test_round_action_carries_its_row_season(monkeypatch):
+    opened = []
+    monkeypatch.setattr(components, "_open_card",
+                        lambda card, *args, **kwargs: opened.append(card))
+    frame = pd.DataFrame({"Season": [2025], "Round": [7]})
+    handled = components._handle_entity_event(
+        {"action": "round", "label": "7", "row": 0}, frame,
+        object(), object())
+    assert handled
+    assert opened == [{"kind": "round", "season": 2025, "round": "7",
+                       "label": "2025 R7"}]
+
+
+def test_venue_action_opens_the_selected_ground(monkeypatch):
+    opened = []
+    monkeypatch.setattr(components, "_open_card",
+                        lambda card, *args, **kwargs: opened.append(card))
+    frame = pd.DataFrame({"Venue": ["Junction Oval"]})
+    handled = components._handle_entity_event(
+        {"action": "venue", "label": "Junction Oval", "row": 0}, frame,
+        object(), object())
+    assert handled
+    assert opened == [{"kind": "venue", "venue": "Junction Oval",
+                       "label": "Junction Oval"}]
+
+
 def test_multi_club_columns_use_one_arrow_compatible_list_type():
     values = components._club_action_column(pd.Series([
         "Carlton", "Carlton, St Kilda", None,

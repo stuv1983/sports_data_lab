@@ -6,8 +6,8 @@ that pattern lifted out so Past Games, Advanced Search and Stats Explorer
 can offer the same thing without a fourth copy of the same twelve lines,
 and so a future overlay kind only has to be added once.
 
-There are five kinds now, one per thing a row can be: a player, a match, an
-individual game, a season (optionally a club's season) and a club. A table
+There are seven kinds now: player, match, individual game, season, round,
+venue and club. A table
 opens the overlay
 for whatever its rows *are*: player, season and club names are action cells,
 while matches and individual games have an Open action. A row naming both a
@@ -115,6 +115,12 @@ def _entity_columns(df, *, player=False, season=True, clubs=True) -> dict:
         ):
             if column in df.columns:
                 actions[column] = "club"
+    for column in ("Round", "Rnd", "Rd"):
+        if column in df.columns:
+            actions[column] = "round"
+    for column in ("Venue", "Ground"):
+        if column in df.columns:
+            actions[column] = "venue"
     return actions
 
 
@@ -250,6 +256,12 @@ def _details_dialog(sport, con):
             sport, con, current["season"], club=current.get("club"),
             nested=True,
         )
+    elif kind == "round":
+        overlays.round_overview(
+            sport, con, current["season"], current["round"], nested=True,
+        )
+    elif kind == "venue":
+        overlays.venue_overview(sport, con, current["venue"], nested=True)
     elif kind == "game":
         overlays.game_card(
             sport, con, current["record"], stat=current.get("stat"),
@@ -272,7 +284,8 @@ def player_button(label: str, sport, con, pid, key: str,
 
 
 def card_links(sport, con, *, key_prefix: str, player_id=None,
-               player=None, season=None, clubs: Sequence = ()) -> None:
+               player=None, season=None, round_value=None, venue=None,
+               clubs: Sequence = ()) -> None:
     """Compact in-card links that navigate within the active dialog."""
     with st.container(horizontal=True):
         if player_id is not None and not pd.isna(player_id):
@@ -288,6 +301,21 @@ def card_links(sport, con, *, key_prefix: str, player_id=None,
                          key=f"{key_prefix}_season", type="tertiary"):
                 _open_card({"kind": "season", "season": season,
                             "label": str(season)}, sport, con, nested=True)
+        if (season is not None and round_value is not None
+                and not pd.isna(round_value)):
+            label = f"R{round_value}" if str(round_value).isdigit() else str(round_value)
+            if st.button(label, icon=":material/event:",
+                         key=f"{key_prefix}_round", type="tertiary"):
+                _open_card({"kind": "round", "season": season,
+                            "round": round_value,
+                            "label": f"{season} {label}"},
+                           sport, con, nested=True)
+        if venue is not None and not pd.isna(venue) and str(venue).strip():
+            label = str(venue).strip()
+            if st.button(label, icon=":material/stadium:",
+                         key=f"{key_prefix}_venue", type="tertiary"):
+                _open_card({"kind": "venue", "venue": label, "label": label},
+                           sport, con, nested=True)
         seen = set()
         for position, club in enumerate(clubs):
             if not club or str(club) in seen:
@@ -298,6 +326,43 @@ def card_links(sport, con, *, key_prefix: str, player_id=None,
                          key=f"{key_prefix}_club_{position}", type="tertiary"):
                 _open_card({"kind": "club", "club": club, "label": label},
                            sport, con, nested=True)
+
+
+def _row_season(row):
+    for column in ("Season", "Year", "season"):
+        if column in row and row[column] is not None and not pd.isna(row[column]):
+            return row[column]
+    return None
+
+
+def _handle_entity_event(event, df, sport, con, *, nested=False,
+                         fallback_season=None) -> bool:
+    """Open a common entity action; return False for the row's subject."""
+    action, label = event["action"], event.get("label")
+    row = df.iloc[event["row"]]
+    if action == "club" and label:
+        _open_card({"kind": "club", "club": label, "label": label},
+                   sport, con, nested=nested)
+        return True
+    if action == "season" and label is not None and not pd.isna(label):
+        _open_card({"kind": "season", "season": label, "label": str(label)},
+                   sport, con, nested=nested)
+        return True
+    if action == "round" and label is not None and not pd.isna(label):
+        season = fallback_season if fallback_season is not None else _row_season(row)
+        if season is None:
+            st.info("A season is needed to open that round.")
+        else:
+            round_label = f"R{label}" if str(label).isdigit() else str(label)
+            _open_card({"kind": "round", "season": season, "round": label,
+                        "label": f"{season} {round_label}"},
+                       sport, con, nested=nested)
+        return True
+    if action == "venue" and label:
+        _open_card({"kind": "venue", "venue": label, "label": label},
+                   sport, con, nested=nested)
+        return True
+    return False
 
 
 def clickable_player_table(df, player_ids: Sequence, sport, con, key: str,
@@ -320,17 +385,7 @@ def clickable_player_table(df, player_ids: Sequence, sport, con, key: str,
     if event is None:
         return
     row = event["row"]
-    if event["action"] == "club":
-        club = event.get("label")
-        if club:
-            _open_card({"kind": "club", "club": club, "label": club},
-                       sport, con, nested=nested)
-        return
-    if event["action"] == "season":
-        season = event.get("label")
-        if season is not None and not pd.isna(season):
-            _open_card({"kind": "season", "season": season,
-                        "label": str(season)}, sport, con, nested=nested)
+    if _handle_entity_event(event, df, sport, con, nested=nested):
         return
     pid = player_ids[row] if row < len(player_ids) else None
     if pid is None or pd.isna(pid):
@@ -384,6 +439,20 @@ def _match_links(sport, con, match) -> None:
                          key="match_link_season"):
                 _open_card({"kind": "season", "season": season,
                             "label": str(season)}, sport, con, nested=True)
+            round_value = getattr(match, "round", None)
+            if round_value is not None and st.button(
+                    f"R{round_value}" if str(round_value).isdigit()
+                    else str(round_value), icon=":material/event:",
+                    key="match_link_round"):
+                _open_card({"kind": "round", "season": season,
+                            "round": round_value,
+                            "label": f"{season} R{round_value}"},
+                           sport, con, nested=True)
+        venue = getattr(match, "venue", None)
+        if venue and st.button(str(venue), icon=":material/stadium:",
+                               key="match_link_venue"):
+            _open_card({"kind": "venue", "venue": venue, "label": venue},
+                       sport, con, nested=True)
         for position, club in enumerate(links):
             label = str(club).replace("_", " ").title()
             if st.button(label, icon=":material/shield:",
@@ -412,17 +481,7 @@ def clickable_match_table(df, matches: Sequence, key: str,
     if event is None:
         return
     row = event["row"]
-    if event["action"] == "club":
-        club = event.get("label")
-        if club:
-            _open_card({"kind": "club", "club": club, "label": club},
-                       sport, con, nested=nested)
-    elif event["action"] == "season":
-        season = event.get("label")
-        if season is not None and not pd.isna(season):
-            _open_card({"kind": "season", "season": season,
-                        "label": str(season)}, sport, con, nested=nested)
-    else:
+    if not _handle_entity_event(event, df, sport, con, nested=nested):
         match = matches[row]
         _open_card({"kind": "match", "match": match,
                     "render_body": render_body,
@@ -448,17 +507,7 @@ def clickable_game_table(df, sport, con, key: str, stat=None,
     if event is None:
         return
     row = event["row"]
-    if event["action"] == "club":
-        club = event.get("label")
-        if club:
-            _open_card({"kind": "club", "club": club, "label": club},
-                       sport, con, nested=nested)
-    elif event["action"] == "season":
-        season = event.get("label")
-        if season is not None and not pd.isna(season):
-            _open_card({"kind": "season", "season": season,
-                        "label": str(season)}, sport, con, nested=nested)
-    else:
+    if not _handle_entity_event(event, df, sport, con, nested=nested):
         record = df.iloc[row].to_dict()
         _open_card({"kind": "game", "record": record, "stat": stat,
                     "label": f"{record.get('Season', '')} game".strip()},
@@ -485,11 +534,8 @@ def clickable_season_table(df, seasons: Sequence, sport, con, key: str,
     if event is None:
         return
     row = event["row"]
-    if event["action"] == "club":
-        club = event.get("label")
-        if club:
-            _open_card({"kind": "club", "club": club, "label": club},
-                       sport, con, nested=nested)
+    if (event["action"] != "season"
+            and _handle_entity_event(event, df, sport, con, nested=nested)):
         return
     season = (event.get("label") if event["action"] == "season"
               else seasons[row] if row < len(seasons) else None)
@@ -498,6 +544,29 @@ def clickable_season_table(df, seasons: Sequence, sport, con, key: str,
     club = clubs[row] if clubs is not None and row < len(clubs) else None
     _open_card({"kind": "season", "season": season, "club": club,
                 "label": str(season)}, sport, con, nested=nested)
+
+
+def clickable_round_table(df, seasons: Sequence, sport, con, key: str,
+                          nested: bool = False, **dataframe_kwargs):
+    """Render a summary whose Round cells open results and voting detail."""
+    round_column = next((c for c in ("Round", "Rnd", "Rd") if c in df), None)
+    actions = {round_column: "round"} if round_column else {}
+    event = _select(df, key, dataframe_kwargs, action_columns=actions)
+    if event is None:
+        return
+    row = event["row"]
+    season = seasons[row] if row < len(seasons) else None
+    _handle_entity_event(event, df, sport, con, nested=nested,
+                         fallback_season=season)
+
+
+def clickable_entity_table(df, sport, con, key: str, nested: bool = False,
+                           **dataframe_kwargs):
+    """Render a table where any season, round, venue or club cell opens."""
+    event = _select(df, key, dataframe_kwargs,
+                    action_columns=_entity_columns(df))
+    if event is not None:
+        _handle_entity_event(event, df, sport, con, nested=nested)
 
 
 # ----------------------------------------------------------------- club
