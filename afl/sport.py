@@ -97,7 +97,8 @@ SPORT = Sport(
                      "Captain data": "captain_available",
                      "Rising Star": "rising_star_available",
                      "Brownlow voting": "brownlow_available",
-                     "Match score audit": "match_scores_available"},
+                     "Match score audit": "match_scores_available",
+                     "Player index audit": "player_index_available"},
     obscurity_model=MODEL,
     club_data_table="clubs",
     family_probe="family_relationships_available",
@@ -122,6 +123,9 @@ SPORT = Sport(
         "match_scores_available": (
             "Cache AFL Tables bg3.txt, then run `python -m afl.load_match_scores "
             "--source data/afl/raw/matches/afltables_bg3.txt`."),
+        "player_index_available": (
+            "Run `python -m afl.player_index_audit --fetch` for the low-rate "
+            "AFL Tables identity audit."),
     },
     club_data_tables=frozenset({
         "clubs", "club_source_snapshots", "club_wikipedia_fields",

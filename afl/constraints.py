@@ -364,11 +364,42 @@ def match_scores_available(con) -> bool:
         return False
     total, linked = con.execute("""
         SELECT COUNT(*),
-               SUM(audit_status IN ('matched','score_only')
+               SUM(audit_status IN ('matched','partial_player_stats','score_only')
                    AND db_match_id IS NOT NULL)
         FROM afltables_match_scores
     """).fetchone()
     return bool(total and total == linked)
+
+
+def match_scores_count(con) -> int:
+    return con.execute(
+        "SELECT COUNT(*) FROM afltables_match_scores").fetchone()[0]
+
+
+def player_index_available(con) -> bool:
+    from .player_index_audit import player_index_available as available
+    return available(con)
+
+
+def player_index_count(con) -> int:
+    from .player_index_audit import player_index_count as count
+    return count(con)
+
+
+def extra_status(con) -> list[tuple[str, str]]:
+    """Explain the difference between matches and player-game rows."""
+    try:
+        total, full, partial, score_only = con.execute("""
+            SELECT COUNT(*), SUM(data_status='player_stats'),
+                   SUM(data_status='partial_player_stats'),
+                   SUM(data_status='score_only') FROM matches
+        """).fetchone()
+    except Exception:
+        return []
+    if not total:
+        return []
+    return [("Matches", f"{total:,} ({full or 0:,} complete; "
+             f"{partial or 0:,} partial; {score_only or 0:,} score-only)")]
 
 # Optional FootyWire Rising Star nomination layer.  The network fetcher is
 # permission-gated; afl/load_rising_star.py links local CSV rows to players.

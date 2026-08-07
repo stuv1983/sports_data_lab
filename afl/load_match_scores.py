@@ -215,8 +215,8 @@ def load(con: sqlite3.Connection, rows: list[SourceMatch], *, append_missing: bo
     next_id = max(existing_ids, default=0) + 1
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     audit: list[tuple] = []
-    counts = {"matched": 0, "score_only": 0, "missing_from_db": 0,
-              "identity_mismatch": 0}
+    counts = {"matched": 0, "partial_player_stats": 0, "score_only": 0,
+              "missing_from_db": 0, "identity_mismatch": 0}
     for row in rows:
         candidate = by_identity.get(_source_identity(row))
         fixture = (row.season, row.round, row.match_date,
@@ -234,13 +234,22 @@ def load(con: sqlite3.Connection, rows: list[SourceMatch], *, append_missing: bo
             else:
                 status, db_id = "missing_from_db", None
         elif candidate is not None:
-            score_only = candidate["data_status"] == "score_only"
-            status, db_id = ("score_only" if score_only else "matched"), int(candidate["match_id"])
+            home_players = int(candidate["home_players"] or 0)
+            away_players = int(candidate["away_players"] or 0)
+            if not home_players and not away_players:
+                status = "score_only"
+            elif home_players < 12 or away_players < 12:
+                status = "partial_player_stats"
+            else:
+                status = "matched"
+            data_status = ("player_stats" if status == "matched" else status)
+            db_id = int(candidate["match_id"])
             con.execute(
                 "UPDATE matches SET game_status='played', "
-                "data_status=COALESCE(data_status,'player_stats'), "
-                "score_source_url=? WHERE match_id=?", (SOURCE_URL, db_id))
-            if score_only:
+                "data_status=?, "
+                "score_source_url=? WHERE match_id=?",
+                (data_status, SOURCE_URL, db_id))
+            if status == "score_only":
                 _upsert_club_observations(con, row, db_id, now)
         else:
             status, db_id = "identity_mismatch", int(alternatives[0]["match_id"])

@@ -38,7 +38,7 @@ def test_loader_audits_and_appends_score_only_matches():
     con = database()
     counts = load(con, parse_biglist(TEXT))
     assert counts == {
-        "matched": 1, "score_only": 1,
+        "matched": 1, "partial_player_stats": 0, "score_only": 1,
         "missing_from_db": 0, "identity_mismatch": 0,
     }
     assert con.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 2
@@ -55,3 +55,13 @@ def test_audit_only_does_not_fill_the_gap():
     counts = load(con, parse_biglist(TEXT), append_missing=False)
     assert counts["missing_from_db"] == 1
     assert con.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 1
+
+
+def test_loader_marks_a_match_with_one_incomplete_team_as_partial():
+    con = database()
+    con.execute("UPDATE matches SET home_players=2, away_players=0")
+    counts = load(con, parse_biglist(TEXT), append_missing=False)
+    assert counts["partial_player_stats"] == 1
+    assert con.execute(
+        "SELECT data_status FROM matches WHERE match_id=1").fetchone()[0] == (
+            "partial_player_stats")

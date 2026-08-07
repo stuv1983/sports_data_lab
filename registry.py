@@ -202,6 +202,9 @@ class Sport:
             (self.games_row_label or f"Player-{self.vocab.games}",
              f"{appearances:,}"),
         ]
+        extra = getattr(self.C, "extra_status", None)
+        if extra is not None:
+            rows.extend(extra(con))
         for label, probe in self.optional_layers.items():
             if not self.layer_ready(probe, con):
                 rows.append((label, "not loaded"))

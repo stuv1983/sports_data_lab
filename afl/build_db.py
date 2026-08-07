@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 
 import obscurity
-from data_paths import default_db
+from data_paths import default_db, raw_dir
 
 from . import obscurity_model
 
@@ -77,6 +77,42 @@ STAT_COLS = {
     "Bounces": "bounces",
     "Goal.Assists": "goal_assists",
 }
+
+# fitzRoy occasionally receives fresh AFL Tables rows before the upstream ID
+# column is repaired. The profile URL is stable enough to recover these rows;
+# dropping them used to silently remove 145 player-games from the app.
+MISSING_PLAYER_ID_REPAIRS = {
+    "https://afltables.com/afl/stats/players/B/Billy_Wilson2.html":
+        (13244, "Billy Wilson"),
+    "https://afltables.com/afl/stats/players/C/Charlie_Cameron3.html":
+        (12277, "Charlie Cameron"),
+    "https://afltables.com/afl/stats/players/J/Jack_Graham2.html":
+        (12576, "Jack Graham"),
+    "https://afltables.com/afl/stats/players/J/Jack_Ross3.html":
+        (12712, "Jack Ross"),
+    "https://afltables.com/afl/stats/players/J/Jack_Williams3.html":
+        (12962, "Jack Williams"),
+}
+
+
+def repair_missing_player_ids(frame):
+    """Fill audited missing source IDs without changing populated IDs."""
+    frame = frame.copy()
+    for url, (player_id, player) in MISSING_PLAYER_ID_REPAIRS.items():
+        rows = frame["url"].astype(str).eq(url)
+        if not rows.any():
+            continue
+        conflicts = frame.loc[rows, "ID"].dropna().astype(int)
+        if len(conflicts) and not conflicts.eq(player_id).all():
+            raise ValueError(f"player ID repair conflicts for {url}")
+        frame.loc[rows & frame["ID"].isna(), "ID"] = player_id
+        missing_name = rows & frame["Player"].isna()
+        frame.loc[missing_name, "Player"] = player
+        for column, value in (("First.name", player.rsplit(" ", 1)[0]),
+                              ("Surname", player.rsplit(" ", 1)[-1])):
+            if column in frame:
+                frame.loc[rows & frame[column].isna(), column] = value
+    return frame
 
 
 def download(refresh=False):
@@ -173,7 +209,7 @@ def _deduplicate_games(out, strict=True):
 def build(db_path, refresh=False, skip_matches=False, strict=True):
     import pandas as pd
 
-    df = load_frame(download(refresh))
+    df = repair_missing_player_ids(load_frame(download(refresh)))
     print(f"Loaded {len(df):,} player-game rows, {df.ID.nunique():,} players")
 
     out = pd.DataFrame()
@@ -244,6 +280,24 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
     out["is_final"] = out["round"].str.upper().str.strip().isin(finals).astype(int)
 
     out = out.dropna(subset=["player_id"])
+
+    # AFL Tables' A-Z index can move a few profiles ahead of the bulk
+    # fitzRoy snapshot. Import only the explicitly cached exceptions and
+    # validate every appearance against the independent full score list.
+    from .load_player_profiles import load_cached_profiles
+    profile_dir = raw_dir("afl") / "player_profiles"
+    score_path = raw_dir("afl") / "matches" / "afltables_bg3.txt"
+    overlay = load_cached_profiles(profile_dir, score_path)
+    if not overlay.empty:
+        existing = set(zip(out["player_id"].astype(int), out["date"].astype(str)))
+        unseen = [(int(pid), str(date)) not in existing for pid, date in
+                  zip(overlay["player_id"], overlay["date"])]
+        overlay = overlay.loc[unseen]
+        if not overlay.empty:
+            out = pd.concat([out, overlay.reindex(columns=out.columns)],
+                            ignore_index=True)
+            print(f"Added {len(overlay):,} player-game rows from "
+                  f"{overlay.player_id.nunique():,} audited cached profiles")
 
     # Duplicate player-game rows have to go before the groupby below, because
     # career_games is a row count: one stray row is one phantom appearance,
@@ -473,8 +527,8 @@ def refresh_layers(db_path, verbose=True):
 
     def script(name, *args):
         """Run a loader that only exposes a command line, with an explicit --db."""
-        cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                            name), "--db", str(db_path), *args]
+        module = f"afl.{Path(name).stem}"
+        cmd = [sys.executable, "-m", module, "--db", str(db_path), *args]
         result = subprocess.run(cmd)
         if result.returncode != 0:
             raise RuntimeError(f"{name} exited {result.returncode}")
@@ -485,9 +539,9 @@ def refresh_layers(db_path, verbose=True):
         root = raw_dir("afl") / "draftguru"
         if not root.is_dir():
             raise RuntimeError(f"no Draftguru scrape at {root}")
-        script("afl/load_draftguru.py", "--root", str(root))
-        script("afl/link_draft.py")
-        script("afl/link_people.py")
+        script("load_draftguru.py", "--root", str(root))
+        script("link_draft.py")
+        script("link_people.py")
 
     step("draft, awards and All-Australian", draftguru)
 
@@ -550,6 +604,25 @@ def refresh_layers(db_path, verbose=True):
                 f"{count:,} {status}" for status, count in counts.items() if count))
 
     step("full-history match-score audit", match_scores)
+
+    def player_index():
+        from . import player_index_audit
+        from .load_player_profiles import cached_profile_players
+        raw = raw_dir("afl") / "player_index"
+        if not raw.is_dir():
+            raise RuntimeError(f"no cached player indexes at {raw}")
+        rows = player_index_audit.read_indexes(raw)
+        source_rda = raw_dir("afl") / "afldata.rda"
+        with sqlite3.connect(db_path) as con:
+            stat_rows = player_index_audit.rda_players(source_rda)
+            stat_rows.extend(cached_profile_players(
+                raw_dir("afl") / "player_profiles"))
+            counts = player_index_audit.audit(con, rows, stat_rows)
+        if verbose:
+            print("   " + ", ".join(
+                f"{count:,} {status}" for status, count in counts.items()))
+
+    step("AFL Tables player-index audit", player_index)
 
 
 if __name__ == "__main__":
