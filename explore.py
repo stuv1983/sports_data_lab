@@ -1262,13 +1262,15 @@ def game_lab_page(sport, con, player_picker):
     st.caption("The full clue ladder and the Gridley criterion bank are "
                "AFL-only for now — this is the sport-agnostic version.")
     target_key = sport.k("game_target")
+    state_key = sport.k("game_state")
+    
     if target_key not in st.session_state:
         st.session_state[target_key] = _new_game_target(sport, con)
-        st.session_state.game_result = None
+        st.session_state[state_key] = {"guesses": 0, "history": [], "game_over": False, "won": False}
 
     if st.button("New mystery player", key=sport.k("new_game_player")):
         st.session_state[target_key] = _new_game_target(sport, con)
-        st.session_state.game_result = None
+        st.session_state[state_key] = {"guesses": 0, "history": [], "game_over": False, "won": False}
         for key in ("game_guess_query", "game_guess_choice"):
             st.session_state.pop(sport.k(key), None)
 
@@ -1282,38 +1284,57 @@ def game_lab_page(sport, con, player_picker):
         st.error("No eligible game target was found.")
         return
 
-    clues = st.slider("Clues revealed", 1, 3, 1, key=sport.k("game_clues"))
+    state = st.session_state[state_key]
+    max_guesses = 5
+    
+    # Render Game Status
+    st.markdown(f"**Guesses used:** {state['guesses']} / {max_guesses}")
+    if state["history"]:
+        with st.expander("Guess History", expanded=True):
+            for g in state["history"]:
+                st.write(f"❌ {g}")
+
+    clues_revealed = 1 + state["guesses"]
     plural = "s" if target[8] != 1 else ""
-    st.write(f"**Clue 1:** Career span {target[2]}–{target[3]}; "
+    st.info(f"**Clue 1:** Career span {target[2]}–{target[3]}; "
              f"played for {target[8]} {V.club}{plural}.")
-    if clues >= 2:
-        st.write(f"**Clue 2:** {target[4]:,} {V.games}, "
+    if clues_revealed >= 2:
+        st.info(f"**Clue 2:** {target[4]:,} {V.games}, "
                  f"{int(target[5] or 0):,} {V.score} and {target[6]} "
                  f"{V.postseason}.")
-    if clues >= 3:
-        st.write(f"**Clue 3:** {V.clubs.capitalize()} — "
+    if clues_revealed >= 3:
+        st.info(f"**Clue 3:** {V.clubs.capitalize()} — "
                  f"{target[7].replace('|', ', ')}.")
 
-    selected = player_picker(sport.k("game_guess"), label="Your guess")
-    if selected is not None and st.button("Submit guess",
-                                          key=sport.k("submit_guess")):
-        guess_pid, guess_name = selected
-        if guess_pid == target[0]:
-            st.session_state.game_result = (
-                "correct", f"Correct — it was {target[1]}.")
+    if state["game_over"]:
+        if state["won"]:
+            st.success(f"You won! The mystery player was **{target[1]}**.")
+            st.balloons()
         else:
-            st.session_state.game_result = (
-                "wrong", f"{guess_name} is not the mystery player.")
+            st.error(f"Game over. The mystery player was **{target[1]}**.")
+        
+        if st.button("Play Again", key=sport.k("play_again_btn"), type="primary"):
+            st.session_state[target_key] = _new_game_target(sport, con)
+            st.session_state[state_key] = {"guesses": 0, "history": [], "game_over": False, "won": False}
+            st.rerun()
+    else:
+        selected = player_picker(sport.k("game_guess"), label="Your guess")
+        if selected is not None and st.button("Submit guess", type="primary", key=sport.k("submit_guess")):
+            guess_pid, guess_name = selected
+            if guess_pid == target[0]:
+                state["game_over"] = True
+                state["won"] = True
+            else:
+                state["guesses"] += 1
+                state["history"].append(guess_name)
+                if state["guesses"] >= max_guesses:
+                    state["game_over"] = True
+            st.rerun()
 
-    result = st.session_state.get("game_result")
-    if result:
-        if result[0] == "correct":
-            st.success(result[1])
-        else:
-            st.warning(result[1])
-
-    if st.button("Reveal answer", key=sport.k("reveal_game")):
-        st.info(f"The mystery player is **{target[1]}**.")
+    if not state["game_over"] and st.button("Reveal answer (Give up)", key=sport.k("reveal_game")):
+        state["game_over"] = True
+        state["won"] = False
+        st.rerun()
 
     with st.expander("Possible next game modes"):
         st.write(

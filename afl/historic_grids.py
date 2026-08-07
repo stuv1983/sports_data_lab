@@ -402,7 +402,26 @@ def analyse(grid, con=None, sport=None, check_squares=True):
 
 def analyse_all(con=None, sport=None, check_squares=True):
     """Every known grid, analysed. Cheap enough to run at startup."""
-    return [analyse(g, con, sport, check_squares) for g in GRIDS]
+    grids = []
+    if con is not None:
+        try:
+            import json
+            for row in con.execute("SELECT grid_num, date, source, rows_json, cols_json, unsupported_json, note FROM historic_grids ORDER BY grid_num DESC"):
+                grid = HistoricGrid(
+                    number=row[0],
+                    date=row[1],
+                    source=row[2],
+                    rows=tuple(json.loads(row[3])),
+                    cols=tuple(json.loads(row[4])),
+                    unsupported=tuple(json.loads(row[5])),
+                    note=row[6]
+                )
+                grids.append(grid)
+        except Exception as e:
+            grids = GRIDS
+    else:
+        grids = GRIDS
+    return [analyse(g, con, sport, check_squares) for g in grids]
 
 
 def supported_grids(reports):

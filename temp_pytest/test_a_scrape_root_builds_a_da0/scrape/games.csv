@@ -1,0 +1,4 @@
+bbr_game_key,league,season,season_label,bbr_season_year,phase,game_date,game_time,visitor_team_name,visitor_team_key,visitor_points,home_team_name,home_team_key,home_points,overtime,attendance,arena,boxscore_url,game_path,source_url
+201610250CLE,NBA,2016,2016-17,2017,regular,201610250CLE,,New York Knicks,NYK,88,Cleveland Cavaliers,CLE,117,,15000,Test Arena,,seasons/2016-17/regular/201610250CLE.json,
+201610260GSW,NBA,2016,2016-17,2017,regular,201610260GSW,,New York Knicks,NYK,100,Golden State Warriors,GSW,110,,15000,Test Arena,,seasons/2016-17/regular/201610260GSW.json,
+201706010GSW,NBA,2016,2016-17,2017,playoff,201706010GSW,,Cleveland Cavaliers,CLE,91,Golden State Warriors,GSW,113,,15000,Test Arena,,seasons/2016-17/playoff/201706010GSW.json,

@@ -1,0 +1,4 @@
+source_player_id,match_id,team_id,points,rebounds,assists,steals,blocks,turnovers,fgm,fga,fg3m,fg3a,ftm,fta,oreb,dreb,minutes,plus_minus,fouls
+p3,g2009p,okc,27,7,3,3,1,,,,4,,,,,,40,,
+p4,g2009p,bos,18,10,4,2,3,,,,0,,,,,,38,,
+p4,g2009f,bos,26,12,5,1,2,,,,2,,,,,,42,,

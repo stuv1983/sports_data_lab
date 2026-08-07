@@ -13,6 +13,10 @@ def test_first_account_bootstraps_admin_and_passwords_are_hashed(tmp_path):
     path = _accounts(tmp_path)
     user, first = accounts.register(
         "Site Owner", "Owner@Example.com", "very-long-password", path)
+    
+    with sqlite3.connect(path) as con:
+        con.execute("UPDATE users SET email_verified=1 WHERE id=?", (user.id,))
+        con.commit()
 
     assert first is True
     assert user.role == "admin"
@@ -30,6 +34,10 @@ def test_feature_can_be_member_admin_or_selected_user_only(tmp_path):
     path = _accounts(tmp_path)
     admin, _ = accounts.register("Admin User", "admin@example.com", "password-123", path)
     member, _ = accounts.register("Normal User", "member@example.com", "password-123", path)
+    
+    with sqlite3.connect(path) as con:
+        con.execute("UPDATE users SET email_verified=1")
+        con.commit()
 
     assert accounts.can_access(member, "grid_solver", path)
     accounts.set_feature_policy(admin.id, "grid_solver", "admin", path)
@@ -46,6 +54,10 @@ def test_non_admin_cannot_change_access_and_last_admin_is_protected(tmp_path):
     path = _accounts(tmp_path)
     admin, _ = accounts.register("Admin User", "admin@example.com", "password-123", path)
     member, _ = accounts.register("Normal User", "member@example.com", "password-123", path)
+    
+    with sqlite3.connect(path) as con:
+        con.execute("UPDATE users SET email_verified=1")
+        con.commit()
 
     with pytest.raises(PermissionError):
         accounts.set_feature_policy(member.id, "grid_solver", "admin", path)
@@ -57,6 +69,10 @@ def test_saved_grids_are_private_and_round_trip_constraints(tmp_path):
     path = _accounts(tmp_path)
     owner, _ = accounts.register("Grid Owner", "owner@example.com", "password-123", path)
     other, _ = accounts.register("Other User", "other@example.com", "password-123", path)
+    
+    with sqlite3.connect(path) as con:
+        con.execute("UPDATE users SET email_verified=1")
+        con.commit()
     rows = [(f"row {i}", ("SELECT player_id FROM games WHERE season >= ?", [2000 + i]))
             for i in range(3)]
     cols = [(f"club {i}", ("SELECT player_id FROM games WHERE club_now = ?", [f"C{i}"]))

@@ -25,13 +25,14 @@ DB_PATH = Path(os.environ.get(
 ))
 
 FEATURES = {
-    "grid_solver": ("Grid Solver", "member"),
+    "play_grids": ("Play Grids", "public"),
+    "grid_solver": ("Grid Solver", "admin"),
     "advanced_search": ("Advanced Search", "member"),
     "game_lab": ("Game Lab", "member"),
     "database_health": ("Database Health", "admin"),
     "database_editing": ("Database editing", "admin"),
 }
-AUDIENCES = ("member", "selected", "admin")
+AUDIENCES = ("public", "member", "selected", "admin")
 
 
 class AccountError(ValueError):
@@ -63,6 +64,12 @@ def _connect(path=DB_PATH):
 
 def ensure_schema(path=DB_PATH):
     with _connect(path) as con:
+        try:
+            con.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0 CHECK (email_verified IN (0, 1))")
+            con.execute("ALTER TABLE users ADD COLUMN verification_token TEXT")
+        except sqlite3.OperationalError:
+            pass # Columns already exist
+            
         con.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
@@ -73,7 +80,9 @@ def ensure_schema(path=DB_PATH):
                     CHECK (role IN ('member', 'admin')),
                 active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
                 created_at TEXT NOT NULL,
-                last_login_at TEXT
+                last_login_at TEXT,
+                email_verified INTEGER NOT NULL DEFAULT 0 CHECK (email_verified IN (0, 1)),
+                verification_token TEXT
             );
             CREATE TABLE IF NOT EXISTS feature_access (
                 feature TEXT PRIMARY KEY,
@@ -110,7 +119,7 @@ def _now():
 
 def _normalise_email(email):
     value = str(email).strip().casefold()
-    if len(value) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+    if len(value) > 254 or not re.fullmatch(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$", value):
         raise AccountError("Enter a valid email address.")
     return value
 
@@ -140,6 +149,28 @@ def _user(row):
     return User(row["id"], row["email"], row["display_name"],
                 row["role"], bool(row["active"]))
 
+def send_validation_email(email, token):
+    """Mock email sender that logs the verification link to a local file."""
+    os.makedirs("logs", exist_ok=True)
+    link = f"http://localhost:8501/?verify={token}"
+    msg = f"To: {email}\nSubject: Verify your Grid Solver account\n\nClick the link to verify: {link}\n\n"
+    with open("logs/emails.txt", "a", encoding="utf-8") as f:
+        f.write(msg)
+
+def verify_email(token, path=DB_PATH):
+    con = _connect(path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute("SELECT id FROM users WHERE verification_token=?", (token,)).fetchone()
+        if not row:
+            return False
+        con.execute("UPDATE users SET email_verified=1, verification_token=NULL WHERE id=?", (row["id"],))
+        con.commit()
+        return True
+    except Exception:
+        con.rollback()
+        return False
+
 
 def register(display_name, email, password, path=DB_PATH):
     """Create an account. The very first account safely bootstraps admin."""
@@ -157,12 +188,14 @@ def register(display_name, email, password, path=DB_PATH):
     try:
         con.execute("BEGIN IMMEDIATE")
         role = "admin" if con.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0 else "member"
+        token = secrets.token_urlsafe(32)
         cur = con.execute(
-            "INSERT INTO users(email, display_name, password_digest, role, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (email, display_name, _password_digest(password), role, _now()),
+            "INSERT INTO users(email, display_name, password_digest, role, created_at, verification_token) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (email, display_name, _password_digest(password), role, _now(), token),
         )
         con.commit()
+        send_validation_email(email, token)
         return get_user(cur.lastrowid, path), role == "admin"
     except sqlite3.IntegrityError as exc:
         con.rollback()
@@ -179,7 +212,11 @@ def authenticate(email, password, path=DB_PATH):
     ensure_schema(path)
     with _connect(path) as con:
         row = con.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
-        if row is None or not row["active"] or not _password_matches(password, row["password_digest"]):
+        if not row:
+            return None
+        if "email_verified" in row.keys() and row["email_verified"] == 0:
+            raise AccountError("Please check your email to verify your account before logging in.")
+        if not _password_matches(password, row["password_digest"]) or not row["active"]:
             return None
         con.execute("UPDATE users SET last_login_at=? WHERE id=?", (_now(), row["id"]))
         return _user(row)
@@ -202,6 +239,15 @@ def feature_policies(path=DB_PATH):
 
 def can_access(user, feature, path=DB_PATH):
     """Re-read roles and grants from SQLite; UI state is not authorization."""
+    ensure_schema(path)
+    with _connect(path) as con:
+        row = con.execute(
+            "SELECT audience FROM feature_access WHERE feature=?", (feature,)).fetchone()
+        audience = row[0] if row else FEATURES.get(feature, (None, "admin"))[1]
+
+    if audience == "public":
+        return True
+
     if user is None:
         return False
     current = get_user(user.id, path)
@@ -209,18 +255,15 @@ def can_access(user, feature, path=DB_PATH):
         return False
     if current.is_admin:
         return True
-    ensure_schema(path)
-    with _connect(path) as con:
-        row = con.execute(
-            "SELECT audience FROM feature_access WHERE feature=?", (feature,)).fetchone()
-        audience = row[0] if row else FEATURES.get(feature, (None, "admin"))[1]
-        if audience == "member":
-            return True
-        if audience == "selected":
+
+    if audience == "member":
+        return True
+    if audience == "selected":
+        with _connect(path) as con:
             return con.execute(
                 "SELECT 1 FROM feature_grants WHERE feature=? AND user_id=?",
                 (feature, current.id)).fetchone() is not None
-        return False
+    return False
 
 
 def list_users(path=DB_PATH):
@@ -340,6 +383,27 @@ def load_grid(user_id, grid_id, path=DB_PATH):
         row = con.execute(
             "SELECT definition_json FROM saved_grids WHERE id=? AND user_id=?",
             (grid_id, user_id)).fetchone()
+    if row is None:
+        raise AccountError("Saved grid not found.")
+    data = json.loads(row[0])
+    return {
+        side: [(axis["label"], (axis["sql"], axis["params"]))
+               for axis in data[side]]
+        for side in ("rows", "cols")
+    }
+
+def list_all_grids(sport_key, path=DB_PATH):
+    with _connect(path) as con:
+        return [dict(row) for row in con.execute(
+            "SELECT id, name, created_at, updated_at FROM saved_grids "
+            "WHERE sport_key=? ORDER BY updated_at DESC, name",
+            (sport_key,))]
+
+def load_any_grid(grid_id, path=DB_PATH):
+    with _connect(path) as con:
+        row = con.execute(
+            "SELECT definition_json FROM saved_grids WHERE id=?",
+            (grid_id,)).fetchone()
     if row is None:
         raise AccountError("Saved grid not found.")
     data = json.loads(row[0])

@@ -179,11 +179,11 @@ def show_report(picked, mode):
 
 st.sidebar.markdown("### Grid source")
 SOURCES = ["Build my own", "Saved grid", "Auto-made grid", "Paste criteria",
-           "Today's grid", "Past grid", "Random supported grid"]
+           "Past grid", "Random supported grid"]
 source = st.sidebar.radio("Source", SOURCES, key=SPORT.k("gridsource"),
                           label_visibility="collapsed")
 
-if source in ("Paste criteria", "Today's grid", "Past grid",
+if source in ("Paste criteria", "Past grid",
               "Random supported grid"):
     mode = st.sidebar.radio(
         "Mode", ["Authentic", "Practice"], horizontal=True,
@@ -237,37 +237,6 @@ elif source == "Auto-made grid":
     elif SPORT.k("auto_grid") in st.session_state:
         st.session_state.loaded = st.session_state[SPORT.k("auto_grid")]
 
-elif source == "Today's grid":
-    with st.sidebar.expander("Fetch today's grid", expanded=True):
-        st.caption(f"Pulls the day's criteria from {V.grid_source}. If the "
-                   "site's data shape has changed this reports the miss "
-                   "rather than guessing — fall back to Build my own.")
-        d = st.text_input("Date (YYYY-MM-DD, or blank for today)",
-                          key=SPORT.k("griddate"))
-        cA, cB = st.columns(2)
-        if cA.button("Load", key=SPORT.k("gridload")):
-            import datetime
-            date = d.strip() or datetime.date.today().isoformat()
-            try:
-                from afl import fetch_grid as FG
-                from afl import parse_criteria as PC
-                grid, attempts = FG.fetch(date)
-                if not grid:
-                    st.error("Grid data not found. Run "
-                             f"`python -m afl.fetch_grid {date} --discover`.")
-                    st.json({w: h for w, h in attempts})
-                else:
-                    r = [FG.to_label(x) for x in grid["rows"]]
-                    c = [FG.to_label(x) for x in grid["cols"]]
-                    pr, pc, probs = PC.parse_grid(r, c)
-                    st.session_state.loaded = {"rows": pr, "cols": pc}
-                    for p in probs:
-                        st.warning(p)
-                    st.success(f"Loaded {date}")
-            except Exception as e:
-                st.error(f"{type(e).__name__}: {e}")
-        if cB.button("Clear", key=SPORT.k("gridclear")):
-            st.session_state.pop("loaded", None)
 
 elif source in ("Past grid", "Random supported grid") and LIBRARY:
     from afl import historic_grids as HG
@@ -381,14 +350,7 @@ limit = st.sidebar.slider("Results per square", 5, 100, 25,
 
 # -------------------------------------------------------------- the board
 st.markdown("# Grid Solver")
-board_mode = st.radio(
-    "Board mode", ["Solve", "Play grid"], horizontal=True,
-    key=SPORT.k("board_mode"),
-    help="Solve shows the database-ranked answers. Play grid hides them and checks your picks.")
-if board_mode == "Solve":
-    st.caption(f"Build or load a {V.grid_source} board. Every square is solved as soon as its axes are set.")
-else:
-    st.caption("Choose a square, submit a player, and fill all nine without revealing the solver's answers.")
+st.caption(f"Build or load a {V.grid_source} board. Every square is solved as soon as its axes are set.")
 
 
 def _rebuild(frags, params):
@@ -448,8 +410,6 @@ def square_for(r, c):
 
 
 _grid_signature = repr((SPORT.key, rows_def, cols_def))
-_all_play_answers = st.session_state.setdefault(SPORT.k("play_answers"), {})
-play_answers = _all_play_answers.setdefault(_grid_signature, {})
 
 
 # The first square with both axes defined opens automatically, so the page
@@ -485,20 +445,6 @@ for r in range(3):
                     "<div class='square-name'>No answer</div>"
                     "<div class='square-meta'>0 eligible</div></div>")
             action = "no answers"
-        elif board_mode == "Play grid":
-            answered = play_answers.get((r, c))
-            if answered:
-                face = (
-                    f"<div class='square{' is-open' if open_here else ''}'>"
-                    f"<div class='square-name'>{answered['name']}</div>"
-                    "<div class='square-meta'>correct</div></div>")
-                action = "change" if not open_here else "selected"
-            else:
-                face = (
-                    f"<div class='square{' is-open' if open_here else ''}'>"
-                    "<div class='square-name'>Choose player</div>"
-                    "<div class='square-meta'>unanswered</div></div>")
-                action = "answer" if not open_here else "selected"
         else:
             # Absolute stars here, within-square stars in the results table
             # below. The tile shows one answer -- the square's most obscure
@@ -538,39 +484,6 @@ for r in range(3):
 # finals and Brownlow votes, none of which the NBA model uses.
 st.caption(SPORT.star_disclaimer)
 st.markdown("---")
-
-if board_mode == "Play grid":
-    completed = len(play_answers)
-    st.progress(completed / 9, text=f"{completed} of 9 squares complete")
-    if completed == 9:
-        st.success("Grid complete — all nine answers are correct.")
-        if not st.session_state.get(SPORT.k("grid_celebrated", _grid_signature)):
-            st.balloons()
-            st.session_state[SPORT.k("grid_celebrated", _grid_signature)] = True
-    elif st.session_state.cell:
-        r, c = st.session_state.cell
-        rlab, clab = rows_def[r][0], cols_def[c][0]
-        st.markdown(
-            f"### {rlab.replace(chr(10), ' ')} × {clab.replace(chr(10), ' ')}")
-        selected = player_picker(SPORT.k("play_pick", r, c))
-        submit_col, clear_col = st.columns([1, 1])
-        if submit_col.button(
-                "Submit answer", type="primary", key=SPORT.k("play_submit", r, c),
-                disabled=selected is None):
-            player_id, player_name = selected
-            if core.matches_player(con, player_id, constraints_for(r, c), SCHEMA):
-                play_answers[(r, c)] = {"id": player_id, "name": player_name}
-                st.rerun()
-            else:
-                st.error(f"{player_name} does not satisfy both criteria for this square.")
-        if clear_col.button(
-                "Clear square", key=SPORT.k("play_clear", r, c),
-                disabled=(r, c) not in play_answers):
-            play_answers.pop((r, c), None)
-            st.rerun()
-    else:
-        st.info("Choose a square to answer it.")
-    st.stop()
 
 
 # ------------------------------------------------------------- the answer
