@@ -22,6 +22,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
+import accounts
 import components
 import core
 import db_pool
@@ -280,6 +281,141 @@ with st.sidebar.expander("Database status", expanded=False):
 # ---------------------------------------------------------- appearance
 PALETTE = theme.controls(st, SPORT.key)
 st.markdown(theme.css(PALETTE), unsafe_allow_html=True)
+
+
+# ------------------------------------------------------- accounts & access
+# Session state remembers only an opaque database id.  Role and active status
+# are re-read on every rerun, so changing a user's access takes effect without
+# trusting browser-controlled widget state.
+accounts.ensure_schema()
+AUTH_USER = accounts.get_user(st.session_state.get("auth_user_id"))
+if AUTH_USER is None:
+    st.session_state.pop("auth_user_id", None)
+
+
+def _login_form(prefix="sidebar"):
+    with st.form(f"{prefix}_login_form"):
+        email = st.text_input("Email", key=f"{prefix}_login_email")
+        password = st.text_input(
+            "Password", type="password", key=f"{prefix}_login_password")
+        submitted = st.form_submit_button("Log in", type="primary")
+    if submitted:
+        user = accounts.authenticate(email, password)
+        if user is None:
+            st.error("Email or password is incorrect, or this account is disabled.")
+        else:
+            st.session_state["auth_user_id"] = user.id
+            st.rerun()
+
+
+def _join_form(prefix="sidebar"):
+    with st.form(f"{prefix}_join_form"):
+        name = st.text_input("Display name", key=f"{prefix}_join_name")
+        email = st.text_input("Email", key=f"{prefix}_join_email")
+        password = st.text_input(
+            "Password", type="password", key=f"{prefix}_join_password",
+            help="Use at least 10 characters.")
+        submitted = st.form_submit_button("Create account", type="primary")
+    if submitted:
+        try:
+            user, first_admin = accounts.register(name, email, password)
+        except accounts.AccountError as exc:
+            st.error(str(exc))
+        else:
+            st.session_state["auth_user_id"] = user.id
+            if first_admin:
+                st.success("Account created. As the first member, you are the administrator.")
+            st.rerun()
+
+
+with st.sidebar.expander(
+        f"Account · {AUTH_USER.display_name}" if AUTH_USER else "Join or log in",
+        expanded=False):
+    if AUTH_USER:
+        st.caption(f"{AUTH_USER.email} · {AUTH_USER.role}")
+        if st.button("Log out", key="account_logout"):
+            st.session_state.pop("auth_user_id", None)
+            st.rerun()
+    else:
+        login_tab, join_tab = st.tabs(["Log in", "Join"])
+        with login_tab:
+            _login_form()
+        with join_tab:
+            _join_form()
+
+
+def account_page():
+    st.markdown("# Account")
+    if AUTH_USER:
+        st.markdown(f"### {AUTH_USER.display_name}")
+        st.caption(f"{AUTH_USER.email} · {AUTH_USER.role}")
+        st.info("Your grids are saved to this account and are available on every sport's Grid Solver page.")
+        if st.button("Log out", key="account_page_logout"):
+            st.session_state.pop("auth_user_id", None)
+            st.rerun()
+    else:
+        st.caption("Join to use Grid Solver and other advanced features, and to save your grids.")
+        login_tab, join_tab = st.tabs(["Log in", "Create account"])
+        with login_tab:
+            _login_form("page")
+        with join_tab:
+            _join_form("page")
+
+
+def admin_page():
+    st.markdown("# Access administration")
+    st.caption("Admins always retain access. Choose members, selected accounts, or admins only for each feature.")
+    policies = accounts.feature_policies()
+    users = accounts.list_users()
+
+    st.markdown("### Feature access")
+    for feature, (label, _default) in accounts.FEATURES.items():
+        current = policies.get(feature, _default)
+        col1, col2 = st.columns([2, 3])
+        col1.markdown(f"**{label}**")
+        choice = col2.selectbox(
+            f"Who can use {label}", accounts.AUDIENCES,
+            index=accounts.AUDIENCES.index(current), key=f"policy_{feature}",
+            format_func=lambda value: {
+                "member": "All members", "selected": "Selected members",
+                "admin": "Admins only"}[value], label_visibility="collapsed")
+        if choice != current:
+            accounts.set_feature_policy(AUTH_USER.id, feature, choice)
+            st.rerun()
+        if choice == "selected":
+            granted = accounts.feature_grants(feature)
+            member_options = [u for u in users if u.active and not u.is_admin]
+            picked = st.multiselect(
+                f"Selected accounts for {label}", member_options,
+                default=[u for u in member_options if u.id in granted],
+                format_func=lambda u: f"{u.display_name} · {u.email}",
+                key=f"grants_{feature}")
+            picked_ids = {u.id for u in picked}
+            if picked_ids != (granted & {u.id for u in member_options}):
+                for member in member_options:
+                    accounts.set_feature_grant(
+                        AUTH_USER.id, feature, member.id, member.id in picked_ids)
+                st.rerun()
+
+    st.markdown("### Members")
+    for member in users:
+        with st.expander(f"{member.display_name} · {member.email}"):
+            c1, c2, c3 = st.columns([2, 2, 1])
+            role = c1.selectbox(
+                "Role", ["member", "admin"],
+                index=0 if member.role == "member" else 1,
+                key=f"user_role_{member.id}")
+            active = c2.checkbox("Active", value=member.active,
+                                 key=f"user_active_{member.id}")
+            if c3.button("Update", key=f"user_update_{member.id}"):
+                try:
+                    accounts.set_user_access(
+                        AUTH_USER.id, member.id, role=role, active=active)
+                except accounts.AccountError as exc:
+                    st.error(str(exc))
+                else:
+                    st.success("Access updated.")
+                    st.rerun()
 
 
 # ------------------------------------------------------- axis definition
@@ -653,6 +789,7 @@ def season_span(sport_key, db, revision):
 
 NAV_ITEMS = [
     "Home",
+    "Account",
     "Player Search",
     "Club Explorer",
     "Ground Explorer",
@@ -665,6 +802,8 @@ NAV_ITEMS = [
     "Game Lab",
     "Database Health",
 ]
+if AUTH_USER and AUTH_USER.is_admin:
+    NAV_ITEMS.append("Admin")
 if not SPORT.has_ground_explorer:
     NAV_ITEMS.remove("Ground Explorer")
 requested_page = st.query_params.get("page")
@@ -682,10 +821,36 @@ _NAV_LABELS = {
 PAGE = st.sidebar.radio("Navigate", NAV_ITEMS, key="page",
                         format_func=lambda item: _NAV_LABELS.get(item, item))
 
+_PROTECTED_PAGES = {
+    "Grid Solver": "grid_solver",
+    "Advanced Search": "advanced_search",
+    "Game Lab": "game_lab",
+    "Database Health": "database_health",
+}
+_required_feature = _PROTECTED_PAGES.get(PAGE)
+if _required_feature and not accounts.can_access(AUTH_USER, _required_feature):
+    st.markdown(f"# {PAGE}")
+    if AUTH_USER:
+        st.warning("Your account does not currently have access to this feature.")
+    else:
+        st.info("Join or log in to use this feature.")
+        login_tab, join_tab = st.tabs(["Log in", "Create account"])
+        with login_tab:
+            _login_form("gate")
+        with join_tab:
+            _join_form("gate")
+    st.stop()
+
+if PAGE == "Admin" and (AUTH_USER is None or not AUTH_USER.is_admin):
+    st.error("Administrator access required.")
+    st.stop()
+
 if PAGE != "Grid Solver":
     import explore
     if PAGE == "Home":
         explore.home_page(SPORT, con, DRAFT_OK, AWARDS_OK)
+    elif PAGE == "Account":
+        account_page()
     elif PAGE == "Player Search":
         explore.player_page(SPORT, con, player_picker)
     elif PAGE == "Club Explorer":
@@ -721,6 +886,8 @@ if PAGE != "Grid Solver":
     elif PAGE == "Database Health":
         import health
         health.health_page(SPORT, con)
+    elif PAGE == "Admin":
+        admin_page()
     st.stop()
 
 st.sidebar.markdown("---")
@@ -771,6 +938,43 @@ def _axes_from(reports):
 LIBRARY = grid_library(
     SPORT.key, SPORT.db, DB_REVISION) if SPORT.grid_library else []
 LIB_BY_NUMBER = {r.grid.number: r for r in LIBRARY}
+
+
+def _auto_grid():
+    """Create a supported 3x3 board whose nine cells all have an answer."""
+    import random
+
+    played_for = C.BUILDERS["Played for club"][0]
+    career_min = C.BUILDERS["150+ / X+ career games"][0]
+    played_between = C.BUILDERS["Played between seasons"][0]
+    multi_club = C.BUILDERS["Multi-club player"][0]
+
+    base = next((int(values.get("games")) for kind, values in
+                 SPORT.grid_defaults[1]
+                 if kind == "150+ / X+ career games" and values.get("games")),
+                100)
+    lo, hi = season_span(SPORT.key, SPORT.db, DB_REVISION)
+    width = max(5, (hi - lo + 1) // 3)
+    row_pool = [
+        (f"{max(10, base // 2)}+ {V.games} played",
+         career_min(max(10, base // 2))),
+        (f"{base}+ {V.games} played", career_min(base)),
+        (f"multi-{V.club} player", multi_club()),
+    ]
+    for start in range(lo, hi + 1, width):
+        end = min(hi, start + width - 1)
+        row_pool.append((f"played {start}–{end}", played_between(start, end)))
+
+    clubs = list(SCHEMA.clubs)
+    rng = random.SystemRandom()
+    for _ in range(60):
+        picked_cols = rng.sample(clubs, 3)
+        picked_rows = rng.sample(row_pool, 3)
+        generated_cols = [(club, played_for(club)) for club in picked_cols]
+        if all(core.count(con, [row[1], col[1]], SCHEMA) > 0
+               for row in picked_rows for col in generated_cols):
+            return {"rows": picked_rows, "cols": generated_cols}
+    return None
 
 
 def show_report(picked, mode):
@@ -832,12 +1036,13 @@ def show_report(picked, mode):
 
 
 st.sidebar.markdown("### Grid source")
-SOURCES = ["Build my own", "Paste criteria", "Today's grid", "Past grid",
-           "Random supported grid"]
+SOURCES = ["Build my own", "Saved grid", "Auto-made grid", "Paste criteria",
+           "Today's grid", "Past grid", "Random supported grid"]
 source = st.sidebar.radio("Source", SOURCES, key=SPORT.k("gridsource"),
                           label_visibility="collapsed")
 
-if source != "Build my own":
+if source in ("Paste criteria", "Today's grid", "Past grid",
+              "Random supported grid"):
     mode = st.sidebar.radio(
         "Mode", ["Authentic", "Practice"], horizontal=True,
         key=SPORT.k("gridmode"),
@@ -848,7 +1053,49 @@ if source != "Build my own":
 else:
     mode = "Authentic"
 
-if source == "Today's grid":
+if source == "Saved grid":
+    saved = accounts.list_saved_grids(AUTH_USER.id, SPORT.key)
+    if not saved:
+        st.sidebar.info("You have no saved grids for this sport yet.")
+    else:
+        by_id = {item["id"]: item for item in saved}
+        chosen_id = st.sidebar.selectbox(
+            "Saved grid", list(by_id), key=SPORT.k("saved_grid_id"),
+            format_func=lambda grid_id: by_id[grid_id]["name"])
+        open_col, delete_col = st.sidebar.columns(2)
+        if open_col.button("Open", key=SPORT.k("saved_grid_open"),
+                           type="primary"):
+            try:
+                st.session_state.loaded = accounts.load_grid(
+                    AUTH_USER.id, chosen_id)
+            except accounts.AccountError as exc:
+                st.sidebar.error(str(exc))
+            else:
+                st.session_state.cell = None
+                st.rerun()
+        if delete_col.button("Delete", key=SPORT.k("saved_grid_delete")):
+            accounts.delete_grid(AUTH_USER.id, chosen_id)
+            st.session_state.pop("loaded", None)
+            st.rerun()
+
+elif source == "Auto-made grid":
+    st.sidebar.caption(
+        "Builds a fresh board from clubs, eras, and career milestones, and checks that all nine squares have an answer.")
+    if (st.sidebar.button("Make another", key=SPORT.k("auto_grid_button"),
+                          type="primary")
+            or SPORT.k("auto_grid") not in st.session_state):
+        with st.spinner("Making a playable grid…"):
+            generated = _auto_grid()
+        if generated is None:
+            st.sidebar.warning("No complete automatic grid was found. Try again.")
+        else:
+            st.session_state[SPORT.k("auto_grid")] = generated
+            st.session_state.loaded = generated
+            st.session_state.cell = None
+    elif SPORT.k("auto_grid") in st.session_state:
+        st.session_state.loaded = st.session_state[SPORT.k("auto_grid")]
+
+elif source == "Today's grid":
     with st.sidebar.expander("Fetch today's grid", expanded=True):
         st.caption(f"Pulls the day's criteria from {V.grid_source}. If the "
                    "site's data shape has changed this reports the miss "
@@ -968,6 +1215,19 @@ if "loaded" in st.session_state and source != "Build my own":
 elif source == "Build my own":
     st.session_state.pop("loaded", None)
 
+with st.sidebar.expander("Save this grid", expanded=False):
+    save_name = st.text_input("Grid name", key=SPORT.k("save_grid_name"),
+                              placeholder="Friday challenge")
+    if st.button("Save grid", key=SPORT.k("save_grid_button"),
+                 type="primary", use_container_width=True):
+        try:
+            accounts.save_grid(
+                AUTH_USER.id, SPORT.key, save_name, rows_def, cols_def)
+        except (accounts.AccountError, PermissionError) as exc:
+            st.error(str(exc))
+        else:
+            st.success("Grid saved. Open it from Grid source → Saved grid.")
+
 st.sidebar.markdown("---")
 order = st.sidebar.radio("Rank by",
                          ["obscurity", f"fewest {V.games}", "oldest", "newest"],
@@ -979,8 +1239,14 @@ limit = st.sidebar.slider("Results per square", 5, 100, 25,
 
 # -------------------------------------------------------------- the board
 st.markdown("# Grid Solver")
-st.caption(f"Build or load a {V.grid_source} board. Every square is solved "
-           "as soon as its axes are set.")
+board_mode = st.radio(
+    "Board mode", ["Solve", "Play grid"], horizontal=True,
+    key=SPORT.k("board_mode"),
+    help="Solve shows the database-ranked answers. Play grid hides them and checks your picks.")
+if board_mode == "Solve":
+    st.caption(f"Build or load a {V.grid_source} board. Every square is solved as soon as its axes are set.")
+else:
+    st.caption("Choose a square, submit a player, and fill all nine without revealing the solver's answers.")
 
 
 def _rebuild(frags, params):
@@ -1039,6 +1305,11 @@ def square_for(r, c):
                    order)
 
 
+_grid_signature = repr((SPORT.key, rows_def, cols_def))
+_all_play_answers = st.session_state.setdefault(SPORT.k("play_answers"), {})
+play_answers = _all_play_answers.setdefault(_grid_signature, {})
+
+
 # The first square with both axes defined opens automatically, so the page
 # never lands on an empty results panel.
 if "cell" not in st.session_state or st.session_state.cell is None:
@@ -1072,6 +1343,20 @@ for r in range(3):
                     "<div class='square-name'>No answer</div>"
                     "<div class='square-meta'>0 eligible</div></div>")
             action = "no answers"
+        elif board_mode == "Play grid":
+            answered = play_answers.get((r, c))
+            if answered:
+                face = (
+                    f"<div class='square{' is-open' if open_here else ''}'>"
+                    f"<div class='square-name'>{answered['name']}</div>"
+                    "<div class='square-meta'>correct</div></div>")
+                action = "change" if not open_here else "selected"
+            else:
+                face = (
+                    f"<div class='square{' is-open' if open_here else ''}'>"
+                    "<div class='square-name'>Choose player</div>"
+                    "<div class='square-meta'>unanswered</div></div>")
+                action = "answer" if not open_here else "selected"
         else:
             # Absolute stars here, within-square stars in the results table
             # below. The tile shows one answer -- the square's most obscure
@@ -1111,6 +1396,39 @@ for r in range(3):
 # finals and Brownlow votes, none of which the NBA model uses.
 st.caption(SPORT.star_disclaimer)
 st.markdown("---")
+
+if board_mode == "Play grid":
+    completed = len(play_answers)
+    st.progress(completed / 9, text=f"{completed} of 9 squares complete")
+    if completed == 9:
+        st.success("Grid complete — all nine answers are correct.")
+        if not st.session_state.get(SPORT.k("grid_celebrated", _grid_signature)):
+            st.balloons()
+            st.session_state[SPORT.k("grid_celebrated", _grid_signature)] = True
+    elif st.session_state.cell:
+        r, c = st.session_state.cell
+        rlab, clab = rows_def[r][0], cols_def[c][0]
+        st.markdown(
+            f"### {rlab.replace(chr(10), ' ')} × {clab.replace(chr(10), ' ')}")
+        selected = player_picker(SPORT.k("play_pick", r, c))
+        submit_col, clear_col = st.columns([1, 1])
+        if submit_col.button(
+                "Submit answer", type="primary", key=SPORT.k("play_submit", r, c),
+                disabled=selected is None):
+            player_id, player_name = selected
+            if core.matches_player(con, player_id, constraints_for(r, c), SCHEMA):
+                play_answers[(r, c)] = {"id": player_id, "name": player_name}
+                st.rerun()
+            else:
+                st.error(f"{player_name} does not satisfy both criteria for this square.")
+        if clear_col.button(
+                "Clear square", key=SPORT.k("play_clear", r, c),
+                disabled=(r, c) not in play_answers):
+            play_answers.pop((r, c), None)
+            st.rerun()
+    else:
+        st.info("Choose a square to answer it.")
+    st.stop()
 
 
 # ------------------------------------------------------------- the answer

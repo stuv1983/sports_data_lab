@@ -17,6 +17,24 @@ import sqlite3
 import core
 
 
+def test_matches_player_uses_the_same_compiled_constraints_as_solver():
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE players (player_id INTEGER, player TEXT, obscurity REAL)")
+    con.execute("CREATE TABLE games (player_id INTEGER, club_now TEXT, season INTEGER)")
+    con.executemany("INSERT INTO players VALUES (?, ?, ?)",
+                    [(1, "Right Player", 50.0), (2, "Wrong Era", 40.0)])
+    con.executemany("INSERT INTO games VALUES (?, ?, ?)",
+                    [(1, "A", 2020), (2, "A", 1990)])
+    schema = core.Schema(required_games_cols=(), required_player_cols=())
+    constraints = [
+        ("SELECT player_id FROM games WHERE club_now=?", ["A"]),
+        ("SELECT player_id FROM games WHERE season>=?", [2000]),
+    ]
+
+    assert core.matches_player(con, 1, constraints, schema)
+    assert not core.matches_player(con, 2, constraints, schema)
+
+
 def run():
     con = sqlite3.connect(":memory:")
     con.execute("""

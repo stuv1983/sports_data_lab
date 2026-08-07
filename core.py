@@ -763,6 +763,20 @@ def count(con, constraints, schema: Schema):
         params).fetchone()[0]
 
 
+def matches_player(con, player_id, constraints, schema: Schema):
+    """Return whether one server-selected player satisfies every criterion.
+
+    Play mode uses the same compiled predicates as the solver.  The player id
+    remains a bound parameter, so submitting an answer cannot alter the query.
+    """
+    where, params = _where(constraints, schema)
+    return con.execute(
+        f"SELECT 1 FROM {schema.players} p "
+        f"WHERE p.{schema.player_id}=? AND {where} LIMIT 1",
+        [player_id, *params],
+    ).fetchone() is not None
+
+
 @dataclass
 class Square:
     """Everything a grid square shows before it is opened."""
