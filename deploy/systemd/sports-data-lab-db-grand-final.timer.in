@@ -1,0 +1,12 @@
+[Unit]
+Description=Guarded Sports Data Lab Grand Final and awards update
+
+[Timer]
+OnCalendar=Sun *-*-* 01:00:00 Australia/Sydney
+Unit=sports-data-lab-db-update@grand-final-awards.service
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target
+

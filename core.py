@@ -235,9 +235,14 @@ class Generic:
         s = self.s
         names = self.s.club_identities(club)
         marks = ",".join("?" for _ in names)
-        return (f"SELECT DISTINCT {s.player_id} FROM {s.games} "
-                f"WHERE {s.club_now} IN ({marks}) "
-                f"OR {s.club_hist} IN ({marks})", [*names, *names])
+        # UNION lets SQLite use the separate current/historical club indexes.
+        # The equivalent OR form scanned the full AFL games table whenever a
+        # lineage such as Brisbane contained several identities.
+        sql = (f"SELECT {s.player_id} FROM {s.games} "
+               f"WHERE {s.club_now} IN ({marks}) UNION "
+               f"SELECT {s.player_id} FROM {s.games} "
+               f"WHERE {s.club_hist} IN ({marks})")
+        return sql, [*names, *names]
 
     def debut_club(self, club):
         """First career game was for this club."""

@@ -65,6 +65,7 @@ coverage.xml
 htmlcov/
 *.log
 logs/emails.txt
+logs/database_updates/
 
 # Notebook and scratch output
 .ipynb_checkpoints/

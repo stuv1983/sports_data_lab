@@ -1,6 +1,6 @@
 import os
 
-os.makedirs('pages', exist_ok=True)
+os.makedirs('app_pages', exist_ok=True)
 
 pages = {
     '1_Home.py': '''import streamlit as st
@@ -76,5 +76,5 @@ else:
 }
 
 for filename, content in pages.items():
-    with open(os.path.join('pages', filename), 'w') as f:
+    with open(os.path.join('app_pages', filename), 'w') as f:
         f.write(content)

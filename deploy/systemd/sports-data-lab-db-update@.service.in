@@ -1,0 +1,22 @@
+[Unit]
+Description=Sports Data Lab database update (%i)
+Wants=network-online.target
+After=network-online.target
+ConditionPathIsDirectory="@PROJECT_DIR@"
+
+[Service]
+Type=oneshot
+User=@RUN_USER@
+Group=@RUN_GROUP@
+WorkingDirectory="@PROJECT_DIR@"
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Australia/Sydney
+EnvironmentFile="-@PROJECT_DIR@/.env"
+ExecStart="@PYTHON_EXE@" -m database_updates scheduled %i
+TimeoutStartSec=8h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0027

@@ -99,43 +99,43 @@ _PROTECTED_PAGES = {
 # Build Navigation
 pages = {
     "Discover": [
-        st.Page("pages/1_Home.py", title="Home", icon=":material/home:"),
-        st.Page("pages/10_Random_Discovery.py", title="Random Discovery", icon=":material/shuffle:"),
+        st.Page("app_pages/1_Home.py", title="Home", icon=":material/home:"),
+        st.Page("app_pages/10_Random_Discovery.py", title="Random Discovery", icon=":material/shuffle:"),
     ],
     "Explore": [
-        st.Page("pages/3_Player_Search.py", title="Player Search", icon=":material/person_search:"),
-        st.Page("pages/9_Stats_Explorer.py", title="Stats Explorer", icon=":material/bar_chart:"),
-        st.Page("pages/4_Club_Explorer.py", title=f"{SPORT.vocab.club.capitalize()} Explorer", icon=":material/shield:"),
-        st.Page("pages/6_Past_Games.py", title=f"Past {SPORT.vocab.games.capitalize()}", icon=":material/history:"),
-        st.Page("pages/7_Awards.py", title="Awards", icon=":material/emoji_events:"),
+        st.Page("app_pages/3_Player_Search.py", title="Player Search", icon=":material/person_search:"),
+        st.Page("app_pages/9_Stats_Explorer.py", title="Stats Explorer", icon=":material/bar_chart:"),
+        st.Page("app_pages/4_Club_Explorer.py", title=f"{SPORT.vocab.club.capitalize()} Explorer", icon=":material/shield:"),
+        st.Page("app_pages/6_Past_Games.py", title=f"Past {SPORT.vocab.games.capitalize()}", icon=":material/history:"),
+        st.Page("app_pages/7_Awards.py", title="Awards", icon=":material/emoji_events:"),
     ],
     "Play": [],
     "Account & Settings": [
-        st.Page("pages/2_Account.py", title="Account", icon=":material/account_circle:"),
+        st.Page("app_pages/2_Account.py", title="Account", icon=":material/account_circle:"),
     ]
 }
 
 if SPORT.has_ground_explorer:
-    pages["Explore"].insert(3, st.Page("pages/5_Ground_Explorer.py", title="Ground Explorer", icon=":material/stadium:"))
+    pages["Explore"].insert(3, st.Page("app_pages/5_Ground_Explorer.py", title="Ground Explorer", icon=":material/stadium:"))
     
 if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Advanced Search"]):
-    pages["Explore"].insert(1, st.Page("pages/8_Advanced_Search.py", title="Advanced Search", icon=":material/manage_search:"))
+    pages["Explore"].insert(1, st.Page("app_pages/8_Advanced_Search.py", title="Advanced Search", icon=":material/manage_search:"))
 
 if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Grid Solver"]):
-    pages["Play"].append(st.Page("pages/11_Grid_Solver.py", title="Grid Solver", icon=":material/grid_on:"))
+    pages["Play"].append(st.Page("app_pages/11_Grid_Solver.py", title="Grid Solver", icon=":material/grid_on:"))
 if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Play Grids"]):
-    pages["Play"].append(st.Page("pages/15_Play_Grids.py", title="Play Grids", icon=":material/sports_esports:"))
+    pages["Play"].append(st.Page("app_pages/15_Play_Grids.py", title="Play Grids", icon=":material/sports_esports:"))
 if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Game Lab"]):
-    pages["Play"].append(st.Page("pages/12_Game_Lab.py", title="Game Lab", icon=":material/science:"))
+    pages["Play"].append(st.Page("app_pages/12_Game_Lab.py", title="Game Lab", icon=":material/science:"))
     
 if not pages["Play"]:
     del pages["Play"]
 
 if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Database Health"]):
-    pages["Account & Settings"].append(st.Page("pages/13_Database_Health.py", title="Database Health", icon=":material/health_and_safety:"))
+    pages["Account & Settings"].append(st.Page("app_pages/13_Database_Health.py", title="Database Health", icon=":material/health_and_safety:"))
 
 if AUTH_USER and AUTH_USER.is_admin:
-    pages["Account & Settings"].append(st.Page("pages/14_Admin.py", title="Admin", icon=":material/admin_panel_settings:"))
+    pages["Account & Settings"].append(st.Page("app_pages/14_Admin.py", title="Admin", icon=":material/admin_panel_settings:"))
 
 pg = st.navigation(pages)
 

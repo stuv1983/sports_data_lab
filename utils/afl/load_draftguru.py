@@ -412,6 +412,21 @@ def main():
     draft.to_sql("draft", con, if_exists="replace", index=False)
     awards.to_sql("awards", con, if_exists="replace", index=False)
     aa.to_sql("all_australian", con, if_exists="replace", index=False)
+    # The official-history loader complements this table. Keeping an empty
+    # compatible table makes the union constraint safe before its first
+    # successful network refresh and in small fixture databases.
+    con.execute("""CREATE TABLE IF NOT EXISTS all_australian_history (
+        season INTEGER NOT NULL,
+        player_source TEXT NOT NULL,
+        club_source TEXT,
+        name_key TEXT NOT NULL,
+        player_id INTEGER,
+        match_status TEXT NOT NULL,
+        match_method TEXT NOT NULL,
+        candidate_count INTEGER NOT NULL,
+        source_url TEXT NOT NULL,
+        UNIQUE(season, player_source, club_source)
+    )""")
     for stmt in [
         "CREATE INDEX IF NOT EXISTS ix_dg_people_key ON dg_people(name_key)",
         "CREATE INDEX IF NOT EXISTS ix_draft_key ON draft(name_key)",

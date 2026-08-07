@@ -52,15 +52,47 @@ def _award(where, params):
 
 # ----------------------------------------------------------- All-Australian
 
+_AA_HISTORY_PLACEHOLDER = """
+CREATE TEMP TABLE IF NOT EXISTS all_australian_history (
+    season INTEGER, player_id INTEGER, match_status TEXT
+)
+"""
+
+
+def ensure_all_australian_history_table(con):
+    exists = con.execute(
+        "SELECT 1 FROM main.sqlite_master "
+        "WHERE type='table' AND name='all_australian_history'"
+    ).fetchone()
+    if not exists:
+        # The app deliberately uses a mode=ro connection with query_only set.
+        # The URI protects the database file, while query_only also blocks the
+        # connection-local TEMP placeholder needed by older databases.  Toggle
+        # only long enough to create that empty TEMP table, then restore the
+        # original setting; mode=ro continues to prevent persistent writes.
+        query_only = bool(con.execute("PRAGMA query_only").fetchone()[0])
+        if query_only:
+            con.execute("PRAGMA query_only = OFF")
+        try:
+            con.execute(_AA_HISTORY_PLACEHOLDER)
+        finally:
+            if query_only:
+                con.execute("PRAGMA query_only = ON")
+
 def all_australian(times=1):
     """Named in at least N All-Australian teams."""
-    return ("""SELECT l.player_id
-               FROM all_australian t JOIN person_links l
-                 ON l.dg_person_id = t.dg_person_id
-               WHERE l.match_status IN ('from_draft','unique','resolved')
-                 AND l.player_id IS NOT NULL
-               GROUP BY l.player_id
-               HAVING COUNT(DISTINCT t.season) >= ?""", [times])
+    return ("""SELECT player_id FROM (
+                   SELECT l.player_id, t.season
+                   FROM all_australian t JOIN person_links l
+                     ON l.dg_person_id = t.dg_person_id
+                   WHERE l.match_status IN ('from_draft','unique','resolved')
+                     AND l.player_id IS NOT NULL
+                   UNION
+                   SELECT player_id, season FROM all_australian_history
+                   WHERE match_status IN ('unique','resolved')
+                     AND player_id IS NOT NULL
+               ) GROUP BY player_id
+               HAVING COUNT(DISTINCT season) >= ?""", [times])
 
 
 def all_australian_captain():
@@ -81,12 +113,17 @@ def all_australian_in_position(position):
 
 
 def all_australian_between(lo, hi):
-    return ("""SELECT DISTINCT l.player_id
-               FROM all_australian t JOIN person_links l
-                 ON l.dg_person_id = t.dg_person_id
-               WHERE l.match_status IN ('from_draft','unique','resolved')
-                 AND l.player_id IS NOT NULL
-                 AND t.season BETWEEN ? AND ?""", [lo, hi])
+    return ("""SELECT DISTINCT player_id FROM (
+                   SELECT l.player_id, t.season
+                   FROM all_australian t JOIN person_links l
+                     ON l.dg_person_id = t.dg_person_id
+                   WHERE l.match_status IN ('from_draft','unique','resolved')
+                     AND l.player_id IS NOT NULL
+                   UNION
+                   SELECT player_id, season FROM all_australian_history
+                   WHERE match_status IN ('unique','resolved')
+                     AND player_id IS NOT NULL
+               ) WHERE season BETWEEN ? AND ?""", [lo, hi])
 
 
 # -------------------------------------------------------------- named awards

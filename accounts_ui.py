@@ -1,7 +1,103 @@
+import sqlite3
+
 import streamlit as st
+
 import accounts
 import database_updates
 import db_pool
+
+
+def _display_time(value):
+    if not value:
+        return "Unknown"
+    try:
+        import datetime as dt
+
+        parsed = dt.datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            parsed = parsed.astimezone()
+        return parsed.astimezone().strftime("%d %b %Y, %I:%M:%S %p %Z")
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _display_size(value):
+    if value is None:
+        return "Unknown"
+    return f"{int(value) / 1_048_576:,.1f} MB"
+
+
+def _change_value(previous, current, key):
+    old, new = previous.get(key), current.get(key)
+    if old is None or new is None:
+        return "-"
+    delta = int(new) - int(old)
+    if key == "bytes":
+        return f"{_display_size(new)} ({delta / 1_048_576:+,.1f} MB)"
+    return f"{int(new):,} ({delta:+,})"
+
+
+def _database_rows(snapshots, *, include_check=False):
+    rows = []
+    for sport, snapshot in snapshots.items():
+        row = {
+            "Sport": sport.upper(),
+            "Last database update": _display_time(snapshot.get("modified_at")),
+            "Size": _display_size(snapshot.get("bytes")),
+        }
+        if include_check:
+            row.update({
+                "Integrity": snapshot.get("integrity", "not checked"),
+                "Players": snapshot.get("players", "-"),
+                "Data rows": snapshot.get("records", "-"),
+                "Latest season": snapshot.get("season_max", "-"),
+            })
+        rows.append(row)
+    return rows
+
+
+def _change_rows(before, after):
+    rows = []
+    for sport, current in after.items():
+        previous = before.get(sport, {})
+        old_season = previous.get("season_max")
+        new_season = current.get("season_max")
+        season = str(new_season or "-")
+        if old_season is not None and new_season != old_season:
+            season = f"{old_season} -> {new_season}"
+        rows.append({
+            "Sport": sport.upper(),
+            "Players after update": _change_value(
+                previous, current, "players"
+            ),
+            "Data rows after update": _change_value(
+                previous, current, "records"
+            ),
+            "Latest season": season,
+            "Database size": _change_value(previous, current, "bytes"),
+        })
+    return rows
+
+
+def _render_database_check(check):
+    if not check:
+        return
+    st.markdown("#### Last read-only check")
+    if check.get("state") == "complete":
+        st.success("All selected database files are present and passed SQLite's quick integrity check.")
+    else:
+        failed = ", ".join(
+            sport.upper() for sport in check.get("failures", [])
+        ) or "unknown"
+        st.error(f"Database check failed for: {failed}.")
+    st.caption(
+        f"Checked: {_display_time(check.get('checked_at'))} - "
+        "Read-only: no sources were downloaded and no sports database was changed."
+    )
+    st.dataframe(
+        _database_rows(check.get("databases", {}), include_check=True),
+        width="stretch", hide_index=True,
+    )
 
 
 def _login_form(prefix="sidebar"):
@@ -32,7 +128,7 @@ def _join_form(prefix="sidebar"):
         submitted = st.form_submit_button("Create account", type="primary")
     if submitted:
         try:
-            user, first_admin = accounts.register(name, email, password)
+            _user, first_admin = accounts.register(name, email, password)
         except accounts.AccountError as exc:
             st.error(str(exc))
         else:
@@ -123,16 +219,31 @@ def admin_page(user):
         "the background and the live app keeps serving the last validated files."
     )
 
+    notice = st.session_state.pop("database_update_notice", None)
+    if notice:
+        getattr(st, notice.get("kind", "info"))(notice.get("message", ""))
+
     status = database_updates.read_status()
+    check_status = database_updates.read_check_status()
+    state = status.get("state", "unknown") if status else "unknown"
+    active = (
+        state in {"starting", "running"}
+        and database_updates.update_is_active()
+    )
     if status:
-        state = status.get("state", "unknown")
         message = {
+            "starting": "A database update is starting.",
             "running": "A database update is running.",
             "complete": "The last database update completed.",
             "complete_with_warnings": "The database update completed, but one or more optional award sources were unavailable. See the steps below.",
             "failed": "The last database update failed; the live validated databases were retained where the builder supports atomic replacement.",
         }.get(state, f"Last update state: {state}")
-        if state == "complete":
+        if state in {"starting", "running"} and not active:
+            st.error(
+                "The last update stopped unexpectedly and its process is no "
+                "longer running. Review the failed step or log below."
+            )
+        elif state == "complete":
             st.success(message)
         elif state == "complete_with_warnings":
             st.warning(message)
@@ -140,24 +251,80 @@ def admin_page(user):
             st.error(message)
         else:
             st.info(message)
-        started = status.get("started_at", "unknown")
-        finished = status.get("finished_at")
-        st.caption(
-            f"Event: {status.get('event', 'unknown')} · Started: {started}"
-            + (f" · Finished: {finished}" if finished else "")
-        )
+        started = _display_time(status.get("started_at"))
+        finished = _display_time(status.get("finished_at"))
+        timing = f"Event: {status.get('event', 'unknown')} - Started: {started}"
+        if status.get("finished_at"):
+            timing += f" - Finished: {finished}"
+        st.caption(timing)
+        if active:
+            try:
+                expected_steps = len(database_updates.plan(
+                    status.get("event", "full"),
+                    status.get("sports", database_updates.SPORT_KEYS),
+                ))
+            except (TypeError, ValueError):
+                expected_steps = 0
+            finished_steps = len(status.get("steps", []))
+            if expected_steps:
+                st.progress(
+                    min(finished_steps / expected_steps, 1.0),
+                    text=(f"{finished_steps} of {expected_steps} update steps "
+                          "finished. Refresh for the latest result."),
+                )
+        if status.get("error"):
+            st.error(status["error"])
         if status.get("steps"):
             with st.expander("Update steps", expanded=state == "failed"):
                 for step in status["steps"]:
-                    result = "ok" if step.get("returncode") == 0 else "failed"
-                    if step.get("optional") and result == "failed":
+                    if step.get("state") == "skipped":
+                        result = "skipped after required failure"
+                    else:
+                        result = "ok" if step.get("returncode") == 0 else "failed"
+                    if (step.get("optional") and result == "failed"):
                         result = "optional source unavailable"
                     st.write(
                         f"{step.get('sport', '').upper()} · {step.get('label')} · "
                         f"{result} · {step.get('seconds', 0):g}s"
                     )
+        if status.get("promotions"):
+            with st.expander("Database promotion results", expanded=state == "failed"):
+                for sport, promotion in status["promotions"].items():
+                    promotion_state = promotion.get("state")
+                    if promotion_state == "promoted":
+                        detail = "validated database promoted"
+                        if promotion.get("backup"):
+                            detail += f"; backup: {promotion['backup']}"
+                        st.success(f"{sport.upper()}: {detail}")
+                    elif promotion_state == "retained_live":
+                        st.warning(
+                            f"{sport.upper()}: live database retained; failed "
+                            f"staging file: {promotion.get('staging', 'unknown')}"
+                        )
+                    else:
+                        st.error(
+                            f"{sport.upper()}: promotion failed; live database "
+                            f"retained. {promotion.get('error', '')}"
+                        )
         if status.get("log_path"):
+            st.caption("Full update log")
             st.code(status["log_path"], language=None)
+
+        if status.get("after"):
+            st.markdown("#### What the update found")
+            st.dataframe(
+                _change_rows(status.get("before", {}), status["after"]),
+                width="stretch", hide_index=True,
+            )
+
+    st.markdown("#### Live database files")
+    st.caption(
+        "The timestamp is when each validated live database was last replaced."
+    )
+    st.dataframe(
+        _database_rows(database_updates.database_file_status()),
+        width="stretch", hide_index=True,
+    )
 
     with st.form("admin_database_update_form"):
         password = st.text_input(
@@ -165,7 +332,8 @@ def admin_page(user):
             help="A fresh password check is required before starting a database write."
         )
         submitted = st.form_submit_button(
-            "Update all databases", type="primary", icon=":material/sync:"
+            "Update all databases", type="primary", icon=":material/sync:",
+            disabled=active,
         )
     if submitted:
         try:
@@ -179,27 +347,54 @@ def admin_page(user):
                 try:
                     pid = database_updates.start_background()
                 except RuntimeError as exc:
-                    st.warning(str(exc))
+                    st.error(str(exc))
                 else:
-                    st.success(f"Database update started in the background (PID {pid}).")
+                    st.session_state["database_update_notice"] = {
+                        "kind": "success",
+                        "message": (
+                            "Database update accepted and started in the "
+                            f"background (PID {pid})."
+                        ),
+                    }
                     st.rerun()
 
     controls = st.container(horizontal=True)
+    if controls.button(
+        "Check databases now", icon=":material/fact_check:",
+        help=("Runs read-only file, row-count and integrity checks. It does "
+              "not download sources or add anything to a database."),
+    ):
+        with st.status("Checking live databases...", expanded=True) as progress:
+            try:
+                check_status = database_updates.check_databases()
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                progress.update(label="Database check failed", state="error")
+                st.error(f"{type(exc).__name__}: {exc}")
+            else:
+                if check_status.get("state") == "complete":
+                    progress.update(label="Database check complete", state="complete")
+                else:
+                    progress.update(
+                        label="One or more database checks failed", state="error"
+                    )
     if controls.button("Refresh update status", icon=":material/refresh:"):
         st.rerun()
     if controls.button(
         "Reload updated databases", icon=":material/restart_alt:",
-        disabled=status.get("state") == "running",
+        disabled=active,
         help="Closes this session's old read handles and reruns the app. A server reboot is not normally required.",
     ):
         db_pool.close_all()
         st.cache_data.clear()
         st.rerun()
 
+    _render_database_check(check_status)
+
     with st.expander("Automatic schedule"):
         st.write("Regular scores and statistics: Friday, Saturday, Sunday and Monday at 12:10 am Sydney time.")
         st.write("Brownlow and awards: 1:00 am on the Tuesday after Brownlow night (22 September in 2026).")
         st.write("Grand Final and final awards: 1:00 am on the Sunday after the last Saturday in September (27 September in 2026).")
         st.caption(
-            "Windows Task Scheduler runs missed starts when the computer resumes and prevents overlapping jobs."
+            "Ubuntu systemd timers run missed starts after downtime and the "
+            "update lock prevents overlapping jobs."
         )

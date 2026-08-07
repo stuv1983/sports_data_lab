@@ -1,0 +1,15 @@
+[Unit]
+Description=Regular Sports Data Lab database updates
+
+[Timer]
+OnCalendar=Fri *-*-* 00:10:00 Australia/Sydney
+OnCalendar=Sat *-*-* 00:10:00 Australia/Sydney
+OnCalendar=Sun *-*-* 00:10:00 Australia/Sydney
+OnCalendar=Mon *-*-* 00:10:00 Australia/Sydney
+Unit=sports-data-lab-db-update@regular.service
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target
+

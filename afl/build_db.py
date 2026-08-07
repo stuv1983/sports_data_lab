@@ -381,7 +381,11 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
     cur = con.cursor()
     for stmt in [
         "CREATE INDEX IF NOT EXISTS ix_games_player ON games(player_id)",
+        "CREATE INDEX IF NOT EXISTS ix_games_round_player ON games(round, player_id)",
         "CREATE INDEX IF NOT EXISTS ix_games_club ON games(club_now)",
+        "CREATE INDEX IF NOT EXISTS ix_games_club_hist ON games(club_hist, player_id)",
+        "CREATE INDEX IF NOT EXISTS ix_games_debut_club ON games(career_game_no, club_now, player_id)",
+        "CREATE INDEX IF NOT EXISTS ix_games_debut_club_hist ON games(career_game_no, club_hist, player_id)",
         "CREATE INDEX IF NOT EXISTS ix_games_season ON games(season)",
         "CREATE INDEX IF NOT EXISTS ix_games_disp ON games(disposals)",
         "CREATE INDEX IF NOT EXISTS ix_games_goals ON games(goals)",
@@ -396,6 +400,7 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
         "CREATE INDEX IF NOT EXISTS ix_sg ON season_goals(player_id, season)",
         "CREATE INDEX IF NOT EXISTS ix_games_venue ON games(venue)",
         "CREATE INDEX IF NOT EXISTS ix_games_match ON games(season, date, club_hist)",
+        "CREATE INDEX IF NOT EXISTS ix_games_teammate ON games(club_hist, season, date, opponent, player_id)",
     ]:
         cur.execute(stmt)
     con.commit()
@@ -544,6 +549,13 @@ def refresh_layers(db_path, verbose=True):
         script("link_people.py")
 
     step("draft, awards and All-Australian", draftguru)
+
+    def official_all_australian():
+        from utils.afl import load_all_australian_history
+        load_all_australian_history.refresh_default(
+            db_path=str(db_path), refresh=True, verbose=verbose)
+
+    step("official All-Australian history", official_all_australian)
 
     def captains():
         from utils.afl import load_captains

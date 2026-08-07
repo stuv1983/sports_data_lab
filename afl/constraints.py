@@ -182,7 +182,11 @@ def played_a_grand_final():
 
 
 def grand_finals_played_min(times):
-    return _G.played_in_round_min("GF", times)
+    # Count matches, not seasons. Replayed Grand Finals (notably 1977 and
+    # 2010) are separate appearances and Gridley counts both games.
+    return ("""SELECT player_id FROM games
+               WHERE round = 'GF'
+               GROUP BY player_id HAVING COUNT(*) >= ?""", [times])
 
 
 def premierships_won_min(times):
@@ -356,6 +360,7 @@ def require_schema(con):
     ensure_rising_star_table(con)
     ensure_brownlow_table(con)
     ensure_family_relationship_tables(con)
+    ensure_all_australian_history_table(con)
 
 
 def solve(con, constraints, limit=25, order="obscurity"):
@@ -364,6 +369,7 @@ def solve(con, constraints, limit=25, order="obscurity"):
     ensure_rising_star_table(con)
     ensure_brownlow_table(con)
     ensure_family_relationship_tables(con)
+    ensure_all_australian_history_table(con)
     return core.solve(con, constraints, SCHEMA, limit=limit, order=order)
 
 
@@ -373,6 +379,7 @@ def count(con, constraints):
     ensure_rising_star_table(con)
     ensure_brownlow_table(con)
     ensure_family_relationship_tables(con)
+    ensure_all_australian_history_table(con)
     return core.count(con, constraints, SCHEMA)
 
 
@@ -382,6 +389,7 @@ def square(con, constraints, order="obscurity"):
     ensure_rising_star_table(con)
     ensure_brownlow_table(con)
     ensure_family_relationship_tables(con)
+    ensure_all_australian_history_table(con)
     return core.square(con, constraints, SCHEMA, order=order)
 
 
@@ -418,13 +426,21 @@ CAPTAIN_BUILDER_NAMES = set(CAPTAIN_BUILDERS)
 # separate Draftguru update, so its absence must degrade to "no award
 # builders" rather than break every import of this module.
 try:
-    from .awards import AWARD_BUILDERS, AWARD_SLUGS, awards_available  # noqa: E402
+    from .awards import (  # noqa: E402
+        AWARD_BUILDERS,
+        AWARD_SLUGS,
+        awards_available,
+        ensure_all_australian_history_table,
+    )
 except ImportError:
     AWARD_BUILDERS: dict = {}
     AWARD_SLUGS: dict = {}
 
     def awards_available(_con) -> bool:
         return False
+
+    def ensure_all_australian_history_table(_con) -> None:
+        return None
 
 BUILDERS.update(AWARD_BUILDERS)
 AWARD_BUILDER_NAMES = set(AWARD_BUILDERS)
