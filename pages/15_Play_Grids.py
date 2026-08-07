@@ -1,10 +1,10 @@
+import json
+
 import streamlit as st
-import pandas as pd
+
 import accounts
 import core
 import ui_widgets
-import sports
-import json
 
 # We removed the hardcoded admin check here because app.py handles access control 
 # via _PROTECTED_PAGES and accounts.can_access, which checks the admin policy toggle.
@@ -22,7 +22,10 @@ st.markdown("# Play Grids")
 st.caption("Select a saved grid to play. You have 9 guesses, and a player can only be used once. You have 1 undo.")
 
 def render_grid_selection():
-    source = st.radio("Grid Source", ["Saved Grids", "Past Grids (Gridley)"], key=SPORT.k("play_source"))
+    sources = ["Saved Grids"]
+    if SPORT.key == "afl":
+        sources.append("Past Grids (Gridley)")
+    source = st.radio("Grid source", sources, key=SPORT.k("play_source"))
     
     if source == "Saved Grids":
         saved = accounts.list_all_grids(SPORT.key)
@@ -51,7 +54,7 @@ def render_grid_selection():
                 {"grid_num": r[0], "date": r[1], "source": r[2], "rows_json": r[3], "cols_json": r[4]} 
                 for r in cur.fetchall()
             ]
-        except Exception as e:
+        except Exception:
             past_grids = []
             
         if not past_grids:
@@ -66,24 +69,32 @@ def render_grid_selection():
         if st.button("Load Grid", key=SPORT.k("play_load_historic"), type="primary"):
             picked = by_label[chosen_label]
             
-            # The JSON needs to be converted into the (label, constraint) format
-            cols_labels = json.loads(picked["cols_json"])
-            rows_labels = json.loads(picked["rows_json"])
-            
-            # Use sport's specific parser if available, fallback to empty sql
-            cols = []
-            rows = []
-            if SPORT.key == "afl":
-                from afl import parse_criteria as P
-                for lab in cols_labels:
-                    sql_params, nice_label = P.parse(lab)
-                    cols.append((nice_label or lab, sql_params or ("SELECT 1 WHERE 0", [])))
-                for lab in rows_labels:
-                    sql_params, nice_label = P.parse(lab)
-                    rows.append((nice_label or lab, sql_params or ("SELECT 1 WHERE 0", [])))
-            else:
-                cols = [(lab, ("SELECT 1 WHERE 0", [])) for lab in cols_labels]
-                rows = [(lab, ("SELECT 1 WHERE 0", [])) for lab in rows_labels]
+            try:
+                cols_labels = tuple(json.loads(picked["cols_json"]))
+                rows_labels = tuple(json.loads(picked["rows_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                st.error("This grid contains invalid saved criteria.")
+                return
+
+            from afl import historic_grids as HG
+            grid = HG.HistoricGrid(
+                number=picked["grid_num"], date=picked["date"],
+                source=picked["source"], rows=rows_labels, cols=cols_labels,
+            )
+            report = HG.analyse(grid, con, SPORT)
+            if not report.authentic_playable:
+                st.error(f"This grid cannot be played: {report.status}.")
+                for criterion in report.unsupported:
+                    st.caption(
+                        f"{criterion.text}: "
+                        f"{criterion.reason or 'criterion is unsupported'}"
+                    )
+                for error in report.square_errors:
+                    st.caption(error)
+                return
+
+            rows = [(item.display, item.constraint) for item in report.rows]
+            cols = [(item.display, item.constraint) for item in report.cols]
 
             st.session_state[SPORT.k("play_loaded_grid")] = {"rows": rows, "cols": cols}
             st.session_state[SPORT.k("play_state")] = {
@@ -210,4 +221,3 @@ if not game_over and state["cell"]:
                 st.error(f"Incorrect! {player_name} does not satisfy both criteria. (Guess used)")
 elif not game_over:
     st.info("Choose a square to answer it.")
-

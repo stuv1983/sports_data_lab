@@ -8,7 +8,7 @@ those rebuilds and must never grant write access to sports statistics.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -33,6 +33,7 @@ FEATURES = {
     "database_editing": ("Database editing", "admin"),
 }
 AUDIENCES = ("public", "member", "selected", "admin")
+VERIFICATION_TTL = timedelta(hours=24)
 
 
 class AccountError(ValueError):
@@ -64,12 +65,6 @@ def _connect(path=DB_PATH):
 
 def ensure_schema(path=DB_PATH):
     with _connect(path) as con:
-        try:
-            con.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0 CHECK (email_verified IN (0, 1))")
-            con.execute("ALTER TABLE users ADD COLUMN verification_token TEXT")
-        except sqlite3.OperationalError:
-            pass # Columns already exist
-            
         con.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
@@ -82,12 +77,13 @@ def ensure_schema(path=DB_PATH):
                 created_at TEXT NOT NULL,
                 last_login_at TEXT,
                 email_verified INTEGER NOT NULL DEFAULT 0 CHECK (email_verified IN (0, 1)),
-                verification_token TEXT
+                verification_token TEXT,
+                verification_sent_at TEXT
             );
             CREATE TABLE IF NOT EXISTS feature_access (
                 feature TEXT PRIMARY KEY,
                 audience TEXT NOT NULL
-                    CHECK (audience IN ('member', 'selected', 'admin'))
+                    CHECK (audience IN ('public', 'member', 'selected', 'admin'))
             );
             CREATE TABLE IF NOT EXISTS feature_grants (
                 feature TEXT NOT NULL,
@@ -107,6 +103,60 @@ def ensure_schema(path=DB_PATH):
             CREATE INDEX IF NOT EXISTS saved_grids_owner
                 ON saved_grids(user_id, sport_key, updated_at DESC);
         """)
+
+        user_columns = {
+            row[1] for row in con.execute("PRAGMA table_info(users)")
+        }
+        if "email_verified" not in user_columns:
+            con.execute(
+                "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL "
+                "DEFAULT 0 CHECK (email_verified IN (0, 1))"
+            )
+        if "verification_token" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN verification_token TEXT")
+        if "verification_sent_at" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN verification_sent_at TEXT")
+
+        # Rows created before email verification existed have no token. Keep
+        # those legacy accounts usable while leaving new, token-bearing rows
+        # unverified.
+        con.execute(
+            "UPDATE users SET email_verified=1 "
+            "WHERE email_verified=0 AND verification_token IS NULL"
+        )
+
+        # The original feature_access CHECK did not include 'public'. SQLite
+        # cannot alter CHECK constraints, so rebuild this small policy table.
+        feature_sql = con.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='feature_access'"
+        ).fetchone()[0]
+        if "'public'" not in feature_sql.casefold():
+            con.executescript("""
+                ALTER TABLE feature_access RENAME TO feature_access_legacy;
+                CREATE TABLE feature_access (
+                    feature TEXT PRIMARY KEY,
+                    audience TEXT NOT NULL CHECK (
+                        audience IN ('public', 'member', 'selected', 'admin')
+                    )
+                );
+                INSERT INTO feature_access(feature, audience)
+                    SELECT feature, audience FROM feature_access_legacy;
+                DROP TABLE feature_access_legacy;
+            """)
+
+        # Hash tokens created by the short-lived plaintext implementation.
+        for row in con.execute(
+            "SELECT id, verification_token FROM users "
+            "WHERE verification_token IS NOT NULL "
+            "AND verification_token NOT LIKE 'sha256$%'"
+        ):
+            con.execute(
+                "UPDATE users SET verification_token=?, "
+                "verification_sent_at=COALESCE(verification_sent_at, ?) "
+                "WHERE id=?",
+                (_verification_digest(row[1]), _now(), row[0]),
+            )
         con.executemany(
             "INSERT OR IGNORE INTO feature_access(feature, audience) VALUES (?, ?)",
             [(key, default) for key, (_, default) in FEATURES.items()],
@@ -119,7 +169,27 @@ def _now():
 
 def _normalise_email(email):
     value = str(email).strip().casefold()
-    if len(value) > 254 or not re.fullmatch(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$", value):
+    if len(value) > 254 or value.count("@") != 1:
+        raise AccountError("Enter a valid email address.")
+    local, domain = value.rsplit("@", 1)
+    labels = domain.split(".")
+    local_ok = (
+        1 <= len(local) <= 64
+        and not local.startswith(".")
+        and not local.endswith(".")
+        and ".." not in local
+        and re.fullmatch(r"[a-z0-9!#$%&'*+/=?^_`{|}~.-]+", local)
+    )
+    domain_ok = (
+        len(labels) >= 2
+        and all(
+            1 <= len(label) <= 63
+            and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+            for label in labels
+        )
+        and len(labels[-1]) >= 2
+    )
+    if not local_ok or not domain_ok:
         raise AccountError("Enter a valid email address.")
     return value
 
@@ -149,27 +219,55 @@ def _user(row):
     return User(row["id"], row["email"], row["display_name"],
                 row["role"], bool(row["active"]))
 
+def _verification_digest(token):
+    return "sha256$" + hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+
 def send_validation_email(email, token):
     """Mock email sender that logs the verification link to a local file."""
-    os.makedirs("logs", exist_ok=True)
-    link = f"http://localhost:8501/?verify={token}"
+    log_path = Path(__file__).resolve().parent / "logs" / "emails.txt"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    base_url = os.environ.get(
+        "SPORTS_DATA_LAB_BASE_URL", "http://localhost:8501"
+    ).rstrip("/")
+    link = f"{base_url}/?verify={token}"
     msg = f"To: {email}\nSubject: Verify your Grid Solver account\n\nClick the link to verify: {link}\n\n"
-    with open("logs/emails.txt", "a", encoding="utf-8") as f:
+    with log_path.open("a", encoding="utf-8") as f:
         f.write(msg)
 
 def verify_email(token, path=DB_PATH):
     con = _connect(path)
     try:
         con.execute("BEGIN IMMEDIATE")
-        row = con.execute("SELECT id FROM users WHERE verification_token=?", (token,)).fetchone()
+        row = con.execute(
+            "SELECT id, verification_sent_at FROM users "
+            "WHERE verification_token=?",
+            (_verification_digest(token),),
+        ).fetchone()
         if not row:
+            con.rollback()
             return False
-        con.execute("UPDATE users SET email_verified=1, verification_token=NULL WHERE id=?", (row["id"],))
+        try:
+            sent_at = datetime.fromisoformat(row["verification_sent_at"])
+        except (TypeError, ValueError):
+            con.rollback()
+            return False
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - sent_at > VERIFICATION_TTL:
+            con.rollback()
+            return False
+        con.execute(
+            "UPDATE users SET email_verified=1, verification_token=NULL, "
+            "verification_sent_at=NULL WHERE id=?", (row["id"],)
+        )
         con.commit()
         return True
     except Exception:
         con.rollback()
         return False
+    finally:
+        con.close()
 
 
 def register(display_name, email, password, path=DB_PATH):
@@ -190,12 +288,14 @@ def register(display_name, email, password, path=DB_PATH):
         role = "admin" if con.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0 else "member"
         token = secrets.token_urlsafe(32)
         cur = con.execute(
-            "INSERT INTO users(email, display_name, password_digest, role, created_at, verification_token) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (email, display_name, _password_digest(password), role, _now(), token),
+            "INSERT INTO users(email, display_name, password_digest, role, "
+            "created_at, verification_token, verification_sent_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (email, display_name, _password_digest(password), role, _now(),
+             _verification_digest(token), _now()),
         )
-        con.commit()
         send_validation_email(email, token)
+        con.commit()
         return get_user(cur.lastrowid, path), role == "admin"
     except sqlite3.IntegrityError as exc:
         con.rollback()
@@ -306,8 +406,11 @@ def set_feature_policy(actor_id, feature, audience, path=DB_PATH):
     ensure_schema(path)
     with _connect(path) as con:
         _require_admin(actor_id, con)
-        con.execute("UPDATE feature_access SET audience=? WHERE feature=?",
-                    (audience, feature))
+        con.execute(
+            "INSERT INTO feature_access(feature, audience) VALUES (?, ?) "
+            "ON CONFLICT(feature) DO UPDATE SET audience=excluded.audience",
+            (feature, audience),
+        )
 
 
 def feature_grants(feature, path=DB_PATH):

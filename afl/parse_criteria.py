@@ -366,6 +366,10 @@ def parse(text):
     m = re.search(r"(\d+)\+?\s*finals? games?", t)
     if m:
         return C.finals_games_min(int(m.group(1))), f"{m.group(1)}+ finals games"
+    m = re.search(r"(\d+)\+?\s*grand finals?", t)
+    if m:
+        return (C.grand_finals_played_min(int(m.group(1))),
+                f"played in {m.group(1)}+ grand finals")
     m = re.search(r"([\d.]+)\+?\s*goals?\s*(avg|average)", t)
     if m and "final" in t:
         return (C.goal_average_in_finals(float(m.group(1))),

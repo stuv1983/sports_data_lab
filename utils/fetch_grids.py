@@ -72,6 +72,19 @@ def to_label(item):
                 return to_label(item[k])
     return str(item)
 
+
+def gridley_label(item):
+    """Return the complete criterion Gridley renders across two lines."""
+    if not isinstance(item, dict):
+        return to_label(item)
+    title = str(item.get("title") or item.get("id") or "").strip()
+    subtitle = str(item.get("subtitle") or "").strip()
+    if not subtitle:
+        return title
+    if title.casefold() in subtitle.casefold():
+        return subtitle
+    return f"{title} {subtitle}".strip()
+
 def fetch_gridley(date):
     BASE = "https://gridleygame.com"
     html = None
@@ -85,14 +98,8 @@ def fetch_gridley(date):
         nd = json.loads(html)
         # Gridley changed format: direct JSON with hItems and vItems
         if "hItems" in nd and "vItems" in nd:
-            rows = []
-            cols = []
-            for v in nd["vItems"]:
-                label = v.get("title") or v.get("id")
-                rows.append({"label": label, "description": v.get("description")})
-            for h in nd["hItems"]:
-                label = h.get("title") or h.get("id")
-                cols.append({"label": label, "description": h.get("description")})
+            rows = [gridley_label(item) for item in nd["vItems"]]
+            cols = [gridley_label(item) for item in nd["hItems"]]
             return {"rows": rows, "cols": cols}
             
         # fallback to original
@@ -142,6 +149,47 @@ def fetch_immaculate(sport, date_or_num):
             pass
     return None
 
+
+def save_grid(db_path, date, source, rows, cols):
+    """Insert or refresh one captured grid and return the action performed."""
+    with sqlite3.connect(db_path) as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS historic_grids (
+                grid_num INTEGER PRIMARY KEY,
+                date TEXT,
+                source TEXT,
+                rows_json TEXT,
+                cols_json TEXT,
+                unsupported_json TEXT,
+                note TEXT
+            )
+        """)
+
+        existing = con.execute(
+            "SELECT grid_num FROM historic_grids "
+            "WHERE source=? AND date=? ORDER BY grid_num LIMIT 1",
+            (source, date),
+        ).fetchone()
+        if existing:
+            con.execute("""
+                UPDATE historic_grids
+                SET rows_json=?, cols_json=?, unsupported_json='[]', note=''
+                WHERE grid_num=?
+            """, (json.dumps(rows), json.dumps(cols), existing[0]))
+            con.execute(
+                "DELETE FROM historic_grids "
+                "WHERE source=? AND date=? AND grid_num<>?",
+                (source, date, existing[0]),
+            )
+            return "updated"
+
+        con.execute("""
+            INSERT INTO historic_grids (
+                date, source, rows_json, cols_json, unsupported_json, note
+            ) VALUES (?, ?, ?, ?, '[]', '')
+        """, (date, source, json.dumps(rows), json.dumps(cols)))
+        return "inserted"
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("sport", choices=["afl", "nba", "mlb"])
@@ -166,30 +214,8 @@ def main():
 
     db_path = sport_db(a.sport)
     
-    with sqlite3.connect(db_path) as con:
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS historic_grids (
-                grid_num INTEGER PRIMARY KEY,
-                date TEXT,
-                source TEXT,
-                rows_json TEXT,
-                cols_json TEXT,
-                unsupported_json TEXT,
-                note TEXT
-            )
-        """)
-        
-        # We don't necessarily have a grid_num from Gridley unless we parse it out.
-        # Just insert with null grid_num and auto-increment if we don't have one.
-        # For simplicity, we just insert.
-        try:
-            con.execute("""
-                INSERT INTO historic_grids (date, source, rows_json, cols_json, unsupported_json, note)
-                VALUES (?, ?, ?, ?, '[]', '')
-            """, (date, source, json.dumps(rows), json.dumps(cols)))
-            print(f"Successfully inserted grid for {date} into {a.sport} database!")
-        except Exception as e:
-            print(f"Error inserting into database: {e}")
+    action = save_grid(db_path, date, source, rows, cols)
+    print(f"Successfully {action} grid for {date} in the {a.sport} database!")
 
 if __name__ == "__main__":
     main()

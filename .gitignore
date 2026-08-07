@@ -20,6 +20,7 @@ archive/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+temp_pytest/
 .ruff_cache/
 .mypy_cache/
 .hypothesis/
@@ -63,6 +64,7 @@ discover/
 coverage.xml
 htmlcov/
 *.log
+logs/emails.txt
 
 # Notebook and scratch output
 .ipynb_checkpoints/
