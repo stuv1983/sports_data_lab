@@ -16,12 +16,22 @@ PLAYER_METRICS = {
     "Games": ("COUNT(*)", None),
     "Wins": ("SUM(g.result='W')", None),
     "Goals": ("SUM(g.goals)", "goals"),
+    "Behinds": ("SUM(g.behinds)", "behinds"),
     "Score (points)": (
         "SUM(COALESCE(g.goals, 0) * 6 + COALESCE(g.behinds, 0))", "goals"),
     "Marks": ("SUM(g.marks)", "marks"),
     "Disposals": ("SUM(g.disposals)", "disposals"),
     "Kicks": ("SUM(g.kicks)", "kicks"),
+    "Handballs": ("SUM(g.handballs)", "handballs"),
     "Tackles": ("SUM(g.tackles)", "tackles"),
+    "Hitouts": ("SUM(g.hitouts)", "hitouts"),
+    "Clearances": ("SUM(g.clearances)", "clearances"),
+    "Inside 50s": ("SUM(g.inside50s)", "inside50s"),
+    "Rebound 50s": ("SUM(g.rebounds)", "rebounds"),
+    "Contested possessions": ("SUM(g.contested)", "contested"),
+    "Contested marks": ("SUM(g.contested_marks)", "contested_marks"),
+    "Goal assists": ("SUM(g.goal_assists)", "goal_assists"),
+    "One percenters": ("SUM(g.one_percenters)", "one_percenters"),
     "Brownlow votes": ("SUM(g.brownlow)", "brownlow"),
 }
 STATUS_FILTERS = {
@@ -231,32 +241,45 @@ def ground_explorer_page(sport, con: sqlite3.Connection) -> None:
                 column_config={"Crowd": st.column_config.NumberColumn(format="%d")})
 
     elif view == "Player leaders":
-        q1, q2, q3 = st.columns([1.4, 1.4, 1])
-        metric = q1.selectbox("Rank by", list(PLAYER_METRICS), key="ground_metric")
-        status = q2.selectbox("Match status", list(STATUS_FILTERS), key="ground_status")
-        min_games = q3.number_input("Minimum games", min_value=1, value=1,
-                                    step=1, key="ground_min_games")
-        stat = PLAYER_METRICS[metric][1]
-        if stat:
-            warning = sport.stat_era_warning(stat, season_from=lo)
-            if warning:
-                st.caption(f"⚠ {warning}")
-        leaders = _leaders(
-            ground, lo, hi, status, metric, min_games, revision, con)
-        if leaders.empty:
-            st.info("No players meet those filters.")
-        else:
-            visible = leaders.drop(columns=["PlayerID"])
-            visible = visible[["Player", "Value", "Games", "Wins", "Goals",
-                               "Marks", "Disposals", "Brownlow votes",
-                               "First", "Last", "Clubs"]]
-            visible = visible.rename(columns={"Value": metric})
-            # Avoid two columns with the same name when ranking by one already shown.
-            visible = visible.loc[:, ~visible.columns.duplicated()]
-            st.caption("Select a player for their complete career.")
-            components.clickable_player_table(
-                visible, leaders["PlayerID"].tolist(), sport, con,
-                key=f"ground_leaders_{ground}_{metric}_{status}")
+        q1, q2 = st.columns([1.4, 1])
+        status = q1.selectbox(
+            "Match status", list(STATUS_FILTERS), key="ground_status")
+        min_games = q2.number_input(
+            "Minimum games", min_value=1, value=1, step=1,
+            key="ground_min_games")
+        st.caption(
+            "Open any leaderboard below. Closed leaderboards are not queried.")
+
+        for metric, (_, stat) in PLAYER_METRICS.items():
+            leader_box = st.expander(
+                f"{metric} leaders", expanded=(metric == "Games"),
+                key=f"ground_leader_box_{metric}",
+                icon=":material/leaderboard:", on_change="rerun")
+            if not leader_box.open:
+                continue
+            with leader_box:
+                if stat:
+                    warning = sport.stat_era_warning(stat, season_from=lo)
+                    if warning:
+                        st.caption(f"⚠ {warning}")
+                leaders = _leaders(
+                    ground, lo, hi, status, metric, min_games, revision, con)
+                if leaders.empty:
+                    st.info("No players meet those filters.")
+                    continue
+                visible = leaders.drop(columns=["PlayerID"])
+                visible = visible[[
+                    "Player", "Value", "Games", "Wins", "Goals", "Marks",
+                    "Disposals", "Brownlow votes", "First", "Last", "Clubs",
+                ]]
+                visible = visible.rename(columns={"Value": metric})
+                # Avoid duplicate columns when the ranking metric is also
+                # included as a standard context column.
+                visible = visible.loc[:, ~visible.columns.duplicated()]
+                st.caption("Select a player for their complete career.")
+                components.clickable_player_table(
+                    visible, leaders["PlayerID"].tolist(), sport, con,
+                    key=f"ground_leaders_{ground}_{metric}_{status}")
 
     elif view == "Matches":
         m1, m2 = st.columns(2)
@@ -272,12 +295,36 @@ def ground_explorer_page(sport, con: sqlite3.Connection) -> None:
 
     else:
         match_records, careers, single = _venue_records(ground, revision, con)
-        st.markdown("### Record matches")
-        st.dataframe(match_records, hide_index=True)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("### Career leaders")
-            st.dataframe(careers, hide_index=True)
-        with c2:
-            st.markdown("### Single-game leaders")
-            st.dataframe(single, hide_index=True)
+        st.caption("Open or close each record book independently.")
+        record_books = (
+            ("Biggest wins", match_records, "Biggest win",
+             ":material/trophy:"),
+            ("Highest scores", match_records, "Highest score",
+             ":material/trending_up:"),
+            ("Lowest scores", match_records, "Lowest score",
+             ":material/trending_down:"),
+            ("Most career games", careers, "Games",
+             ":material/calendar_month:"),
+            ("Most career goals", careers, "Goals",
+             ":material/sports_score:"),
+            ("Most goals in a game", single, "Goals in a game",
+             ":material/target:"),
+            ("Most disposals in a game", single, "Disposals in a game",
+             ":material/stat_3:"),
+        )
+        for index, (title, frame, value, icon) in enumerate(record_books):
+            record_box = st.expander(
+                title, expanded=(index == 0),
+                key=f"ground_record_box_{index}", icon=icon,
+                on_change="rerun")
+            if not record_box.open:
+                continue
+            with record_box:
+                subset = frame.loc[frame["Record"] == value].drop(
+                    columns=["Record"])
+                if subset.empty:
+                    st.info("No imported records are available for this ground.")
+                else:
+                    components.clickable_entity_table(
+                        subset, sport, con,
+                        key=f"ground_records_{ground}_{index}")

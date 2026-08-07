@@ -184,6 +184,8 @@ h1, h2, h3, .board-label {{
   color: var(--chalk) !important;
 }}
 h1 {{ font-weight: 700 !important; font-size: 2.1rem !important; }}
+h2 {{ font-weight: 700 !important; font-size: 1.55rem !important; }}
+h3 {{ font-weight: 500 !important; font-size: 1.25rem !important; }}
 
 body, p, div, label, span {{ color: var(--chalk); }}
 

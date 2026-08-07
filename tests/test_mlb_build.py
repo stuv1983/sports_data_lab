@@ -305,7 +305,9 @@ def test_every_builder_actually_runs(con):
                  "rivalry": "yankees_redsox", "award_axis": "Gold Glove",
                  "position": "Left Field", "average": 0.300,
                  "min_plate_appearances": 1, "stat_a": "home_runs", "x_a": 1,
-                 "stat_b": "hits", "x_b": 1, "avg": 0.2, "min_games": 1}
+                 "stat_b": "hits", "x_b": 1, "avg": 0.2, "min_games": 1,
+                 "player_id": "dodgem01", "times": 1,
+                 "state": "New York", "war": 1.0}
     gates = getattr(constraints_mlb, "LAYER_BUILDERS", {})
     for name, (builder, argnames) in constraints_mlb.BUILDERS.items():
         probe = gates.get(name)
@@ -344,6 +346,17 @@ def test_a_team_square_pairs_with_a_season_stat_on_one_row(con):
         & {r[0] for r in con.execute(
             "SELECT player_id FROM games WHERE club_now = ?",
             ("Boston Red Sox",))})
+
+
+def test_team_constraints_use_stable_franchise_names_not_ambiguous_lineage():
+    """A historic Yankees name must not turn modern Orioles into Yankees."""
+    sql, params = constraints_mlb.played_for("New York Yankees")
+    assert sql == "@row:team@g.club_now = ?"
+    assert params == ["New York Yankees"]
+
+    sql, params = constraints_mlb.debut_club("New York Yankees")
+    assert "club_now = ?" in sql
+    assert params == ["New York Yankees"]
 
 
 def main():

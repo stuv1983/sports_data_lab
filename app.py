@@ -310,13 +310,29 @@ _STAT_SCOPE_LABELS = {
 }
 
 
+def _builder_label(kind):
+    """Render shared builder keys in the selected sport's vocabulary."""
+    replacements = (
+        (r"\bgoals\b", V.score),
+        (r"\bclubs\b", V.clubs),
+        (r"\bclub\b", V.club),
+        (r"\bfinals\b", V.postseason),
+        (r"\bfinal\b", V.postseason_one),
+    )
+    label = kind
+    for pattern, word in replacements:
+        label = re.sub(pattern, word, label)
+    return label
+
+
 def axis_widget(key, default_type, defaults=None):
     """One axis of the grid. Returns (label, constraint) or (label, None)."""
     defaults = defaults or {}
     kinds = AVAILABLE
     default_index = kinds.index(default_type) if default_type in kinds else 0
     kind = st.selectbox("Type", kinds, index=default_index,
-                        key=f"{key}_kind", label_visibility="collapsed")
+                        key=f"{key}_kind", label_visibility="collapsed",
+                        format_func=_builder_label)
     fn, argnames = C.BUILDERS[kind]
     args = []
 
@@ -373,6 +389,10 @@ def axis_widget(key, default_type, defaults=None):
             args.append(C.AWARD_SLUGS[pick])
         elif a == "times":
             label = ("How many such games" if kind == "X+ games with Y+ of a stat"
+                     else "How many" if any(
+                         token in kind for token in
+                         ("Grand Finals", "Super Bowls", "World Series",
+                          "NBA Finals", "championships"))
                      else "Times")
             args.append(st.number_input(label, min_value=1,
                                         value=int(defaults.get("times", 1)),
@@ -505,6 +525,13 @@ def axis_widget(key, default_type, defaults=None):
             if warning:
                 st.caption(f"⚠ {warning}")
             args.append(chosen)
+        elif a in ("goals", "clubs", "games"):
+            word = {"goals": V.score, "clubs": V.clubs,
+                    "games": V.games}[a]
+            fallback = {"goals": 30, "clubs": 2, "games": 30}[a]
+            args.append(st.number_input(
+                word.capitalize(), min_value=1,
+                value=int(defaults.get(a, fallback)), step=1, key=wk))
         else:
             year_kinds = {
                 "Played between seasons", "Debuted between seasons",
@@ -537,6 +564,8 @@ def axis_widget(key, default_type, defaults=None):
         label = args[0]
     elif kind == "Teammate of…":
         label = f"{st.session_state.get(f'{key}_player_id_label', '—')} teammate"
+    elif kind == "Played with…":
+        label = f"played with\n{st.session_state.get(f'{key}_player_id_label', '—')}"
     elif kind in ("Played at venue", "Won a final at venue"):
         verb = ("played at" if kind.startswith("Played")
                 else f"won a {V.postseason_one} at")
@@ -574,7 +603,12 @@ def axis_widget(key, default_type, defaults=None):
     elif kind == "150+ / X+ career games":
         label = f"{args[0]}+ {V.games} played"
     elif kind == "X+ goals at 2+ clubs":
-        label = f"{args[0]}+ {V.score}\ntwo diff {V.clubs}"
+        label = f"{args[0]}+ {V.score}\nat {args[1]}+ {V.clubs}"
+    elif kind == "X+ games at 2+ clubs":
+        label = f"{args[0]}+ {V.games}\nat {args[1]}+ {V.clubs}"
+    elif (kind.startswith(("Played in X+", "Won X+", "Lost X+"))
+          and args):
+        label = kind.replace("X+", f"{args[0]}+")
     elif kind == "Fewer than X career games":
         label = f"under {args[0]} {V.games}"
     elif kind == "X+ WAR in a season":
@@ -599,7 +633,8 @@ def axis_widget(key, default_type, defaults=None):
     elif kind == "X+ Brownlow votes in a season":
         label = f"{args[0]}+ Brownlow votes\nin a season"
 
-    if kind == "Teammate of…" and (not args or args[0] is None):
+    if kind in ("Teammate of…", "Played with…") and (
+            not args or args[0] is None):
         return label, None
 
     try:

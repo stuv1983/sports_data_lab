@@ -64,6 +64,7 @@ SEASON_AVG_MIN_GAMES = _G.SEASON_AVG_MIN_GAMES
 
 touchdowns_at_multiple_teams = _G.score_at_multiple_clubs
 games_at_multiple_teams = _G.games_at_multiple_clubs
+played_with_id = _G.played_with_id
 
 played_in_season_range = _G.played_in_season_range
 debuted_between = _G.debuted_between
@@ -120,6 +121,18 @@ def never_played_in_the_super_bowl():
     return ("SELECT DISTINCT player_id FROM games WHERE player_id NOT IN "
             "(SELECT player_id FROM games WHERE UPPER(TRIM(round)) = ?)",
             [SUPER_BOWL_ROUND])
+
+
+def super_bowls_played_min(times):
+    return _G.played_in_round_min(SUPER_BOWL_ROUND, times)
+
+
+def super_bowls_won_min(times):
+    return _G.round_outcome_min(SUPER_BOWL_ROUND, "W", times)
+
+
+def super_bowls_lost_min(times):
+    return _G.round_outcome_min(SUPER_BOWL_ROUND, "L", times)
 
 
 def played_in_a_conference_championship():
@@ -302,6 +315,7 @@ BUILDERS = {
                                    ["goals", "clubs"]),
     "X+ games at 2+ clubs":       (games_at_multiple_teams,
                                    ["games", "clubs"]),
+    "Played with…":               (played_with_id, ["player_id"]),
     "No finals wins (played finals)": (no_playoff_wins, []),
     "Never won a final":          (never_won_a_playoff_game, []),
     "Never played finals":        (never_played_playoffs, []),
@@ -323,6 +337,9 @@ BUILDERS = {
     # not being on the roster when it was won.
     "Played in a Super Bowl":     (played_in_the_super_bowl, []),
     "Won a Super Bowl":           (won_the_super_bowl, []),
+    "Played in X+ Super Bowls":   (super_bowls_played_min, ["times"]),
+    "Won X+ Super Bowls":         (super_bowls_won_min, ["times"]),
+    "Lost X+ Super Bowls":        (super_bowls_lost_min, ["times"]),
     "Never played in a Super Bowl": (never_played_in_the_super_bowl, []),
     "Played in a conference championship":
         (played_in_a_conference_championship, []),

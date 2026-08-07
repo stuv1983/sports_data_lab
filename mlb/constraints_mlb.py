@@ -68,11 +68,21 @@ _G = core.Generic(SCHEMA)
 # The predicates are written against the `g` alias core._row_exists opens.
 
 def played_for(club):
-    """Played at least one season for this club, predecessors included."""
-    names = SCHEMA.club_identities(club)
-    marks = ",".join("?" for _ in names)
-    return (f"{core.ROW_MARKER}team@g.{SCHEMA.club_now} IN ({marks})",
-            list(names))
+    """Played at least one season for this franchise.
+
+    ``club_now`` is already derived from Lahman's stable ``franchID`` and
+    therefore includes every predecessor. Expanding human-readable historic
+    names here is unsafe: unrelated franchises can reuse a name (the 1901-02
+    Yankees lineage and the modern Orioles are both "Baltimore Orioles").
+    """
+    return (f"{core.ROW_MARKER}team@g.{SCHEMA.club_now} = ?", [club])
+
+
+def debut_club(club):
+    """First recorded MLB season was for this franchise."""
+    return (f"""SELECT DISTINCT {SCHEMA.player_id} FROM {SCHEMA.games}
+                 WHERE {SCHEMA.career_game_no} = 1
+                   AND {SCHEMA.club_now} = ?""", [club])
 
 
 def season_stat_total_min(stat, n):
@@ -91,7 +101,6 @@ def season_stat_total_min(stat, n):
 # ------------------------------------------------- generic, bound to MLB
 
 _played_for_any_season = _G.played_for
-debut_club = _G.debut_club
 one_club_player = _G.one_club_player
 played_for_n_clubs = _G.played_for_n_clubs
 multi_club_player = _G.multi_club_player
@@ -108,6 +117,7 @@ SEASON_AVG_MIN_GAMES = _G.SEASON_AVG_MIN_GAMES
 
 home_runs_at_multiple_clubs = _G.score_at_multiple_clubs
 games_at_multiple_clubs = _G.games_at_multiple_clubs
+played_with_id = _G.played_with_id
 
 played_in_season_range = _G.played_in_season_range
 debuted_between = _G.debuted_between
@@ -163,6 +173,18 @@ def never_played_the_world_series():
     return ("SELECT DISTINCT player_id FROM games WHERE player_id NOT IN "
             "(SELECT player_id FROM games WHERE UPPER(TRIM(round)) = ?)",
             [WORLD_SERIES_ROUND])
+
+
+def world_series_played_min(times):
+    return _G.played_in_round_min(WORLD_SERIES_ROUND, times)
+
+
+def world_series_won_min(times):
+    return _G.round_outcome_min(WORLD_SERIES_ROUND, "W", times)
+
+
+def world_series_lost_min(times):
+    return _G.round_outcome_min(WORLD_SERIES_ROUND, "L", times)
 
 
 def career_hits_min(hits):
@@ -400,6 +422,7 @@ BUILDERS = {
                                    ["goals", "clubs"]),
     "X+ games at 2+ clubs":       (games_at_multiple_clubs,
                                    ["games", "clubs"]),
+    "Played with…":               (played_with_id, ["player_id"]),
     "No finals wins (played finals)": (no_postseason_wins, []),
     "Never won a final":          (never_won_postseason, []),
     "Never played finals":        (never_played_postseason, []),
@@ -420,6 +443,9 @@ BUILDERS = {
     # stat (home runs) cannot express.
     "Played in the World Series": (played_in_the_world_series, []),
     "Won the World Series":       (won_the_world_series, []),
+    "Played in X+ World Series":  (world_series_played_min, ["times"]),
+    "Won X+ World Series":        (world_series_won_min, ["times"]),
+    "Lost X+ World Series":       (world_series_lost_min, ["times"]),
     "Never played in the World Series": (never_played_the_world_series, []),
     "X+ career hits":             (career_hits_min, ["x"]),
     "Winning record in a rivalry": (rivalry_winning_record, ["rivalry"]),

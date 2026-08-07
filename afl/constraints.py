@@ -72,6 +72,7 @@ debuted_between = _G.debuted_between
 
 teammate_of = _G.teammate_of
 teammate_of_id = _G.teammate_of_id
+played_with_id = _G.played_with_id
 
 played_at_venue = _G.played_at_venue
 
@@ -180,6 +181,18 @@ def played_a_grand_final():
                WHERE UPPER(TRIM(round)) = 'GF'""", [])
 
 
+def grand_finals_played_min(times):
+    return _G.played_in_round_min("GF", times)
+
+
+def premierships_won_min(times):
+    return _G.round_outcome_min("GF", "W", times)
+
+
+def grand_finals_lost_min(times):
+    return _G.round_outcome_min("GF", "L", times)
+
+
 def leading_goalkicker():
     """Led their club's goalkicking in at least one season."""
     return ("""SELECT DISTINCT player_id FROM season_goals
@@ -278,10 +291,14 @@ BUILDERS = {
     "X+ goals at 2+ clubs":       (goals_at_multiple_clubs, ["goals", "clubs"]),
     "X+ games at 2+ clubs":       (games_at_multiple_clubs, ["games", "clubs"]),
     "Teammate of…":               (teammate_of_id, ["player_id"]),
+    "Played with…":               (played_with_id, ["player_id"]),
     "No finals wins (played finals)": (no_finals_wins, []),
     "Never won a final":          (never_won_a_final, []),
     "Never played finals":        (never_played_finals, []),
     "Premiership player":         (premiership_player, []),
+    "Played in X+ Grand Finals":  (grand_finals_played_min, ["times"]),
+    "Won X+ premierships":        (premierships_won_min, ["times"]),
+    "Lost X+ Grand Finals":       (grand_finals_lost_min, ["times"]),
     "Played between seasons":     (played_in_season_range, ["from", "to"]),
     "Debuted between seasons":    (debuted_between, ["from", "to"]),
     "One-club player":            (one_club_player, []),

@@ -17,12 +17,11 @@ so "X+ career goals" appears as "X+ career points" on an NBA board without
 a line of UI code caring which sport it is. A new key would have needed a
 new label entry and a new scope-label entry to say the same thing.
 
-TEAMMATES ARE DELIBERATELY ABSENT
----------------------------------
-The generic matcher now requires shared match-level rows. This build does
-not yet expose its stable match identity through the schema, so "Teammate
-of…" remains absent from BUILDERS rather than present with roster-level
-semantics.
+TEAMMATE GRAIN
+--------------
+The strict same-game "Teammate of…" matcher remains absent. "Played with…"
+uses the team-season grain shared by all four sports, so NBA can answer the
+requested broader criterion without pretending it means shared court time.
 """
 
 import core
@@ -66,6 +65,7 @@ SEASON_AVG_MIN_GAMES = _G.SEASON_AVG_MIN_GAMES
 
 points_at_multiple_teams = _G.score_at_multiple_clubs
 games_at_multiple_teams = _G.games_at_multiple_clubs
+played_with_id = _G.played_with_id
 
 played_in_season_range = _G.played_in_season_range
 debuted_between = _G.debuted_between
@@ -124,6 +124,32 @@ def never_made_the_finals():
     return ("SELECT DISTINCT player_id FROM games WHERE player_id NOT IN "
             "(SELECT player_id FROM games WHERE UPPER(TRIM(round)) = ?)",
             [FINALS_ROUND])
+
+
+def finals_played_min(times):
+    return _G.played_in_round_min(FINALS_ROUND, times)
+
+
+def championships_won_min(times):
+    return ("""SELECT g.player_id FROM games g
+               JOIN team_seasons t
+                 ON t.season = g.season AND t.club_now = g.club_now
+                AND t.phase = 'regular'
+               WHERE UPPER(TRIM(g.round)) = ? AND t.champion = 1
+               GROUP BY g.player_id
+               HAVING COUNT(DISTINCT g.season) >= ?""",
+            [FINALS_ROUND, times])
+
+
+def finals_lost_min(times):
+    return ("""SELECT g.player_id FROM games g
+               JOIN team_seasons t
+                 ON t.season = g.season AND t.club_now = g.club_now
+                AND t.phase = 'regular'
+               WHERE UPPER(TRIM(g.round)) = ? AND t.champion = 0
+               GROUP BY g.player_id
+               HAVING COUNT(DISTINCT g.season) >= ?""",
+            [FINALS_ROUND, times])
 
 
 def champion():
@@ -257,6 +283,7 @@ BUILDERS = {
                                    ["goals", "clubs"]),
     "X+ games at 2+ clubs":       (games_at_multiple_teams,
                                    ["games", "clubs"]),
+    "Played with…":               (played_with_id, ["player_id"]),
     "No finals wins (played finals)": (no_playoff_wins, []),
     "Never won a final":          (never_won_a_playoff_game, []),
     "Never played finals":        (never_played_playoffs, []),
@@ -285,6 +312,9 @@ BUILDERS = {
     "Missed the playoffs":        (missed_playoffs_season, []),
     "Played in the Finals":       (played_in_the_finals, []),
     "Won a Finals game":          (won_the_finals, []),
+    "Played in X+ NBA Finals":    (finals_played_min, ["times"]),
+    "Won X+ championships":       (championships_won_min, ["times"]),
+    "Lost X+ NBA Finals":         (finals_lost_min, ["times"]),
     "Never played in the Finals": (never_made_the_finals, []),
     "Listed at a position":       (listed_at_position, ["position"]),
     "Born outside the US":        (born_outside_the_us, []),
@@ -305,7 +335,8 @@ DRAFT_TYPES = ()
 
 #: Team-season criteria depend on team_seasons, which the core build writes.
 TEAM_SEASON_BUILDERS = {"Appeared for championship team", "Made the playoffs",
-                        "Missed the playoffs"}
+                        "Missed the playoffs", "Won X+ championships",
+                        "Lost X+ NBA Finals"}
 
 #: Builders gated on a column the build only started writing recently.
 #: registry.Sport.layers() reads this as {builder_name: probe_function}.

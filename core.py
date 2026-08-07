@@ -469,12 +469,41 @@ class Generic:
         return (f"SELECT DISTINCT {s.player_id} FROM {s.games} "
                 f"WHERE {s.season} BETWEEN ? AND ?", [lo, hi])
 
+    def played_in_round_min(self, round_code, appearances=1):
+        """Appeared in a named title round in at least N seasons."""
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE UPPER(TRIM({s.round})) = UPPER(?)
+                    GROUP BY {s.player_id}
+                    HAVING COUNT(DISTINCT {s.season}) >= ?""",
+                [round_code, appearances])
+
+    def round_outcome_min(self, round_code, result, appearances=1):
+        """Recorded an outcome in a named title round in at least N seasons."""
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE UPPER(TRIM({s.round})) = UPPER(?)
+                      AND UPPER(TRIM({s.result})) = UPPER(?)
+                    GROUP BY {s.player_id}
+                    HAVING COUNT(DISTINCT {s.season}) >= ?""",
+                [round_code, result, appearances])
+
     def debuted_between(self, lo, hi):
         s = self.s
         return (f"SELECT {s.player_id} FROM {s.players} "
                 f"WHERE {s.debut_season} BETWEEN ? AND ?", [lo, hi])
 
     # -- teammates --------------------------------------------------
+    def played_with_id(self, player_id):
+        """Players who represented the same club in the same season."""
+        s = self.s
+        return (f"""SELECT DISTINCT g.{s.player_id} FROM {s.games} g
+                    JOIN (SELECT DISTINCT {s.club_now}, {s.season}
+                          FROM {s.games} WHERE {s.player_id} = ?) w
+                      ON g.{s.club_now} = w.{s.club_now}
+                     AND g.{s.season} = w.{s.season}
+                    WHERE g.{s.player_id} <> ?""", [player_id, player_id])
+
     def teammate_of_id(self, player_id):
         """Players who appeared in the same match for the same club."""
         s = self.s
@@ -679,12 +708,18 @@ def _group_constraints(constraints):
 
 
 def _row_exists(predicates, schema: Schema):
-    """One EXISTS over `games` carrying every predicate at once."""
+    """One row-scoped player set carrying every predicate at once.
+
+    An uncorrelated ``IN`` lets SQLite start with selective game indexes
+    (notably ``club_now``) and materialize a small player-id set. The former
+    correlated ``EXISTS`` scanned game rows once for every player and made a
+    two-franchise MLB square take over a minute on the production database.
+    """
     where = " AND ".join(p for p, _ in predicates)
     params = [v for _, values in predicates for v in values]
-    return (f"EXISTS (SELECT 1 FROM {schema.games} g "
-            f"WHERE g.{schema.player_id} = p.{schema.player_id} "
-            f"AND {where})"), params
+    return (f"p.{schema.player_id} IN ("
+            f"SELECT g.{schema.player_id} FROM {schema.games} g "
+            f"WHERE {where})"), params
 
 
 def _standalone(sql, params, schema: Schema):

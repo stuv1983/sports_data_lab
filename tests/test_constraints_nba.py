@@ -162,6 +162,8 @@ def test_the_champion_is_the_team_that_won_the_last_finals_game(con):
 def test_finals_builders_read_the_nominated_round(con):
     assert names(con, C.played_in_the_finals()) == ["Ray Bellhouse"]
     assert names(con, C.won_the_finals()) == ["Ray Bellhouse"]
+    assert names(con, C.finals_played_min(1)) == ["Ray Bellhouse"]
+    assert names(con, C.championships_won_min(1)) == ["Ray Bellhouse"]
     assert "Marcus Oyelaran" in names(con, C.never_made_the_finals())
 
 
