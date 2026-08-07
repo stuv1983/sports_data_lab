@@ -1,5 +1,0 @@
-player_ID,year_ID,team_ID,WAR
-playera,2020,AAA,2.0
-playera,2020,BBB,1.0
-bbrefb,2020,AAA,4.0
-bbrefb,2021,NEW,1.0

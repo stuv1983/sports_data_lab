@@ -163,9 +163,8 @@ def compile_query(schema, query: str, con=None):
         elif key in {"played", "season"}:
             lo, hi = _range(value, key)
             player_where.append(
-                f"EXISTS (SELECT 1 FROM {s.games} yr "
-                f"WHERE yr.{s.player_id}=p.{s.player_id} "
-                f"AND yr.{s.season} BETWEEN ? AND ?)"
+                f"p.{s.player_id} IN (SELECT yr.{s.player_id} FROM {s.games} yr "
+                f"WHERE yr.{s.season} BETWEEN ? AND ?)"
             )
             params.extend([lo, hi])
         elif key in {"debut_year", "debut_range"}:
@@ -175,17 +174,15 @@ def compile_query(schema, query: str, con=None):
         elif key == "postseason":
             wanted = _boolean(value)
             predicate = (
-                f"EXISTS (SELECT 1 FROM {s.games} pg "
-                f"WHERE pg.{s.player_id}=p.{s.player_id} "
-                f"AND pg.{s.is_final}=1)"
+                f"p.{s.player_id} IN (SELECT pg.{s.player_id} FROM {s.games} pg "
+                f"WHERE pg.{s.is_final}=1)"
             )
             player_where.append(predicate if wanted else f"NOT {predicate}")
         elif key == "captain":
             if not _boolean(value):
                 player_where.append(
-                    "NOT EXISTS (SELECT 1 FROM captaincies cp "
-                    "WHERE cp.player_id=p." + s.player_id + " "
-                    "AND cp.match_status IN ('unique','resolved'))"
+                    f"p.{s.player_id} NOT IN (SELECT cp.player_id FROM captaincies cp "
+                    "WHERE cp.match_status IN ('unique','resolved'))"
                 )
             else:
                 captain_conditions.append("1=1")
@@ -200,10 +197,9 @@ def compile_query(schema, query: str, con=None):
             if not _table_exists(con, "awards") or not _table_exists(con, "person_links"):
                 raise QuerySyntaxError("Award data is not loaded")
             player_where.append(
-                "EXISTS (SELECT 1 FROM awards a JOIN person_links al "
+                f"p.{s.player_id} IN (SELECT al.player_id FROM awards a JOIN person_links al "
                 "ON al.dg_person_id=a.dg_person_id "
-                f"WHERE al.player_id=p.{s.player_id} "
-                "AND al.match_status IN ('from_draft','unique','resolved') "
+                "WHERE al.match_status IN ('from_draft','unique','resolved') "
                 "AND a.award_slug=?)"
             )
             params.append(value)
@@ -211,10 +207,9 @@ def compile_query(schema, query: str, con=None):
             if not _table_exists(con, "draft") or not _table_exists(con, "draft_links"):
                 raise QuerySyntaxError("Draft data is not loaded")
             player_where.append(
-                "EXISTS (SELECT 1 FROM draft d JOIN draft_links dl "
+                f"p.{s.player_id} IN (SELECT dl.player_id FROM draft d JOIN draft_links dl "
                 "ON dl.draft_rowid=d.rowid "
-                f"WHERE dl.player_id=p.{s.player_id} "
-                "AND dl.match_status IN ('unique','resolved') "
+                "WHERE dl.match_status IN ('unique','resolved') "
                 "AND LOWER(d.club) LIKE ?)"
             )
             params.append(f"%{value.lower()}%")
@@ -256,9 +251,8 @@ def compile_query(schema, query: str, con=None):
 
     for club in club_all:
         player_where.append(
-            f"EXISTS (SELECT 1 FROM {s.games} ca "
-            f"WHERE ca.{s.player_id}=p.{s.player_id} "
-            f"AND (LOWER(ca.{s.club_now})=LOWER(?) "
+            f"p.{s.player_id} IN (SELECT ca.{s.player_id} FROM {s.games} ca "
+            f"WHERE (LOWER(ca.{s.club_now})=LOWER(?) "
             f"OR LOWER(ca.{s.club_hist})=LOWER(?)))"
         )
         params.extend([club, club])
@@ -272,23 +266,22 @@ def compile_query(schema, query: str, con=None):
             )
             params.extend([club, club])
         player_where.append(
-            f"EXISTS (SELECT 1 FROM {s.games} co "
-            f"WHERE co.{s.player_id}=p.{s.player_id} AND ("
+            f"p.{s.player_id} IN (SELECT co.{s.player_id} FROM {s.games} co "
+            f"WHERE ("
             + " OR ".join(f"({mark})" for mark in marks) + "))"
         )
 
     if game_conditions:
         player_where.append(
-            f"EXISTS (SELECT 1 FROM {s.games} gm "
-            f"WHERE gm.{s.player_id}=p.{s.player_id} AND "
+            f"p.{s.player_id} IN (SELECT gm.{s.player_id} FROM {s.games} gm "
+            f"WHERE "
             + " AND ".join(game_conditions) + ")"
         )
         params.extend(game_params)
 
     if season_conditions:
         player_where.append(
-            f"EXISTS (SELECT 1 FROM {s.games} ss "
-            f"WHERE ss.{s.player_id}=p.{s.player_id} "
+            f"p.{s.player_id} IN (SELECT ss.{s.player_id} FROM {s.games} ss "
             f"GROUP BY ss.{s.player_id}, ss.{s.season} HAVING "
             + " AND ".join(season_conditions) + ")"
         )
@@ -296,8 +289,7 @@ def compile_query(schema, query: str, con=None):
 
     if avg_conditions:
         player_where.append(
-            f"EXISTS (SELECT 1 FROM {s.games} av "
-            f"WHERE av.{s.player_id}=p.{s.player_id} "
+            f"p.{s.player_id} IN (SELECT av.{s.player_id} FROM {s.games} av "
             f"GROUP BY av.{s.player_id}, av.{s.season} "
             # Read from core rather than repeated here: a season average
             # means the same thing in a query as it does in a grid square,
@@ -309,8 +301,7 @@ def compile_query(schema, query: str, con=None):
 
     if career_conditions:
         player_where.append(
-            f"EXISTS (SELECT 1 FROM {s.games} cr "
-            f"WHERE cr.{s.player_id}=p.{s.player_id} "
+            f"p.{s.player_id} IN (SELECT cr.{s.player_id} FROM {s.games} cr "
             f"GROUP BY cr.{s.player_id} HAVING "
             + " AND ".join(career_conditions) + ")"
         )
@@ -320,9 +311,8 @@ def compile_query(schema, query: str, con=None):
         if not _table_exists(con, "captaincies"):
             raise QuerySyntaxError("Captaincy data is not loaded")
         player_where.append(
-            "EXISTS (SELECT 1 FROM captaincies cp "
-            f"WHERE cp.player_id=p.{s.player_id} "
-            "AND cp.match_status IN ('unique','resolved') AND "
+            f"p.{s.player_id} IN (SELECT cp.player_id FROM captaincies cp "
+            "WHERE cp.match_status IN ('unique','resolved') AND "
             + " AND ".join(captain_conditions) + ")"
         )
         params.extend(captain_params)

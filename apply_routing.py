@@ -1,4 +1,25 @@
 import os
+
+# Fix 11_Grid_Solver.py
+with open(os.path.join("pages", "11_Grid_Solver.py"), "r", encoding="utf-8") as f:
+    grid_content = f.read()
+
+# Add AUTH_USER and axis_widget
+insertion = """
+AUTH_USER = accounts.get_user(st.session_state.get("auth_user_id"))
+
+def axis_widget(key, default_type, defaults):
+    return ui_widgets.axis_widget(key, default_type, defaults, SPORT, DB_REVISION, AVAILABLE)
+
+"""
+
+grid_content = grid_content.replace("player_picker = ui_widgets.player_picker\n", "player_picker = ui_widgets.player_picker\n" + insertion)
+
+with open(os.path.join("pages", "11_Grid_Solver.py"), "w", encoding="utf-8") as f:
+    f.write(grid_content)
+
+# Rewrite app.py
+app_content = """import os
 import sqlite3
 import streamlit as st
 
@@ -135,3 +156,7 @@ if pg.title in _PROTECTED_PAGES:
         st.stop()
 
 pg.run()
+"""
+
+with open("app.py", "w", encoding="utf-8") as f:
+    f.write(app_content)
