@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 from afl import fetch_footywire_rising_star as F
-from afl import load_rising_star as L
+from utils.afl import load_rising_star as L
 from afl import rising_star as R
 
 HTML = """

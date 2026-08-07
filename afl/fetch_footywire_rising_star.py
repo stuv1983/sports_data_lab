@@ -3,7 +3,7 @@
 
 The importer saves one CSV per season plus one combined CSV.  It can then
 load and link those rows into the AFL SQLite database through
-``afl/load_rising_star.py``.
+``utils/afl/load_rising_star.py``.
 
 FootyWire's published terms prohibit automated page copying without prior
 written permission.  Live HTTP fetching is therefore disabled unless the
@@ -566,7 +566,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.load_db:
-        from . import load_rising_star
+        from utils.afl import load_rising_star
         result = load_rising_star.load_sources(args.db, [combined], verbose=True)
         if result.get("trusted", 0) == 0:
             return 1

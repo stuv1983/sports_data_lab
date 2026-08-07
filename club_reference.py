@@ -32,7 +32,7 @@ HEADLINE_KEYS = ("nickname", "founded", "ground", "premierships")
 
 
 def ensure_table(con: sqlite3.Connection) -> None:
-    """Create the table if utils/derive_club_tables.py has not already."""
+    """Create the table if utils/shared/derive_club_tables.py has not already."""
     con.execute(f"""
         CREATE TABLE IF NOT EXISTS {TABLE} (
             club_id     TEXT NOT NULL,

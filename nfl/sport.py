@@ -11,7 +11,7 @@ from .obscurity_model import MODEL
 
 #
 # The database is built by the standalone build_nfl_db.py from nflverse via
-# nflreadpy, and then adapted to this schema by nfl/patch_nfl_db.py, which
+# nflreadpy, then adapted by utils/nfl/patch_nfl_db.py, which
 # derives the columns core.py needs -- club names, venue, result, is_playoff,
 # career_game_no and a touchdown total -- and measures the statistic list
 # below. Until that patch has run, require_schema declines with the command
@@ -48,7 +48,7 @@ SCHEMA = core.Schema(
     club_lineage=nfl_reference.club_lineage(),
     venue_aliases=nfl_reference.venue_aliases(),
     rebuild_cmd="python .\\build_nfl_db.py --all-history, then "
-                "python -m nfl.patch_nfl_db",
+                "python -m utils.nfl.patch_nfl_db",
     solve_cols=(
         ("p.player", "Player"),
         ("p.debut_season", "From"),
@@ -79,7 +79,7 @@ SPORT = Sport(
     missing_db_hint=("No NFL database found at "
                      f"{sport_db('nfl')}. Build it with "
                      "`python .\\build_nfl_db.py --all-history`, then run "
-                     "`python -m nfl.patch_nfl_db` to add the columns the "
+                     "`python -m utils.nfl.patch_nfl_db` to add the columns the "
                      "app reads."),
     empty_hint=("Nothing satisfies both. Note that nflverse's weekly player "
                 "statistics begin in 1999: no player has a game, a career "
@@ -104,7 +104,7 @@ SPORT = Sport(
                      "Trades": "trades_available"},
     loader_hints={
         probe: "Rebuild with `python build_nfl_db.py --all-history "
-               "--extended --replace`, then `python -m nfl.patch_nfl_db`."
+               "--extended --replace`, then `python -m utils.nfl.patch_nfl_db`."
         for probe in ("rosters_weekly_available", "snap_counts_available",
                       "injuries_available", "depth_charts_available",
                       "officials_available", "combine_available",
@@ -113,7 +113,7 @@ SPORT = Sport(
     obscurity_model=MODEL,
     has_club_explorer=True,
     has_past_games=True,
-    past_games_hint=("Run `python -m nfl.load_club_history` to project the "
+    past_games_hint=("Run `python -m utils.nfl.load_club_history` to project the "
                      "schedule already in the database into club-history "
                      "rows."),
     club_data_table="clubs",
@@ -121,7 +121,7 @@ SPORT = Sport(
         "clubs", "club_source_snapshots", "club_wikipedia_fields",
         "club_player_totals", "club_player_register", "club_player_records",
     }),
-    club_data_hint=("Run `python utils/derive_club_tables.py --sport nfl` "
+    club_data_hint=("Run `python -m utils.shared.derive_club_tables --sport nfl` "
                     "for Team Explorer."),
     #: nflverse's player list is every known identity, most of whom retired
     #: before the weekly statistics begin. A player with no game is not an

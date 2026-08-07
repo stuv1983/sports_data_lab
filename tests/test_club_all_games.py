@@ -19,15 +19,14 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-#: The modules under test live in utils/, which is not a package on the path.
-sys.path.insert(0, str(ROOT / "utils"))
 sys.path.insert(0, str(ROOT))
 
-from club_all_games import (ParseError, check_against_footers, parse_all_games,
-                            parse_attendance, parse_date_text, parse_game_key,
-                            parse_scoring, parse_season_footers, quarter_only,
-                            score_to_points)
-import load_club_all_games as loader
+from utils.afl.club_all_games import (ParseError, check_against_footers,
+                                      parse_all_games, parse_attendance,
+                                      parse_date_text, parse_game_key,
+                                      parse_scoring, parse_season_footers,
+                                      quarter_only, score_to_points)
+from utils.afl import load_club_all_games as loader
 
 FIXTURE = """<html><head><title>AFL Tables - Richmond All Games - By Season</title></head>
 <body><h1>Richmond - All Games - By Season</h1>
@@ -100,7 +99,7 @@ class KeyAndDateTests(unittest.TestCase):
 
 class HeadingTests(unittest.TestCase):
     def test_combined_heading_uses_last_segment_for_display(self):
-        from club_all_games import clean_club_heading
+        from utils.afl.club_all_games import clean_club_heading
         self.assertEqual(clean_club_heading("South Melbourne/Sydney"), "Sydney")
         self.assertEqual(clean_club_heading("Footscray/Western Bulldogs"),
                          "Western Bulldogs")

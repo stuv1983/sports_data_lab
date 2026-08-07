@@ -16,7 +16,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-import repair_database
+from utils.shared import repair_database
 
 
 def run():

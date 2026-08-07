@@ -49,7 +49,7 @@ than 0 for `postseason_played`; see obscurity_model.MODEL.
 
 RETROSHEET
 ----------
-The final step calls mlb/load_retrosheet.py, which fills
+The final step calls utils/mlb/load_retrosheet.py, which fills
 `mlb_player_rivalry_games` from Retrosheet's bulk game logs -- the one
 source of per-game lineups and results, which Lahman does not have at any
 grain. It is the only step that touches the network, runs after the
@@ -504,12 +504,12 @@ def write(db, players, games, awards, hall_of_fame, verbose):
             "CREATE INDEX ix_games_post ON games(is_postseason)",
         ):
             con.execute(statement)
-        # Empty until mlb/load_retrosheet.py is run separately -- declared
+        # Empty until utils/mlb/load_retrosheet.py is run separately -- declared
         # here too so the rivalry builders have a table to query (zero rows
         # rather than "no such table") on a fresh build, and so
         # constraints_mlb.rivalry_available() can tell "not built" apart
         # from "built, not yet loaded".
-        from . import load_retrosheet
+        from utils.mlb import load_retrosheet
         load_retrosheet._ensure_table(con)
         con.commit()
     finally:
@@ -609,7 +609,7 @@ def load_rivalries(db, people, people_teams, verbose, refresh=False):
     may have been a ZIP, or a fixture folder that is not data/mlb/raw at
     all.
     """
-    from . import load_retrosheet
+    from utils.mlb import load_retrosheet
 
     crosswalk = {str(retro): str(player)
                  for retro, player in zip(people["retroID"],

@@ -283,7 +283,7 @@ def test_afl_criterion_parser_and_game_lab_modules_import():
 def test_nba_declares_none_of_the_afl_only_pages():
     """Club Explorer and Past Games are no longer among them.
 
-    Club Explorer reads six tables that utils/derive_club_tables.py now
+    Club Explorer reads six tables that utils/shared/derive_club_tables.py now
     builds from the match database itself, and Past Games reads
     `club_match_sources`, which nba/load_club_history.py projects from the
     schedule the build already imports. Neither is tied to the AFL scrape

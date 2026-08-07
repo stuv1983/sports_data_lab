@@ -118,7 +118,7 @@ def stat_eras():
 #: from Lahman. Each side lists every Retrosheet/Lahman 3-letter team code
 #: the franchise has played under, since a Brooklyn-era Dodgers game and an
 #: LA-era one are the same rivalry under different codes. Loaded by
-#: mlb/load_retrosheet.py to filter the Retrosheet game logs, and by
+#: utils/mlb/load_retrosheet.py to filter the Retrosheet game logs, and by
 #: constraints_mlb.py to offer the "winning record in a rivalry" square.
 RIVALRIES = {
     "yankees_redsox": {

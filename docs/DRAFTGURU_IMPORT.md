@@ -3,7 +3,7 @@
 The supported pipeline is the cached-export/person-link pipeline:
 
 ```powershell
-python -m afl.load_draftguru --root data\draftguru
+python -m utils.afl.load_draftguru --root data\draftguru
 python -m afl.link_draft
 python -m afl.link_people
 ```

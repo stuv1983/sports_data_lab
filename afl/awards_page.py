@@ -237,7 +237,7 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
         if "brownlow_results" in have:
             _brownlow_voting(sport, con)
         else:
-            st.info("Award data is not loaded. Run `python -m afl.load_draftguru`, "
+            st.info("Award data is not loaded. Run `python -m utils.afl.load_draftguru`, "
                     "then `python -m afl.link_people`.")
         return
 

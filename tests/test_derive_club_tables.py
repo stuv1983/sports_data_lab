@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The derived Club Explorer tables must mean what the page says they do.
 
-utils/derive_club_tables.py builds the six tables from a sport's own match
+utils/shared/derive_club_tables.py builds the tables from a sport's own match
 database instead of a scrape. The risks are all in the aggregation:
 
   * a player at several clubs needs one row per club, with that club's
@@ -27,7 +27,7 @@ import sqlite3
 
 import pytest
 
-from utils import derive_club_tables as D
+from utils.shared import derive_club_tables as D
 
 
 @pytest.fixture(scope="module")

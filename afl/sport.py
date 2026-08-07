@@ -112,35 +112,35 @@ SPORT = Sport(
     has_past_games=True,
     ground_explorer_module="afl.ground_explorer",
     has_ground_explorer=True,
-    past_games_hint=("Run `python utils/fetch_club_sources.py`, then "
-                     "`python utils/load_club_all_games.py`."),
+    past_games_hint=("Run `python -m utils.afl.fetch_club_sources`, then "
+                     "`python -m utils.afl.load_club_all_games`."),
     #: A grand final is one match, so a win in it is a premiership.
     title_round="GF",
     loader_hints={
-        "draft_available": "Run `afl/load_draftguru.py`, then `afl/link_draft.py`.",
-        "awards_available": "Run `afl/load_draftguru.py`, then `afl/link_people.py`.",
-        "captain_available": "Run `afl/load_captains.py` for club-captain data.",
+        "draft_available": "Run `python -m utils.afl.load_draftguru`, then `python -m afl.link_draft`.",
+        "awards_available": "Run `python -m utils.afl.load_draftguru`, then `python -m afl.link_people`.",
+        "captain_available": "Run `python -m utils.afl.load_captains` for club-captain data.",
         "rising_star_available": ("Run `afl/fetch_footywire_rising_star.py`, "
-                                  "then `afl/load_rising_star.py`."),
-        "brownlow_available": "Run `python -m afl.load_brownlow`.",
+                                  "then `python -m utils.afl.load_rising_star`."),
+        "brownlow_available": "Run `python -m utils.afl.load_brownlow`.",
         "match_scores_available": (
-            "Cache AFL Tables bg3.txt, then run `python -m afl.load_match_scores "
+            "Cache AFL Tables bg3.txt, then run `python -m utils.afl.load_match_scores "
             "--source data/afl/raw/matches/afltables_bg3.txt`."),
         "player_index_available": (
             "Run `python -m afl.player_index_audit --fetch` for the low-rate "
             "AFL Tables identity audit."),
         "venue_profiles_available": (
-            "Run `python -m afl.load_venues --fetch` for the low-rate AFL "
+            "Run `python -m utils.afl.load_venues --fetch` for the low-rate AFL "
             "Tables venue archive."),
     },
     club_data_tables=frozenset({
         "clubs", "club_source_snapshots", "club_wikipedia_fields",
         "club_player_totals", "club_player_register", "club_player_records",
     }),
-    club_data_hint=("Run `utils/fetch_club_sources.py`, then "
-                    "`utils/load_club_sources.py` for Club Explorer."),
+    club_data_hint=("Run `python -m utils.afl.fetch_club_sources`, then "
+                    "`python -m utils.afl.load_club_sources` for Club Explorer."),
     family_hint=("Run `afl/scrape_wikipedia_families.py`, then "
-                 "`afl/load_family_relationships.py` for family links."),
+                 "`python -m utils.afl.load_family_relationships` for family links."),
     search_examples=(
         'club:Hawthorn games>=200 sort:obscurity',
         'game.disposals>=40 postseason:true',

@@ -7,7 +7,7 @@ from pathlib import Path
 from afl import brownlow
 from afl import awards_page
 from afl import parse_criteria
-from afl.load_brownlow import load_sources
+from utils.afl.load_brownlow import load_sources
 from names import normalise_name
 
 

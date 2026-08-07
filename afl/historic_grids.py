@@ -178,11 +178,11 @@ def get(number=None, date=None):
 #: criterion whose SQL touches one of these is answerable in principle but
 #: not in this database until the loader has run.
 OPTIONAL_TABLES = {
-    "draft_links": "Draft data — run `afl/load_draftguru.py`, then "
+    "draft_links": "Draft data — run `python -m utils.afl.load_draftguru`, then "
                    "`afl/link_draft.py`.",
-    "awards": "Award data — run `afl/load_draftguru.py`, then "
+    "awards": "Award data — run `python -m utils.afl.load_draftguru`, then "
               "`afl/link_people.py`.",
-    "all_australian": "All-Australian data — run `afl/load_draftguru.py`, "
+    "all_australian": "All-Australian data — run `python -m utils.afl.load_draftguru`, "
                       "then `afl/link_people.py`.",
     "person_links": "Draftguru person links — run `afl/link_people.py`.",
 }
@@ -304,18 +304,18 @@ def _optional_unavailable_reason(con, sql):
     if re.search(r"\bcaptaincies\b", lowered):
         available = getattr(C, "captain_available", None)
         if available is None or not available(con):
-            return "Club captain data is not loaded; run `afl/load_captains.py`."
+            return "Club captain data is not loaded; run `python -m utils.afl.load_captains`."
 
     if re.search(r"\b(?:awards|all_australian|person_links)\b", lowered):
         available = getattr(C, "awards_available", None)
         if available is None or not available(con):
-            return ("Award data is not loaded; run `afl/load_draftguru.py`, then "
+            return ("Award data is not loaded; run `python -m utils.afl.load_draftguru`, then "
                     "`afl/link_people.py`.")
 
     if re.search(r"\b(?:draft|draft_links)\b", lowered):
         available = getattr(C, "draft_available", None)
         if available is None or not available(con):
-            return ("Draft data is not loaded; run `afl/load_draftguru.py`, then "
+            return ("Draft data is not loaded; run `python -m utils.afl.load_draftguru`, then "
                     "`afl/link_draft.py`.")
     return None
 

@@ -453,7 +453,7 @@ def inspect(rows: list[CaptainRow], issues: list[str]) -> None:
 
 def load_into_db(csv_path: Path, db_path: str) -> None:
     import sqlite3
-    from . import load_captains
+    from utils.afl import load_captains
 
     if not Path(db_path).exists():
         raise FileNotFoundError(f"database not found: {db_path}")
@@ -518,7 +518,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.load:
             load_into_db(args.output, args.db)
         else:
-            print(f"Next: python -m afl.load_captains {args.output}")
+            print(f"Next: python -m utils.afl.load_captains {args.output}")
         return 0
     except (FetchError, OSError, ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

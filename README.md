@@ -128,10 +128,10 @@ Important behaviour:
 - Git
 - SQLite support included with Python
 
-Core Python packages:
+Install the application, importer, and test dependencies:
 
 ```bash
-python -m pip install streamlit pandas numpy pyreadr
+python -m pip install -r requirements.txt
 ```
 
 Individual optional importers may report extra dependencies when run.
@@ -148,7 +148,7 @@ python -m venv .venv
 source .venv/Scripts/activate
 
 python -m pip install --upgrade pip
-python -m pip install streamlit pandas numpy pyreadr
+python -m pip install -r requirements.txt
 ```
 
 ### PowerShell activation
@@ -316,8 +316,8 @@ copy of Basketball-Reference's playoff-series index and read at build time;
 nothing in the build touches the network.
 
 ```bash
-python -m nba.load_nba_playoff_series --check   # parse and verify, write nothing
-python -m nba.load_nba_playoff_series           # write the reference file
+python -m utils.nba.load_nba_playoff_series --check  # verify, write nothing
+python -m utils.nba.load_nba_playoff_series          # write reference file
 ```
 
 The loader checks its own output before writing: every series name must
@@ -450,8 +450,8 @@ an adapter that derives the columns the application reads.
 pip install nflreadpy
 python build_nfl_db.py --all-history --replace              # -> data/nfl/nfl.db
 python build_nfl_db.py --all-history --extended --replace   # + 8 more datasets
-python -m nfl.patch_nfl_db                                  # the adapter step
-python recompute_obscurity.py --sport nfl
+python -m utils.nfl.patch_nfl_db                            # adapter step
+python -m utils.shared.recompute_obscurity --sport nfl
 ```
 
 `--replace` is not optional once a database exists. Without it the builder
@@ -468,7 +468,7 @@ than silently absent.
 
 ### The adapter step
 
-`build_nfl_db.py` writes nflverse's own tables. `nfl/patch_nfl_db.py` derives
+`build_nfl_db.py` writes nflverse's own tables. `utils/nfl/patch_nfl_db.py` derives
 what `core.py` asks every sport for and nflverse does not carry: `club_hist`
 and `club_now` (from the team catalogue and the code map in
 `nfl/nfl_reference.py`), `date`, `venue`, `round` and `result` (from
@@ -507,7 +507,7 @@ The stat list offered as grid axes is curated in `nfl/nfl_reference.py` from
 the ~130 numeric columns the weekly dataset carries, and it uses nflverse's
 own names. Those names change: `interceptions` and `sacks` no longer exist and
 are now `passing_interceptions` and `def_sacks`. After an `nflreadpy` upgrade,
-`nfl/patch_nfl_db.py` reports any declared statistic that the built `games`
+`utils/nfl/patch_nfl_db.py` reports any declared statistic that the built `games`
 table no longer has.
 
 ## Run the application
@@ -534,7 +534,7 @@ Draftguru data supports draft history, recruitment source, father-son, academy, 
 under `data/afl/raw/draftguru`. To re-run it on its own:
 
 ```bash
-python -m afl.load_draftguru
+python -m utils.afl.load_draftguru
 python -m afl.link_draft
 python -m afl.link_people
 ```
@@ -563,8 +563,8 @@ Only rows linked to a database player with a trusted status are exposed to searc
 Captaincy data is imported separately:
 
 ```bash
-python -m afl.load_captains
-python -m afl.load_captains --report
+python -m utils.afl.load_captains
+python -m utils.afl.load_captains --report
 ```
 
 Captain filters become available only after linked captaincy rows exist.
@@ -586,7 +586,7 @@ python -m afl.fetch_footywire_rising_star --permission-confirmed --load-db
 The importer can also be run separately:
 
 ```bash
-python -m afl.load_rising_star
+python -m utils.afl.load_rising_star
 ```
 
 ### Broad family relationships
@@ -596,7 +596,7 @@ linked for sibling, parent-child and extended-family search:
 
 ```bash
 python -m afl.scrape_wikipedia_families --report
-python -m afl.load_family_relationships --report --details
+python -m utils.afl.load_family_relationships --report --details
 ```
 
 Advanced Search examples:
@@ -613,15 +613,15 @@ loads Wikipedia metadata plus AFL Tables player totals, all-time player lists
 and season/game record leaderboards from locally cached source files.
 
 ```bash
-python utils/fetch_club_sources.py --report
-python utils/load_club_sources.py --report --details
+python -m utils.afl.fetch_club_sources --report
+python -m utils.afl.load_club_sources --report --details
 python tests/test_club_sources.py
 ```
 
 AFL Tables automatic requests are permission-gated. The utility can print or
 open the complete reviewed source manifest for browser-assisted saving, while
 Wikipedia is fetched through the MediaWiki API. Run
-`python utils/fetch_club_sources.py --help` for the full workflow.
+`python -m utils.afl.fetch_club_sources --help` for the full workflow.
 
 ### Club all-games match sources
 
@@ -630,8 +630,8 @@ the two clubs' accounts of the same match against each other and against the
 derived `matches` table:
 
 ```bash
-python utils/fetch_historical_all_games.py
-python utils/load_club_all_games.py --report
+python -m utils.afl.fetch_historical_all_games
+python -m utils.afl.load_club_all_games --report
 ```
 
 This writes `club_match_sources`, `match_details` (quarter-by-quarter scores,
@@ -647,13 +647,13 @@ it, so it is safe to skip.
 `wiki_sports_scraper.py` collects Wikipedia reference data for the three
 American leagues: a catalogue of every current franchise, plus whatever the
 team, league and Hall of Fame pages say under headings such as "Retired
-numbers", "Franchise leaders" and "Hall of Fame". `load_wiki_reference.py`
+numbers", "Franchise leaders" and "Hall of Fame". `utils/shared/load_wiki_reference.py`
 validates that output and stages it into each sport's own database:
 
 ```bash
-python -m load_wiki_reference --check          # validate, write nothing
-python -m load_wiki_reference                  # all three sports
-python -m load_wiki_reference --profile mlb    # what is inside data_json
+python -m utils.shared.load_wiki_reference --check
+python -m utils.shared.load_wiki_reference
+python -m utils.shared.load_wiki_reference --profile mlb
 python tests/test_wiki_reference.py
 ```
 
@@ -695,8 +695,8 @@ and nothing in it is written into `matches`, `players` or `player_seasons`.
 Family-draft data is loaded and linked separately:
 
 ```bash
-python -m afl.load_family_draft
-python -m afl.load_family_draft --report --details
+python -m utils.afl.load_family_draft
+python -m utils.afl.load_family_draft --report --details
 ```
 
 Relationship rows outside the senior-game dataset remain explicitly marked as out of scope rather than being forced onto an incorrect player.
@@ -752,7 +752,7 @@ renormalises the remaining weights instead of reading the gap as zero.
 
 The table above is the shape of the data, not the authority. The authority
 is the `stat_coverage` table, measured from the built database by
-`load_stat_coverage.py --sport nba` and read back through
+`python -m utils.shared.load_stat_coverage --sport nba` and read back through
 `data/nba/reference/nba_reference.json`.
 
 ## Data sources
@@ -850,21 +850,20 @@ See [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md) for source credits, terms and r
 
 ## Repository layout
 
-Each sport owns a package. Anything that is true of one sport and not the
-others -- its constraint set, its build, its loaders and scrapers, its
-sport-only pages -- lives in `afl/`, `nba/`, `mlb/` or `nfl/`. The repository
-root holds only the multi-sport framework: the registry, the query engine, the
-pages that serve every sport, and the path policy. `build_nfl_db.py` is the
-exception and sits at the root: it is a standalone script maintained on its
-own, and `nfl/patch_nfl_db.py` is what adapts its output to the framework.
+Each sport owns a runtime package for constraints, builds, source adapters,
+and sport-only pages. One-shot loaders and database maintenance live under
+`utils/`, grouped into `afl/`, `nba/`, `nfl/`, `mlb/`, and `shared/`. The
+repository root holds the multi-sport application framework and the standalone
+NFL builder.
 
 ```
 app.py  core.py  sports.py  explore.py  ...   the sport-agnostic framework
-afl/    constraints, build, loaders, scrapers, Club Explorer, Game Lab
+afl/    constraints, build, scrapers, Club Explorer, Game Lab
 nba/    constraints, build, source adapters, Basketball-Reference staging
 mlb/    constraints, the Lahman build, franchise reference
 data/   afl/  nba/  mlb/  -- databases, raw sources, caches, references
-tests/  utils/  docs/  sql/
+utils/  afl/  nba/  nfl/  mlb/  shared/  operational tooling
+tests/  docs/
 ```
 
 The sport packages are imported, not path-executed, so their scripts run as
@@ -907,22 +906,22 @@ Selected files:
 | `mlb/build_mlb_db.py` | MLB SQLite builder, from the Lahman CSV export |
 | `mlb/mlb_reference.py` | MLB franchise list, lineage and measured eras |
 | `afl/derive_matches.py` | Canonical match table and stable match IDs |
-| `repair_database.py` | Non-download database repair workflow |
+| `utils/shared/repair_database.py` | Non-download database repair workflow |
 | `data_paths.py` | Single source of truth for every database and data path |
 | `wiki_sports_scraper.py` | NBA/NFL/MLB Wikipedia reference scraper |
 | `wiki_reference.py` | Staging schema, validation and team mapping for that scrape |
-| `load_wiki_reference.py` | Validate and import the scrape into each sport's database |
+| `utils/shared/load_wiki_reference.py` | Validate/import the scrape into sport databases |
 | `afl/awards.py` | Award and recruitment constraints |
 | `afl/captains.py` | Club captaincy constraints |
 | `afl/rising_star.py` | Rising Star nomination constraints |
 | `afl/historic_grids.py` | Captured-grid validation and practice support |
 | `afl/parse_criteria.py` | Grid criterion parser |
 | `afl/club_explorer.py` | Current-club metadata and records page |
-| `utils/fetch_club_sources.py` | Cache current-club source pages |
-| `utils/load_club_sources.py` | Parse and load club metadata and records |
-| `utils/load_club_all_games.py` | Reconcile per-club match sources (no UI yet) |
-| `utils/clean_project.py` | Review and remove generated artefacts |
-| `utils/optimise_database.py` | Propose and create missing indexes |
+| `utils/afl/fetch_club_sources.py` | Cache current-club source pages |
+| `utils/afl/load_club_sources.py` | Parse/load club metadata and records |
+| `utils/afl/load_club_all_games.py` | Reconcile per-club match sources |
+| `utils/shared/clean_project.py` | Review and remove generated artefacts |
+| `utils/shared/optimise_database.py` | Propose and create missing indexes |
 | `tests/` | Every test, runnable under pytest or standalone |
 | `ACKNOWLEDGEMENTS.md` | Data-source credits and reuse notes |
 
@@ -981,12 +980,12 @@ python tests/test_advanced_search_live.py
 
 ## Clean-up
 
-`utils/clean_project.py` reviews generated artefacts and legacy files. It is a
+`utils/shared/clean_project.py` reviews generated artefacts and legacy files. It is a
 dry run unless `--apply` is supplied.
 
 ```bash
-python utils/clean_project.py --root .
-python utils/clean_project.py --root . --apply
+python -m utils.shared.clean_project --root .
+python -m utils.shared.clean_project --root . --apply
 ```
 
 Database snapshots are retained unless deletion is explicitly requested.

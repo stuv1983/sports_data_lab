@@ -4,7 +4,7 @@ nfl/nfl_reference.py -- Teams, lineage and stat eras, for import time.
 core.Schema is a frozen dataclass built while sports.py is imported, before
 any database is open, but three of its NFL fields are properties of the
 built data: which statistic columns nflreadpy actually returned, which
-season each of them starts in, and which teams appear. nfl/patch_nfl_db.py
+season each of them starts in, and which teams appear. utils/nfl/patch_nfl_db.py
 measures all three from the built database -- the stat eras come straight
 out of its `stat_coverage` table -- and writes them to
 data/nfl/reference/nfl_reference.json, which this module reads back.

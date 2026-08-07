@@ -23,8 +23,8 @@ from pathlib import Path
 import pytest
 
 from afl import club_logos as CL
-from afl import load_hall_of_fame as HOF
-from afl import load_teams_of_the_century as TOC
+from utils.afl import load_hall_of_fame as HOF
+from utils.afl import load_teams_of_the_century as TOC
 import player_compare as PC
 import sports
 

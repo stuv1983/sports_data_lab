@@ -172,7 +172,7 @@ def ground_explorer_page(sport, con: sqlite3.Connection) -> None:
     if not con.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' "
             "AND name='venue_summary'").fetchone():
-        st.info("Ground profiles are not loaded. Run `python -m afl.load_venues --fetch`.")
+        st.info("Ground profiles are not loaded. Run `python -m utils.afl.load_venues --fetch`.")
         return
 
     revision = _revision(sport.db)

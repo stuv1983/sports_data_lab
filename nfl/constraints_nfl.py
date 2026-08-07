@@ -445,7 +445,7 @@ def require_schema(con):
     except RuntimeError as exc:
         raise RuntimeError(
             f"{exc}\n\nIf the build itself succeeded, this is the adapter "
-            f"step: run `python -m nfl.patch_nfl_db`.") from exc
+            f"step: run `python -m utils.nfl.patch_nfl_db`.") from exc
 
 
 def solve(con, constraints, limit=25, order="obscurity"):

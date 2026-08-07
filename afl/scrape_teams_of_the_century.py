@@ -6,7 +6,7 @@
     python -m afl.scrape_teams_of_the_century --report   # parse only
 
 Writes ``data/afl/raw/wikipedia_teams_of_the_century.csv``; load it with
-``afl/load_teams_of_the_century.py``.
+``utils/afl/load_teams_of_the_century.py``.
 
 Five teams, from four Wikipedia pages. Two of them are sections of a larger
 article rather than pages of their own -- 'AFL Team of the Century' is a

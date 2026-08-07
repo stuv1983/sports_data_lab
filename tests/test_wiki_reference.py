@@ -30,7 +30,7 @@ import tempfile
 from pathlib import Path
 
 import club_reference as CR
-import load_wiki_reference as L
+from utils.shared import load_wiki_reference as L
 import wiki_reference as W
 
 TEAM_COLUMNS = ["conference", "division", "team", "location", "arena",

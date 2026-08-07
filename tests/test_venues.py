@@ -1,7 +1,7 @@
 import sqlite3
 
 from afl.constraints import venue_profiles_available, venue_profiles_count
-from afl.load_venues import parse_profile
+from utils.afl.load_venues import parse_profile
 
 
 def test_parse_venue_profile_preserves_each_record_family(tmp_path):

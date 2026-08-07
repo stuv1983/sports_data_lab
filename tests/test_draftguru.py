@@ -17,7 +17,7 @@ a synthetic tree with the documented headings -- including the awkward ones
 
 Point it at the real tree instead with:
 
-    python -m afl.load_draftguru --root data/afl/raw/draftguru --inspect
+    python -m utils.afl.load_draftguru --root data/afl/raw/draftguru --inspect
 """
 
 # --- test bootstrap: run from the repository root, import project modules ---

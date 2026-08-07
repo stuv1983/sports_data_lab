@@ -37,7 +37,7 @@ import pandas as pd
 import pytest
 
 from nba import build_nba_db
-from nba import load_nba_playoff_series as loader
+from utils.nba import load_nba_playoff_series as loader
 import nba_fixture
 from nba import nba_playoff_rounds as rounds
 from nba import nba_source

@@ -1,6 +1,6 @@
 """Optional AFL family-draft relationship constraints.
 
-``afl/load_family_draft.py`` imports Wikipedia's AFL father-son and AFLW
+``utils/afl/load_family_draft.py`` imports Wikipedia's AFL father-son and AFLW
 father-daughter tables into ``family_draft`` and resolves the drafted person
 and father independently against the AFL ``players`` table.
 
@@ -54,7 +54,7 @@ def ensure_family_draft_table(con) -> None:
     The Streamlit connection uses both ``mode=ro`` and ``PRAGMA query_only=ON``.
     SQLite treats ``CREATE TEMP TABLE`` as a write under ``query_only``, so the
     old placeholder strategy raised ``attempt to write a readonly database``
-    for any father-son query before ``afl/load_family_draft.py`` had ever been run.
+    for any father-son query before ``utils/afl/load_family_draft.py`` was run.
     On a query-only connection, simply leave the optional table absent:
     ``family_draft_available()`` already reports the dataset as not loaded, and
     Advanced Search turns that into a clean QuerySyntaxError rather than a

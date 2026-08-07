@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 from afl import family_relationships as F
-from afl import load_family_relationships as L
+from utils.afl import load_family_relationships as L
 from afl import scrape_wikipedia_families as S
 
 

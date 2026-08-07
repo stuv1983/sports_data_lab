@@ -72,7 +72,7 @@ SPORT = Sport(
     obscurity_model=MODEL,
     has_club_explorer=True,
     has_past_games=True,
-    past_games_hint=("Run `python -m nba.load_club_history` to project the "
+    past_games_hint=("Run `python -m utils.nba.load_club_history` to project the "
                      "schedule already in the database into club-history "
                      "rows. Add `--attendance <game_info.csv>` from the box "
                      "score dataset to fill in crowds before 2023."),
@@ -81,7 +81,7 @@ SPORT = Sport(
         "clubs", "club_source_snapshots", "club_wikipedia_fields",
         "club_player_totals", "club_player_register", "club_player_records",
     }),
-    club_data_hint=("Run `python utils/derive_club_tables.py --sport nba` "
+    club_data_hint=("Run `python -m utils.shared.derive_club_tables --sport nba` "
                     "for Team Explorer."),
     search_examples=(
         'club:"Boston Celtics" games>=500 sort:obscurity',

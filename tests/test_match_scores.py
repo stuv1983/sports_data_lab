@@ -1,6 +1,6 @@
 import sqlite3
 
-from afl.load_match_scores import load, parse_biglist
+from utils.afl.load_match_scores import load, parse_biglist
 
 
 TEXT = """All games in chronological order

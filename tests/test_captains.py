@@ -19,7 +19,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-from afl import load_captains as captains
+from utils.afl import load_captains as captains
 from afl import scrape_afl_captains as scraper
 
 

@@ -58,7 +58,7 @@ def _columns(con, table: str) -> list:
 #:
 #: 'derived' belongs here and is the strongest of them: the NBA, MLB and
 #: NFL club tables are built out of the player rows themselves by
-#: utils/derive_club_tables.py, so there was never a name to resolve. The
+#: utils/shared/derive_club_tables.py, so there was never a name to resolve. The
 #: scraped AFL tables are the ones with 'unique' rows and, for a couple of
 #: hundred of them, no id at all.
 _TRUSTED = ("unique", "resolved", "from_draft", "derived")

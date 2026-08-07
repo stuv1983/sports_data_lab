@@ -16,7 +16,7 @@ _os.chdir(_ROOT)
 
 import sqlite3
 
-from afl import load_family_draft as loader
+from utils.afl import load_family_draft as loader
 
 
 def source_row(year, child, club, father, father_games):

@@ -20,7 +20,25 @@ archive/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
 .mypy_cache/
+.hypothesis/
+.tox/
+.nox/
+
+# Local Python environments and packaging output
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Local environment variables and credentials
+.env
+.env.*
+!.env.example
 
 # Streamlit secrets
 .streamlit/secrets.toml
@@ -41,4 +59,13 @@ Thumbs.db
 discover/
 *.rda
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
+*.log
+
+# Notebook and scratch output
+.ipynb_checkpoints/
+tmp/
+temp/
+*.tmp

@@ -290,7 +290,7 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
     """Build `db_path` from `source`. Returns a summary dict."""
     import pandas as pd
 
-    import dedupe_games
+    from utils.shared import dedupe_games
 
     db_path = str(db_path)
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -410,7 +410,7 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
             detail = "no matching series in reference/playoff_series.csv"
         issue(issues, "unresolved_playoff_round",
               f"{int(blank.sum()):,} playoff match(es) have no round -- "
-              f"{detail}. Run nba/load_nba_playoff_series.py; without a round no "
+              f"{detail}. Run utils/nba/load_nba_playoff_series.py; without a round no "
               f"championship can be derived.",
               severity="error", source_key=source.key)
 
@@ -621,7 +621,7 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
         con.commit()
 
         # 10. Stat coverage, measured from what was just written ----------
-        import load_stat_coverage
+        from utils.shared import load_stat_coverage
         competition, source_note = load_stat_coverage.COMPETITIONS["nba"]
         load_stat_coverage.load(con, STATS,
                                 source=f"{source_note} via {source.key}",
@@ -766,7 +766,7 @@ def _deduplicate(out, issues, source_key, strict, verbose):
     """
     import pandas as pd
 
-    import dedupe_games
+    from utils.shared import dedupe_games
 
     exact = out.duplicated(subset=["player_id", "match_id"], keep="first")
     if exact.any():

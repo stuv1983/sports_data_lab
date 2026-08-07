@@ -174,7 +174,7 @@ def career_hits_min(hits):
 # --------------------------------------------------- rivalry (Retrosheet)
 #
 # Lahman has no box scores, so "won more Yankees-Red Sox games than lost"
-# cannot come from the tables build_mlb_db.py writes. mlb/load_retrosheet.py
+# cannot come from the tables build_mlb_db.py writes. utils/mlb/load_retrosheet.py
 # fills mlb_player_rivalry_games separately, from Retrosheet's game logs --
 # see that module's docstring for why the squares below are gated on it
 # rather than always offered.
@@ -522,7 +522,7 @@ def birthplace_available(con):
 
 
 def rivalry_available(con):
-    """True once mlb/load_retrosheet.py has populated the rivalry table."""
+    """True once utils/mlb/load_retrosheet.py has populated the rivalry table."""
     if not core.have_tables(con, "mlb_player_rivalry_games"):
         return False
     return con.execute(

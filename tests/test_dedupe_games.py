@@ -23,8 +23,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-import dedupe_games
-import repair_database
+from utils.shared import dedupe_games, repair_database
 
 
 def _rows(*specs):

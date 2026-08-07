@@ -9,15 +9,14 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-#: The modules under test live in utils/, which is not a package on the path.
-sys.path.insert(0, str(ROOT / "utils"))
 sys.path.insert(0, str(ROOT))
 
-from club_sources import CLUBS, CLUB_BY_ID, fallback_name_key, source_name_to_display
-from fetch_club_sources import validate_afltables
-from load_club_sources import (link_record, load, parse_all_time,
-                               parse_player_totals, parse_records,
-                               parse_wikipedia)
+from utils.afl.club_sources import (CLUBS, CLUB_BY_ID, fallback_name_key,
+                                    source_name_to_display)
+from utils.afl.fetch_club_sources import validate_afltables
+from utils.afl.load_club_sources import (link_record, load, parse_all_time,
+                                         parse_player_totals, parse_records,
+                                         parse_wikipedia)
 
 TOTALS_HTML = """
 <html><h1>Adelaide Player Totals (1991-2026)</h1>

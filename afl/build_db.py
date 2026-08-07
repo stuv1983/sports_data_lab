@@ -155,7 +155,7 @@ def _deduplicate_games(out, strict=True):
     """
     import pandas as pd
 
-    import dedupe_games
+    from utils.shared import dedupe_games
 
     duplicated = out.duplicated(subset=["player_id", "date"], keep=False)
     if not duplicated.any():
@@ -284,7 +284,7 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
     # AFL Tables' A-Z index can move a few profiles ahead of the bulk
     # fitzRoy snapshot. Import only the explicitly cached exceptions and
     # validate every appearance against the independent full score list.
-    from .load_player_profiles import load_cached_profiles
+    from utils.afl.load_player_profiles import load_cached_profiles
     profile_dir = raw_dir("afl") / "player_profiles"
     score_path = raw_dir("afl") / "matches" / "afltables_bg3.txt"
     overlay = load_cached_profiles(profile_dir, score_path)
@@ -459,7 +459,7 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
     # produces a database that looks complete but has the wrong wooden spoons.
     print()
     try:
-        import repair_database
+        from utils.shared import repair_database
     except ImportError:
         print("repair_database.py not found -- ladder repair not applied.")
     else:
@@ -546,43 +546,43 @@ def refresh_layers(db_path, verbose=True):
     step("draft, awards and All-Australian", draftguru)
 
     def captains():
-        from . import load_captains
+        from utils.afl import load_captains
         load_captains.refresh_default(db_path=str(db_path), verbose=verbose)
 
     step("club captaincy", captains)
 
     def rising_star():
-        from . import load_rising_star
+        from utils.afl import load_rising_star
         load_rising_star.refresh_default(db_path=str(db_path), verbose=verbose)
 
     step("Rising Star nominations", rising_star)
 
     def brownlow():
-        from . import load_brownlow
+        from utils.afl import load_brownlow
         load_brownlow.refresh_default(db_path=str(db_path), verbose=verbose)
 
     step("Brownlow voting results", brownlow)
 
     def family_draft():
-        from . import load_family_draft
+        from utils.afl import load_family_draft
         load_family_draft.refresh_default(db_path=str(db_path), verbose=verbose)
 
     step("family draft", family_draft)
 
     def family_relationships():
-        from . import load_family_relationships
+        from utils.afl import load_family_relationships
         load_family_relationships.refresh_default(str(db_path), verbose=verbose)
 
     step("family relationships", family_relationships)
 
     def club_sources():
-        from utils import load_club_sources
+        from utils.afl import load_club_sources
         load_club_sources.refresh_default(db_path=str(db_path), verbose=verbose)
 
     step("club metadata and records", club_sources)
 
     def club_all_games():
-        from utils import load_club_all_games
+        from utils.afl import load_club_all_games
         raw = load_club_all_games.DEFAULT_RAW_DIR
         if not raw.is_dir():
             raise RuntimeError(f"no cached club pages at {raw}")
@@ -593,7 +593,7 @@ def refresh_layers(db_path, verbose=True):
     # Run after the club-page loader: score-only results newer than the cached
     # player and club pages are also projected into Past Games by this pass.
     def match_scores():
-        from . import load_match_scores
+        from utils.afl import load_match_scores
         source = raw_dir("afl") / "matches" / "afltables_bg3.txt"
         if not source.is_file():
             raise RuntimeError(f"no cached AFL Tables score list at {source}")
@@ -606,7 +606,7 @@ def refresh_layers(db_path, verbose=True):
     step("full-history match-score audit", match_scores)
 
     def venues():
-        from . import load_venues
+        from utils.afl import load_venues
         raw = raw_dir("afl") / "venues"
         if not (raw / "overall.html").is_file():
             raise RuntimeError(f"no cached AFL Tables venue catalogue at {raw}")
@@ -620,7 +620,7 @@ def refresh_layers(db_path, verbose=True):
 
     def player_index():
         from . import player_index_audit
-        from .load_player_profiles import cached_profile_players
+        from utils.afl.load_player_profiles import cached_profile_players
         raw = raw_dir("afl") / "player_index"
         if not raw.is_dir():
             raise RuntimeError(f"no cached player indexes at {raw}")

@@ -215,14 +215,15 @@ def test_staging_output_is_never_the_database_the_app_opens():
     assert staging.parent.name == "staging"
 
 
-@pytest.mark.parametrize("module", ["link_nba_bbr_players",
-                                    "load_nba_bbr_staging", "patch_nba_db",
-                                    "seed_nba_test_players",
-                                    "load_and_link_nba_sample"])
+@pytest.mark.parametrize("module", ["nba.link_nba_bbr_players",
+                                    "utils.nba.load_nba_bbr_staging",
+                                    "utils.nba.patch_nba_db",
+                                    "nba.seed_nba_test_players",
+                                    "utils.nba.load_and_link_nba_sample"])
 def test_no_bbr_script_points_at_the_app_database(module):
     import importlib
 
-    imported = importlib.import_module(f"nba.{module}")
+    imported = importlib.import_module(module)
     assert str(imported.DB_PATH) != data_paths.sport_db("nba")
     assert "staging" in str(imported.DB_PATH)
 

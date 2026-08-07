@@ -767,7 +767,7 @@ def health_page(SPORT, con) -> None:
                  for row in coverage_rows],
                 width="stretch", hide_index=True)
         else:
-            st.info("Run `python load_stat_coverage.py` for measured "
+            st.info("Run `python -m utils.shared.load_stat_coverage` for measured "
                     "coverage with population percentages.")
             st.dataframe(
                 [{"Statistic": labels.title(stat),

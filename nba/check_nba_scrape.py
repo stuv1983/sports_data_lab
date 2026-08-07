@@ -141,7 +141,7 @@ def check(root, seasons=None, leagues=nba_source_bbr.NBA_LINEAGE,
                 f"{len(playoff_seasons)} season(s) have playoff games and "
                 f"none would get a round, so no champion is derived and "
                 f"every Finals square answers nobody. "
-                f"Run nba/load_nba_playoff_series.py first.")
+                f"Run utils/nba/load_nba_playoff_series.py first.")
     else:
         covered = {season for season, _ in rounds}
         uncovered = sorted(playoff_seasons - covered)

@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from afl.load_match_scores import SourceMatch
-from afl.load_player_profiles import (
+from utils.afl.load_match_scores import SourceMatch
+from utils.afl.load_player_profiles import (
     _profile_metadata, cached_profile_players, parse_profile,
 )
 
