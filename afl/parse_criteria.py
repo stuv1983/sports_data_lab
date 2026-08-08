@@ -67,6 +67,29 @@ STAT_WORDS = {
 # Every substring loop below iterates this instead, longest key first.
 STAT_WORDS_BY_LENGTH = sorted(STAT_WORDS, key=len, reverse=True)
 
+# Wording a derby square can use, mapped to the keys match_constraints.DERBIES
+# is written in. Longest alias first so "sydney derby" is not read as the
+# bare "derby" of some other fixture.
+DERBY_ALIASES = {
+    "western derby": "western_derby",
+    "sydney derby": "sydney_derby",
+    "showdown": "showdown",
+    "q clash": "q_clash",
+    "q-clash": "q_clash",
+    "qclash": "q_clash",
+}
+
+# Words that rule the "bare text is a player's name" last resort out. Every
+# one of them belongs to a criterion rule above, so text carrying one is a
+# criterion this parser could not read rather than somebody's name.
+_NOT_A_NAME = (
+    r"\b(?:game|match|season|career|final|club|draft|award|medal|star|pick|"
+    r"win|winning|won|loss|lost|draw|tied|brownlow|premiership|flag|spoon|"
+    r"record|first|last|debut|retire|year|age|team|player|stadium|oval|"
+    r"park|ground|derby|showdown|clash|captain|played|footed|foot|"
+    r"handed|born|nominee|coach|umpire|round|crowd)s?\b"
+)
+
 # Criteria the database genuinely cannot express.
 UNSUPPORTED = {
     # Retained as a fallback only. Family wording with a trusted mapping
@@ -280,8 +303,14 @@ def _parse_exact(text):
     if re.search(r"(number|pick) ?(one|1)\b.*(draft|pick)|#1 (draft )?pick", t):
         return A.number_one_draft_pick(), "number one draft pick"
     
-    m = re.search(r"\btop\s*(\d+)", t)
-    if m:
+    # "TOP 10 PICK", and the bare "TOP 10" Gridley writes for the same
+    # square (grid 1117). Anything *else* in the text means the number
+    # belongs to that instead: "TOP 10 GOALKICKER" is not a draft criterion,
+    # and matching a bare "\btop\s*(\d+)" answered it as one. The awards
+    # block above has already claimed "TOP 10 BROWNLOW FINISH".
+    m = re.search(r"\btop\s*(\d+)\b", t)
+    if m and (re.fullmatch(r"top\s*\d+", t.strip())
+              or re.search(r"\bdraft(ed|ee)?\b|\bpicks?\b|\bselections?\b", t)):
         n = int(m.group(1))
         return C.draft_pick_between(1, n), f"top {n} draft pick"
     if re.search(r"\bfather[- ]son(?: selection)?\b", t):
@@ -348,18 +377,6 @@ def _parse_exact(text):
     if m:
         name = m.group(1).strip().title()
         return C.teammate_of(name), f"{name} teammate"
-
-    # 4b. Implicit teammate (just a player's name)
-    # Gridley sometimes omits the word "teammate" entirely (e.g. "Colby McKercher").
-    # If the text is just 2-4 words of letters/hyphens, and doesn't contain any stat 
-    # or scope keywords, assume it's a teammate name.
-    if re.match(r"^[a-z]+(?: [a-z\-]+){1,3}$", t):
-        if not re.search(r"\b(?:game|match|season|career|final|club|draft|award|medal|star|pick|win|winning|loss|draw|tied|brownlow|premiership|spoon|record|first|last|debut|retire|year|age|team|player|stadium|played)s?\b", t):
-            if not any(w in t for w in STAT_WORDS):
-                name = t.strip().title()
-                # Fix up "Mc" capitalization since title() makes it e.g. "Mckercher"
-                name = re.sub(r"\bMc([a-z])", lambda m: f"Mc{m.group(1).upper()}", name)
-                return C.teammate_of(name), f"{name} teammate"
 
     # 3b. Venue squares. "MCG WON A FINAL" must beat the generic rules.
     venue_hit = None
@@ -432,6 +449,14 @@ def _parse_exact(text):
     # Falling through to the cap-aware rules further down is the only safe
     # thing to do: answering a cap with a floor is not a gap, it is a
     # confidently wrong answer to the question that was asked.
+    # A stat total with no scope word at all ("20+ KICKS") means "in a single
+    # game" to Gridley, but that reading is only safe once every later rule
+    # has declined. Returning it here claimed criteria those rules own:
+    # "30+ GOALS TWO DIFF CLUBS" became "30+ goals in a game" and
+    # "30+ DISPOSALS & 3+ GOALS GAME" lost its second statistic. So the
+    # reading is held here and answered at the very end of the function.
+    implicit_game_stat = None
+
     stat_word = (None if _is_max(t)
                  else next((w for w in STAT_WORDS_BY_LENGTH if w in t), None))
     if stat_word:
@@ -492,9 +517,17 @@ def _parse_exact(text):
                         f"{n}+ {col} avg in a season "
                         f"(min {C.SEASON_AVG_MIN_GAMES} games)")
             
-            # Implicit Gridley scope: if no explicit scope is provided for a stat 
-            # total (like "20+ Kicks"), Gridley means "in a single game".
-            return C.stat_in_a_game(col, n), f"{n}+ {col} in a game"
+            # No scope named. Held as the last-resort reading rather than
+            # returned; see the note where implicit_game_stat is declared.
+            #
+            # STAT_WORDS is matched by substring everywhere else in this
+            # function, which is right when a scope word confirms the
+            # reading and wrong when nothing does: "TOP 10 GOALKICKER"
+            # contains "kick" and would otherwise be answered as "10+ kicks
+            # in a game". A guess this weak has to see the whole word.
+            if re.search(rf"\b{re.escape(stat_word)}e?s?\b", t):
+                implicit_game_stat = (C.stat_in_a_game(col, n),
+                                      f"{n}+ {col} in a game")
 
     # 3e. Season and club awards derivable from the data.
     if re.search(r"leading goal ?kicker", t):
@@ -520,9 +553,30 @@ def _parse_exact(text):
                     f"crowd of {people:,}+ at a final")
         return C.crowd_min(people), f"crowd of {people:,}+"
 
-    if re.search(r"derby winning record", t):
-        return C.derby_winning_record(), "derby winning record"
-    
+    # Derby squares. C.derby_winning_record comes from match_constraints and
+    # takes the derby it is about, so the fixture has to be named in the
+    # text; calling it bare raised TypeError out of parse() instead of
+    # declining the criterion.
+    derby_key = next(
+        (key for alias, key in DERBY_ALIASES.items()
+         if re.search(rf"\b{re.escape(alias)}\b", t)), None)
+    if derby_key:
+        derby_label = C.DERBY_LABELS[derby_key]
+        if re.search(r"\blosing record\b", t):
+            return (C.derby_losing_record(derby_key),
+                    f"{derby_label} losing record")
+        if re.search(r"\bwinning record\b", t):
+            return (C.derby_winning_record(derby_key),
+                    f"{derby_label} winning record")
+        m = re.search(r"(\d+)\+?\s*(?:games?|matches)", t)
+        if m:
+            return (C.derby_games_min(derby_key, int(m.group(1))),
+                    f"{m.group(1)}+ {derby_label} games")
+        return C.played_in_derby(derby_key), f"played in a {derby_label}"
+
+    if re.search(r"\bderby\b", t):
+        return None, "a derby criterion has to name which derby"
+
     if re.search(r"\bwinning record\b", t):
         return C.winning_record(), "winning record"
 
@@ -658,6 +712,30 @@ def _parse_exact(text):
         if re.search(rf"\b{re.escape(alias)}\b", t):
             return C.played_for(club), club
 
+    # 12. Last resort: a stat total whose scope was never named.
+    if implicit_game_stat is not None:
+        return implicit_game_stat
+
+    # 13. Last resort: bare text that looks like a person's name.
+    #
+    # Gridley sometimes omits the word "teammate" entirely ("COLBY
+    # MCKERCHER"). This has to be the final rule, not an early one: run
+    # before the venue block it turned ADELAIDE OVAL, KARDINIA PARK,
+    # VICTORIA PARK and seven other real grounds into teammate searches for
+    # players who do not exist, which answer zero and cost a full sweep each.
+    #
+    # The vocabulary guard still earns its place at the end. A teammate
+    # search is the most expensive thing this module can ask for, so any
+    # criterion word that belongs to a rule above means the text is a
+    # criterion this parser failed to read, not somebody's name.
+    if (re.match(r"^[a-z]+(?: [a-z\-]+){1,3}$", t)
+            and not re.search(_NOT_A_NAME, t)
+            and not any(w in t for w in STAT_WORDS)):
+        name = t.strip().title()
+        # title() lowercases the C in "McKercher"; put it back.
+        name = re.sub(r"\bMc([a-z])", lambda mc: f"Mc{mc.group(1).upper()}", name)
+        return C.teammate_of(name), f"{name} teammate"
+
     return None, f"couldn't interpret: {text!r}"
 
 
@@ -696,18 +774,22 @@ def parse(text, fuzzy=True):
     if not text:
         return None, "empty criterion"
 
-    con, label = _parse_exact(text)
+    con, reason = _parse_exact(text)
     if con is not None:
-        return con, label
+        return con, reason
 
     if fuzzy:
         fuzzy_text = _fuzzy_correct(str(text).lower())
         if fuzzy_text != str(text).lower():
-            con, label = _parse_exact(fuzzy_text)
-            if con is not None:
-                return con, label
+            fuzzy_con, fuzzy_reason = _parse_exact(fuzzy_text)
+            if fuzzy_con is not None:
+                return fuzzy_con, fuzzy_reason
 
-    return None, f"couldn't interpret: {text!r}"
+    # The reason _parse_exact gave, not a generic one. UNSUPPORTED explains
+    # *why* a criterion cannot be answered ("Rising Star nominations
+    # unavailable"), and historic_grids shows that text to the player;
+    # replacing every decline with "couldn't interpret" threw it away.
+    return None, reason
 
 
 def parse_grid(rows, cols):

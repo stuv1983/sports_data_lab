@@ -551,12 +551,14 @@ hr {{ border-color: var(--line); }}
   letter-spacing: .03em;
 }}
 
-/* Mobile layout fixes to prevent st.columns from wrapping to a vertical stack */
-.grid-board-container [data-testid="stHorizontalBlock"] {{
+/* Mobile layout fixes to prevent st.columns from wrapping to a vertical
+   stack. .st-key-grid_board is the class Streamlit puts on the keyed
+   container in 15_Play_Grids.py, so this really does wrap the board. */
+.st-key-grid_board [data-testid="stHorizontalBlock"] {{
   flex-wrap: nowrap !important;
   overflow-x: auto;
 }}
-.grid-board-container [data-testid="column"] {{
+.st-key-grid_board [data-testid="column"] {{
   min-width: 0 !important;
 }}
 </style>

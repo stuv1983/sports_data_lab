@@ -177,3 +177,45 @@ def test_legacy_accounts_are_verified_and_policy_schema_is_migrated(tmp_path):
 def test_invalid_email_shapes_are_rejected(tmp_path, email):
     with pytest.raises(accounts.AccountError, match="valid email"):
         accounts.register("Test Person", email, "long-enough-password", _accounts(tmp_path))
+
+
+# ----------------------------------------------------------- game stats
+
+def test_the_leaderboard_ranks_players_not_games(tmp_path):
+    """One row per player, their best score.
+
+    Ranking raw game_stats rows let one player who plays often occupy every
+    place on a board headed "Top Score".
+    """
+    path = _accounts(tmp_path)
+    keen, _ = accounts.register(
+        "Keen Player", "keen@example.com", "long-enough-password", path)
+    rare, _ = accounts.register(
+        "Rare Player", "rare@example.com", "long-enough-password", path)
+
+    for score in (3, 9, 5, 9):
+        accounts.log_game_stat(keen.id, "gridley", score, path)
+    accounts.log_game_stat(rare.id, "gridley", 7, path)
+
+    board = accounts.get_leaderboard("gridley", path)
+    assert [(row["display_name"], row["score"]) for row in board] == [
+        ("Keen Player", 9), ("Rare Player", 7)]
+    assert all(row["played_at"] for row in board)
+
+
+def test_a_board_nobody_has_played_is_empty_not_an_error(tmp_path):
+    assert accounts.get_leaderboard("higher_lower", _accounts(tmp_path)) == []
+
+
+def test_personal_stats_are_grouped_by_game_type(tmp_path):
+    path = _accounts(tmp_path)
+    user, _ = accounts.register(
+        "Stat Watcher", "stats@example.com", "long-enough-password", path)
+    for score in (4, 8):
+        accounts.log_game_stat(user.id, "gridley", score, path)
+    accounts.log_game_stat(user.id, "higher_lower", 12, path)
+
+    stats = accounts.get_user_stats(user.id, path)
+    assert stats["gridley"] == {
+        "games_played": 2, "top_score": 8, "avg_score": 6.0}
+    assert stats["higher_lower"]["top_score"] == 12

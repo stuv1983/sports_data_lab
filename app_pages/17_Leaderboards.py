@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import accounts
-import theme
 
 st.set_page_config(page_title="Leaderboards - AFL Data Lab", layout="centered")
 
@@ -21,9 +20,15 @@ for i, game in enumerate(game_types):
         if not leaders:
             st.info(f"No scores logged for {game.replace('_', ' ').title()} yet. Be the first!")
         else:
-            df = pd.DataFrame(leaders)
+            # Renamed by key, not by position: assigning df.columns
+            # wholesale relabels whatever order the query happened to
+            # SELECT in, so a change there would silently retitle a column.
+            df = pd.DataFrame(leaders).rename(columns={
+                "display_name": "Player",
+                "score": "Top Score",
+                "played_at": "Set On (UTC)",
+            })
             df.index += 1
-            df.columns = ["Player", "Top Score", "Last Played (UTC)"]
-            # Convert ISO string to readable date
-            df["Last Played (UTC)"] = pd.to_datetime(df["Last Played (UTC)"]).dt.strftime('%Y-%m-%d %H:%M')
-            st.dataframe(df, use_container_width=True)
+            df["Set On (UTC)"] = pd.to_datetime(
+                df["Set On (UTC)"]).dt.strftime("%Y-%m-%d %H:%M")
+            st.dataframe(df, width="stretch")

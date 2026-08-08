@@ -76,6 +76,34 @@ def _table_exists(con, name: str) -> bool:
     ).fetchone())
 
 
+def _columns(con, table: str) -> set[str]:
+    if con is None or not _table_exists(con, table):
+        return set()
+    return {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+
+
+def _has_values(con, table: str, column: str) -> bool:
+    """Whether `column` holds at least one value.
+
+    Column existence is not enough. club_player_register carries height_cm
+    and weight_kg in every sport's schema but only the AFL import fills
+    them, so an existence check compiled a filter that quietly matched
+    nobody instead of saying the layer is not loaded.
+    """
+    if con is None:
+        return True
+    try:
+        return bool(con.execute(
+            f"SELECT 1 FROM {table} WHERE {column} IS NOT NULL LIMIT 1"
+        ).fetchone())
+    except Exception:
+        return False
+
+
+#: Advanced Search key -> the column each sport stores it in.
+_PHYSICAL_COLUMNS = {"height": "height_cm", "weight": "weight_kg"}
+
+
 def _parse(query: str) -> tuple[list[tuple[str, str, str]], QuerySpec]:
     try:
         raw_tokens = shlex.split(query, posix=True)
@@ -149,16 +177,27 @@ def compile_query(schema, query: str, con=None):
             lo, hi = _range(value, "debut")
             player_where.append(f"p.{s.debut_season} BETWEEN ? AND ?")
             params.extend([lo, hi])
-        elif key in {"height", "weight"}:
-            if con and _table_exists(con, "dg_people"):
-                table = "dg_people"
-            elif con and _table_exists(con, "person_details"):
-                table = "person_details"
+        elif key in _PHYSICAL_COLUMNS:
+            # Where a sport keeps physicals differs. The NBA build puts them
+            # on `players`; the AFL import puts them on club_player_register,
+            # one row per club a player registered at. dg_people holds
+            # neither -- it is a name/URL index (dg_person_id, person_key,
+            # player_url, has_url, player, name_key) -- so compiling against
+            # it raised "no such column: height_cm" on every AFL search.
+            col = _PHYSICAL_COLUMNS[key]
+            if col in _columns(con, s.players):
+                fragment, bound = _comparison(f"p.{col}", operator, value)
+                player_where.append(fragment)
+            elif (col in _columns(con, "club_player_register")
+                    and _has_values(con, "club_player_register", col)):
+                fragment, bound = _comparison(col, operator, value)
+                player_where.append(
+                    f"p.{s.player_id} IN (SELECT player_id "
+                    f"FROM club_player_register "
+                    f"WHERE player_id IS NOT NULL AND {fragment})")
             else:
-                raise QuerySyntaxError(f"{key.title()} data is not loaded")
-            col = "height_cm" if key == "height" else "weight_kg"
-            fragment, bound = _comparison(col, operator, value)
-            player_where.append(f"p.{s.player_id} IN (SELECT player_id FROM {table} WHERE {fragment})")
+                raise QuerySyntaxError(
+                    f"{key.title()} data is not loaded for this sport")
             params.extend(bound)
         elif key in aliases:
             fragment, bound = _comparison(f"p.{aliases[key]}", operator, value)

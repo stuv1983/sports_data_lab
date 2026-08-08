@@ -92,5 +92,101 @@ def test_non_integral_or_non_finite_numbers_are_rejected(query):
         Q.compile_query(schema, query, con=con)
 
 
+# ------------------------------------------------------------- physicals
+#
+# Height and weight are not on `players` in every sport, and the table they
+# are on differs. Compiling them against dg_people -- a name/URL index with
+# no height_cm, weight_kg or player_id column at all -- raised "no such
+# column: height_cm" on every AFL search that used them.
+
+_PHYSICALS_SCHEMA = """
+    CREATE TABLE games (
+      player_id INTEGER, player TEXT, season INTEGER, round TEXT,
+      opponent TEXT, club_now TEXT, club_hist TEXT, venue TEXT,
+      career_game_no INTEGER, goals REAL, disposals REAL,
+      is_final INTEGER, result TEXT
+    );
+"""
+
+
+def _physicals_schema():
+    return core.Schema(
+        stats=("goals", "disposals"), clubs=("A", "B"),
+        required_games_cols=(), required_player_cols=(),
+    )
+
+
+def _register_fixture():
+    """A sport that keeps physicals on club_player_register, as the AFL does.
+
+    One row per club the player registered at, so player 1 appears twice.
+    """
+    con = sqlite3.connect(":memory:")
+    con.executescript(_PHYSICALS_SCHEMA + """
+        CREATE TABLE players (
+          player_id INTEGER, player TEXT, debut_season INTEGER,
+          final_season INTEGER, career_games INTEGER, career_goals INTEGER,
+          finals_played INTEGER, clubs_hist TEXT, obscurity REAL
+        );
+        CREATE TABLE club_player_register (
+          player_id INTEGER, club_id INTEGER,
+          height_cm INTEGER, weight_kg INTEGER
+        );
+        INSERT INTO players VALUES
+          (1,'Tall One',1990,2000,200,300,10,'A|B',80),
+          (2,'Short Two',2001,2005,50,20,0,'B',40);
+        INSERT INTO club_player_register VALUES
+          (1, 1, 198, 101), (1, 2, 198, 101), (2, 2, 178, 76);
+    """)
+    return con, _physicals_schema()
+
+
+def _players_column_fixture():
+    """A sport that keeps physicals on `players`, as the NBA build does."""
+    con = sqlite3.connect(":memory:")
+    con.executescript(_PHYSICALS_SCHEMA + """
+        CREATE TABLE players (
+          player_id INTEGER, player TEXT, debut_season INTEGER,
+          final_season INTEGER, career_games INTEGER, career_goals INTEGER,
+          finals_played INTEGER, clubs_hist TEXT, obscurity REAL,
+          height_cm INTEGER, weight_kg INTEGER
+        );
+        INSERT INTO players VALUES
+          (1,'Tall One',1990,2000,200,300,10,'A',80,198,101),
+          (2,'Short Two',2001,2005,50,20,0,'B',40,178,76);
+    """)
+    return con, _physicals_schema()
+
+
+@pytest.mark.parametrize("build", [_register_fixture, _players_column_fixture])
+@pytest.mark.parametrize("query,expected", [
+    ("height>=195", ["Tall One"]),
+    ("height<=180", ["Short Two"]),
+    ("weight>=100", ["Tall One"]),
+    ("weight<=80", ["Short Two"]),
+    ("height>=195 weight>=100", ["Tall One"]),
+])
+def test_height_and_weight_compile_wherever_the_sport_keeps_them(
+        build, query, expected):
+    con, schema = build()
+    sql, params, _ = Q.compile_query(schema, query, con=con)
+    assert [row[0] for row in con.execute(sql, params)] == expected
+
+
+def test_a_sport_without_physicals_says_so_instead_of_matching_nobody():
+    """club_player_register carries the columns in every sport's schema but
+    only the AFL import fills them, so existence alone is not enough."""
+    con, schema = fixture()
+    con.executescript("""
+        CREATE TABLE club_player_register (
+          player_id INTEGER, club_id INTEGER,
+          height_cm INTEGER, weight_kg INTEGER
+        );
+        INSERT INTO club_player_register VALUES (1, 1, NULL, NULL);
+    """)
+    with pytest.raises(Q.QuerySyntaxError, match="not loaded"):
+        Q.compile_query(schema, "height>=195", con=con)
+
+
 if __name__ == "__main__":
     run()

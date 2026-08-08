@@ -565,6 +565,7 @@ def delete_grid(user_id, grid_id, path=DB_PATH):
                     (grid_id, user_id))
 
 def log_game_stat(user_id, game_type, score, path=DB_PATH):
+    ensure_schema(path)
     with _connect(path) as con:
         con.execute(
             "INSERT INTO game_stats(user_id, game_type, score, played_at) VALUES (?, ?, ?, ?)",
@@ -572,6 +573,7 @@ def log_game_stat(user_id, game_type, score, path=DB_PATH):
         )
 
 def get_user_stats(user_id, path=DB_PATH):
+    ensure_schema(path)
     with _connect(path) as con:
         cur = con.execute(
             "SELECT game_type, COUNT(*) as games_played, MAX(score) as top_score, AVG(score) as avg_score "
@@ -587,17 +589,28 @@ def get_user_stats(user_id, path=DB_PATH):
             }
         return stats
 
-def get_leaderboard(game_type, path=DB_PATH):
+def get_leaderboard(game_type, path=DB_PATH, limit=50):
+    """One row per player: their best score, and when they first reached it.
+
+    Grouping matters. Ranking raw game_stats rows let a single player who
+    plays often occupy every place on a board headed "Top Score".
+    """
+    ensure_schema(path)
     with _connect(path) as con:
         cur = con.execute(
             """
-            SELECT u.display_name, s.score, s.played_at 
+            SELECT u.display_name, s.score, s.played_at
             FROM game_stats s
             JOIN users u ON s.user_id = u.id
             WHERE s.game_type = ?
+              AND s.id = (
+                  SELECT b.id FROM game_stats b
+                  WHERE b.user_id = s.user_id AND b.game_type = s.game_type
+                  ORDER BY b.score DESC, b.played_at ASC, b.id ASC
+                  LIMIT 1)
             ORDER BY s.score DESC, s.played_at ASC
-            LIMIT 50
+            LIMIT ?
             """,
-            (game_type,)
+            (game_type, limit)
         )
         return [dict(r) for r in cur]

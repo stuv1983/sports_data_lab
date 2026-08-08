@@ -41,7 +41,7 @@ def render_grid_selection():
             "Saved grid", list(by_id), key=SPORT.k("play_saved_grid_id"),
             format_func=lambda grid_id: by_id[grid_id]["name"])
         
-        if st.button("Load Grid", key=SPORT.k("play_load_grid"), type="primary", use_container_width=True):
+        if st.button("Load Grid", key=SPORT.k("play_load_grid"), type="primary", width="stretch"):
             try:
                 grid_data = accounts.load_any_grid(chosen_id)
                 st.session_state[SPORT.k("play_loaded_grid")] = grid_data
@@ -53,7 +53,9 @@ def render_grid_selection():
                 st.error(str(exc))
     else:
         try:
-            # Fetch all grids without LIMIT 7 and across all sources
+            # Every source, not just Gridley: nine of the twelve captured
+            # boards came in as manual_capture and a source filter here hid
+            # all of them from the picker.
             cur = con.execute("SELECT grid_num, date, source, rows_json, cols_json FROM historic_grids ORDER BY date DESC, grid_num DESC")
             past_grids = [
                 {"grid_num": r[0], "date": r[1], "source": r[2], "rows_json": r[3], "cols_json": r[4]} 
@@ -77,7 +79,7 @@ def render_grid_selection():
             key=SPORT.k("play_past_grid_id")
         )
         
-        if st.button("Load Past Grid", key=SPORT.k("play_load_past_grid"), type="primary", use_container_width=True):
+        if st.button("Load Past Grid", key=SPORT.k("play_load_past_grid"), type="primary", width="stretch"):
             picked = grid_options[chosen_label]
             try:
                 cols_labels = tuple(json.loads(picked["cols_json"]))
@@ -86,53 +88,74 @@ def render_grid_selection():
                 st.error("This grid contains invalid saved criteria.")
                 st.stop()
 
-                from afl import historic_grids as HG
-                grid = HG.HistoricGrid(
-                    number=picked["grid_num"], date=picked["date"],
-                    source=picked["source"], rows=rows_labels, cols=cols_labels,
-                )
+            from afl import historic_grids as HG
+            grid = HG.HistoricGrid(
+                number=picked["grid_num"], date=picked["date"],
+                source=picked["source"], rows=rows_labels, cols=cols_labels,
+            )
+            with st.spinner("Checking every square against the database…"):
                 report = HG.analyse(grid, con, SPORT)
-                if not report.authentic_playable:
-                    st.error(f"This grid cannot be played: {report.status}.")
-                    for criterion in report.unsupported:
-                        st.caption(f"{criterion.text}: {criterion.reason or 'criterion is unsupported'}")
-                    for err in report.square_errors:
-                        st.caption(err)
-                else:
-                    rows = [(item.display, item.constraint) for item in report.rows]
-                    cols = [(item.display, item.constraint) for item in report.cols]
+            if not report.authentic_playable:
+                st.error(f"This grid cannot be played: {report.status}.")
+                for criterion in report.unsupported:
+                    st.caption(f"{criterion.text}: {criterion.reason or 'criterion is unsupported'}")
+                for err in report.square_errors:
+                    st.caption(err)
+            else:
+                rows = [(item.display, item.constraint) for item in report.rows]
+                cols = [(item.display, item.constraint) for item in report.cols]
 
-                    st.session_state[SPORT.k("play_loaded_grid")] = {"rows": rows, "cols": cols, "grid_num": picked["grid_num"]}
-                    st.session_state[SPORT.k("play_state")] = {
-                        "guesses": 0, "undo_used": False, "answers": {}, "history": [], "cell": None
-                    }
-                    st.rerun()
+                st.session_state[SPORT.k("play_loaded_grid")] = {
+                    "rows": rows, "cols": cols,
+                    "grid_num": picked["grid_num"], "source": picked["source"],
+                }
+                st.session_state[SPORT.k("play_state")] = {
+                    "guesses": 0, "undo_used": False, "answers": {}, "history": [], "cell": None
+                }
+                st.rerun()
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner="Loading the newest captured grid…")
 def _get_newest_grid_cached(sport_key, db_revision):
-    if sport_key != "afl": return None
+    """The most recent playable captured board, whatever captured it.
+
+    Every source counts. Filtering to source='Gridley' here hid the nine
+    manual_capture boards that are the bulk of the library, so the page
+    auto-loaded nothing whenever the newest board was a manual capture.
+    """
+    if sport_key != "afl":
+        return None
     try:
         import db_pool
         import sports
         from afl import historic_grids as HG
         local_con = db_pool.get_con("afl.db", db_revision)
         local_sport = sports.get(sport_key)
-        cur = local_con.execute("SELECT grid_num, date, source, rows_json, cols_json FROM historic_grids WHERE source='Gridley' ORDER BY date DESC, grid_num DESC LIMIT 1")
-        latest = cur.fetchone()
-        if not latest: return None
-        picked = {"grid_num": latest[0], "date": latest[1], "source": latest[2], "rows_json": latest[3], "cols_json": latest[4]}
-        cols_labels = tuple(json.loads(picked["cols_json"]))
-        rows_labels = tuple(json.loads(picked["rows_json"]))
-        grid = HG.HistoricGrid(
-            number=picked["grid_num"], date=picked["date"],
-            source=picked["source"], rows=rows_labels, cols=cols_labels,
-        )
-        report = HG.analyse(grid, local_con, local_sport)
-        if report.authentic_playable:
-            rows = [(item.display, item.constraint) for item in report.rows]
-            cols = [(item.display, item.constraint) for item in report.cols]
-            return {"rows": rows, "cols": cols, "grid_num": picked["grid_num"]}
-    except Exception as e:
+        # Analysing one board costs seconds, so only the newest few are
+        # tried before handing the choice back to the player.
+        cur = local_con.execute(
+            "SELECT grid_num, date, source, rows_json, cols_json "
+            "FROM historic_grids ORDER BY date DESC, grid_num DESC LIMIT 3")
+        for latest in cur.fetchall():
+            picked = {"grid_num": latest[0], "date": latest[1],
+                      "source": latest[2], "rows_json": latest[3],
+                      "cols_json": latest[4]}
+            try:
+                cols_labels = tuple(json.loads(picked["cols_json"]))
+                rows_labels = tuple(json.loads(picked["rows_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            grid = HG.HistoricGrid(
+                number=picked["grid_num"], date=picked["date"],
+                source=picked["source"], rows=rows_labels, cols=cols_labels,
+            )
+            report = HG.analyse(grid, local_con, local_sport)
+            if report.authentic_playable:
+                rows = [(item.display, item.constraint) for item in report.rows]
+                cols = [(item.display, item.constraint) for item in report.cols]
+                return {"rows": rows, "cols": cols,
+                        "grid_num": picked["grid_num"],
+                        "source": picked["source"]}
+    except Exception:
         pass
     return None
 
@@ -151,7 +174,7 @@ def grid_selector_dialog():
     render_grid_selection()
 
 loaded = st.session_state.get(SPORT.k("play_loaded_grid"))
-if not loaded and not st.session_state.get(SPORT.k("play_explicitly_cleared")):
+if not loaded:
     if auto_load_newest_grid():
         loaded = st.session_state.get(SPORT.k("play_loaded_grid"))
 
@@ -169,56 +192,59 @@ cols_def = loaded["cols"]
 col_btn, _ = st.columns([1, 4])
 with col_btn:
     grid_title = "Select Grid"
-    if "grid_num" in loaded:
-        grid_title = f"Gridley #{loaded['grid_num']}"
-    if st.button(f"📅 {grid_title}", key=SPORT.k("play_select_btn"), use_container_width=True):
+    if loaded.get("grid_num") is not None:
+        grid_title = f"{loaded.get('source') or 'Grid'} #{loaded['grid_num']}"
+    if st.button(f"📅 {grid_title}", key=SPORT.k("play_select_btn"), width="stretch"):
         grid_selector_dialog()
 
 st.markdown("---")
 
-st.markdown('<div class="grid-board-container">', unsafe_allow_html=True)
+# Draw the board.
+#
+# A real container, not a pair of raw <div> markdown calls: Streamlit renders
+# each st.markdown into its own element, so an opening div written that way
+# is a *sibling* of the columns that follow rather than their parent and the
+# mobile no-wrap rule in theme.py never matched anything. A keyed container
+# emits .st-key-<key> around the real block, which the rule can target.
+with st.container(key="grid_board"):
+    header = st.columns([1.1, 1, 1, 1])
+    for i, col in enumerate(cols_def):
+        label, (sql, params) = col
+        with header[i + 1].popover(label.replace(chr(10), ' ')):
+            st.markdown(f"**{label}**")
+            st.code(sql, language="sql")
 
-# Draw the board
-header = st.columns([1.1, 1, 1, 1])
-for i, col in enumerate(cols_def):
-    label, (sql, params) = col
-    with header[i + 1].popover(label.replace(chr(10), ' ')):
-        st.markdown(f"**{label}**")
-        st.code(sql, language="sql")
+    for r in range(3):
+        row_cols = st.columns([1.1, 1, 1, 1])
+        r_label, (r_sql, r_params) = rows_def[r]
+        with row_cols[0].popover(r_label.replace(chr(10), ' ')):
+            st.markdown(f"**{r_label}**")
+            st.code(r_sql, language="sql")
 
-for r in range(3):
-    row_cols = st.columns([1.1, 1, 1, 1])
-    r_label, (r_sql, r_params) = rows_def[r]
-    with row_cols[0].popover(r_label.replace(chr(10), ' ')):
-        st.markdown(f"**{r_label}**")
-        st.code(r_sql, language="sql")
-        
-    for c in range(3):
-        cell = row_cols[c + 1]
-        open_here = state["cell"] == (r, c)
-        answered = state["answers"].get(f"{r},{c}")
-        
-        if answered:
-            face = (
-                f"<div class='square{' is-open' if open_here else ''}'>"
-                f"<div class='square-name'>{answered['name']}</div>"
-                "<div class='square-meta'>correct</div></div>"
-            )
-            action = "selected"
-        else:
-            face = (
-                f"<div class='square{' is-open' if open_here else ''}'>"
-                "<div class='square-name'>Choose player</div>"
-                "<div class='square-meta'>unanswered</div></div>"
-            )
-            action = "answer" if not open_here else "selected"
-            
-        cell.markdown(face, unsafe_allow_html=True)
-        if not answered and cell.button(action, key=SPORT.k("play_cell", r, c)):
-            state["cell"] = (r, c)
-            st.rerun()
+        for c in range(3):
+            cell = row_cols[c + 1]
+            open_here = state["cell"] == (r, c)
+            answered = state["answers"].get(f"{r},{c}")
 
-st.markdown("</div>", unsafe_allow_html=True)
+            if answered:
+                face = (
+                    f"<div class='square{' is-open' if open_here else ''}'>"
+                    f"<div class='square-name'>{answered['name']}</div>"
+                    "<div class='square-meta'>correct</div></div>"
+                )
+                action = "selected"
+            else:
+                face = (
+                    f"<div class='square{' is-open' if open_here else ''}'>"
+                    "<div class='square-name'>Choose player</div>"
+                    "<div class='square-meta'>unanswered</div></div>"
+                )
+                action = "answer" if not open_here else "selected"
+
+            cell.markdown(face, unsafe_allow_html=True)
+            if not answered and cell.button(action, key=SPORT.k("play_cell", r, c)):
+                state["cell"] = (r, c)
+                st.rerun()
 
 st.markdown("---")
 

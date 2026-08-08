@@ -1,6 +1,5 @@
 import streamlit as st
 import accounts
-import theme
 
 st.set_page_config(page_title="My Profile - AFL Data Lab", layout="centered")
 
