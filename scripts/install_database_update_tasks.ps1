@@ -30,4 +30,9 @@ Install-SdlTask "Sports Data Lab - Brownlow and awards update" '-m database_upda
 $grandFinal = New-ScheduledTaskTrigger -Weekly -WeeksInterval 1 -DaysOfWeek Sunday -At "01:00"
 Install-SdlTask "Sports Data Lab - Grand Final and awards update" '-m database_updates run --event grand-final-awards --sports afl --trigger scheduler --only-if-due' $grandFinal
 
+# Gridley publishes one board a day, so this runs daily rather than on the
+# Friday-to-Monday scores schedule.
+$gridley = New-ScheduledTaskTrigger -Daily -At "06:30"
+Install-SdlTask "Sports Data Lab - Gridley board scan" '-m database_updates gridley-scan --trigger scheduler' $gridley
+
 Write-Host "Database update tasks use Australia/Sydney local time and run missed starts when the computer resumes."

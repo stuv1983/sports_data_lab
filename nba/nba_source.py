@@ -306,8 +306,11 @@ def get_source(name, **kwargs):
     if name in ("nba_api", "nba-api", "nbaapi"):
         from . import nba_source_api
         return nba_source_api.NbaApiSource(**kwargs)
+    if name == "live":
+        from . import nba_source_live
+        return nba_source_live.LiveNbaSource(**kwargs)
     if name in ("bbr", "basketball_reference", "basketball-reference"):
         from . import nba_source_bbr
         return nba_source_bbr.BbrNbaSource(**kwargs)
     raise SourceError(
-        f"unknown source {name!r}; expected csv, bbr or nba_api")
+        f"unknown source {name!r}; expected csv, live, bbr or nba_api")

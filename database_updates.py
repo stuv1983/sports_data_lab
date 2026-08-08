@@ -27,6 +27,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
+import config
 import data_paths
 
 ROOT = Path(__file__).resolve().parent
@@ -38,6 +39,23 @@ LOCK_PATH = LOG_DIR / "update.lock"
 SPORT_KEYS = ("afl", "nba", "mlb", "nfl")
 EVENTS = ("regular", "brownlow-awards", "grand-final-awards", "full")
 KEEP_BACKUPS = 5
+
+#: How long a sport may go with no new game before its data is behind
+#: rather than simply between seasons. Each value is that sport's real
+#: off-season plus a margin, so only a feed that has actually stopped
+#: trips it: AFL runs March-September, the NBA October-June, the NFL
+#: September-February.
+STALE_AFTER_DAYS = {"afl": 200, "nba": 170, "nfl": 250}
+
+#: Sports whose source publishes a season at a time rather than a game at
+#: a time, measured in seasons behind instead of days.
+#:
+#: MLB is the whole reason this exists. Its Lahman import stamps every game
+#: in a season YYYY-04-01 -- the 2025 season's 2,201 games all share the
+#: date 2025-04-01 -- so a days-since-last-game reading would call a
+#: correctly loaded database sixteen months stale. One season behind is
+#: also normal, because Lahman publishes only after a season finishes.
+STALE_AFTER_SEASONS = {"mlb": 2}
 STARTING_LOCK_MAX_SECONDS = 120
 RUNNING_LOCK_MAX_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_STEP_TIMEOUT_SECONDS = 6 * 60 * 60
@@ -84,22 +102,46 @@ def _configured_command(name: str) -> tuple[str, ...] | None:
     return tuple(shlex.split(value, posix=os.name != "nt"))
 
 
+def _nba_open_seasons(today: dt.date | None = None) -> str:
+    """The NBA seasons a rebuild still has to ask NBA.com about.
+
+    A season starting in year N is played into N+1, so through the first
+    half of a calendar year the season in progress started last year. Both
+    are named: the previous one can still gain late playoff games, and
+    naming one season too many costs a handful of requests where naming
+    one too few silently misses games.
+    """
+    today = today or dt.datetime.now().astimezone().date()
+    started = today.year if today.month >= 9 else today.year - 1
+    return f"{started - 1}-{started}"
+
+
 def _build_steps(sport: str, db: str | None = None) -> list[Step]:
     db = db or data_paths.default_db(sport)
     if sport == "afl":
         return [Step("Fetch and rebuild AFL", _python(
             "-m", "afl.build_db", "--db", db, "--refresh"))]
     if sport == "nba":
-        source = os.environ.get("SPORTS_DATA_NBA_SOURCE", "csv").strip().lower()
-        if source not in {"csv", "bbr", "nba_api"}:
-            raise ValueError("SPORTS_DATA_NBA_SOURCE must be csv, bbr, or nba_api")
+        # config.secret reads the environment first and
+        # .streamlit/secrets.toml second. The environment alone was not
+        # enough: the Windows scheduled task runs with a bare environment,
+        # so a source configured only by `setx` was invisible to exactly
+        # the job that most needs it.
+        source = config.secret("SPORTS_DATA_NBA_SOURCE", "csv").strip().lower()
+        if source not in {"csv", "live", "bbr", "nba_api"}:
+            raise ValueError(
+                "SPORTS_DATA_NBA_SOURCE must be csv, live, bbr, or nba_api")
         argv = list(_python(
             "-m", "nba.build_nba_db", "--db", db, "--source", source))
-        source_root = os.environ.get("SPORTS_DATA_NBA_SOURCE_ROOT", "").strip()
+        source_root = config.secret("SPORTS_DATA_NBA_SOURCE_ROOT", "").strip()
         if source_root:
             argv.extend(("--source-root", source_root))
-        if source == "nba_api":
-            argv.append("--refresh")
+        if source in {"live", "nba_api"}:
+            # Only the seasons that can still gain games. Blanket
+            # --refresh re-requested all eighty every run, a few hundred
+            # calls against undocumented endpoints for results settled
+            # decades ago. The full history is still built either way.
+            argv.extend(("--refresh-seasons", _nba_open_seasons()))
         return [Step(f"Fetch and rebuild NBA ({source})", tuple(argv))]
     if sport == "mlb":
         return [Step(
@@ -235,8 +277,15 @@ def update_is_active() -> bool:
     return LOCK_PATH.exists() and _lock_is_active(_read_lock())
 
 
-def database_file_status(sports: Iterable[str] = SPORT_KEYS) -> dict[str, dict]:
-    """Return cheap live-file metadata without opening a database."""
+def database_file_status(sports: Iterable[str] = SPORT_KEYS,
+                         *, with_freshness: bool = True) -> dict[str, dict]:
+    """Live-file metadata, plus how current the data inside actually is.
+
+    The file's timestamp alone answers the wrong question -- it records
+    when the database was last replaced, not how recent the games in it
+    are -- so the freshness probe rides along. It is two indexed
+    aggregates per sport, about half a second for all four.
+    """
     result = {}
     for sport in tuple(dict.fromkeys(sports)):
         path = Path(data_paths.default_db(sport))
@@ -250,6 +299,21 @@ def database_file_status(sports: Iterable[str] = SPORT_KEYS) -> dict[str, dict]:
                     stat.st_mtime, tz=dt.timezone.utc
                 ).astimezone().isoformat(),
             })
+            if with_freshness:
+                try:
+                    with closing(sqlite3.connect(
+                            f"file:{path}?mode=ro", uri=True)) as con:
+                        tables = {row[0] for row in con.execute(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type='table'")}
+                        if "games" in tables:
+                            columns = {row[1] for row in con.execute(
+                                "PRAGMA table_info(games)")}
+                            entry["freshness"] = _freshness(
+                                sport, con, columns)
+                except sqlite3.Error as exc:
+                    entry["freshness"] = {
+                        "state": "unknown", "summary": f"unreadable: {exc}"}
         result[sport] = entry
     return result
 
@@ -418,6 +482,81 @@ def _backup_and_promote(sport: str, staging: Path,
     return str(backup) if backup else None
 
 
+def _freshness(sport: str, con, columns: set[str],
+               today: dt.date | None = None) -> dict:
+    """How far behind the loaded data is, and whether that is expected.
+
+    Neither the file's timestamp nor its row count answers "is this
+    current". A database rebuilt last night from a feed that stopped three
+    weeks ago has a fresh mtime and a clean integrity check, which is
+    exactly the state this is here to catch.
+
+    Whether dates are usable is decided from the data, not assumed: a
+    season carrying one distinct date is a season-granular import whose
+    date is a placeholder, and comparing it to today would be nonsense.
+    """
+    today = today or dt.datetime.now().astimezone().date()
+    result: dict = {"basis": "unknown", "state": "unknown"}
+    if "season" not in columns:
+        result["summary"] = "no season column to measure against"
+        return result
+
+    latest_season = con.execute("SELECT MAX(season) FROM games").fetchone()[0]
+    if latest_season is None:
+        result["summary"] = "no games loaded"
+        return result
+    result["latest_season"] = latest_season
+
+    # Is `date` a fixture date or a placeholder? The declaration above is
+    # the authority, and this is the safety net for a sport nobody
+    # declared: a season holding many games that all share one date is a
+    # stamp, not a fixture list. The row count matters -- a season with a
+    # single game loaded also has a single distinct date, and calling that
+    # a placeholder would misread every season opening round.
+    dated = False
+    if "date" in columns:
+        earliest, latest, played = con.execute(
+            "SELECT MIN(date), MAX(date), COUNT(*) FROM games "
+            "WHERE season = ?", (latest_season,)).fetchone()
+        dated = earliest is not None and (played == 1 or earliest != latest)
+
+    if sport not in STALE_AFTER_SEASONS and dated:
+        latest = con.execute(
+            "SELECT MAX(date) FROM games WHERE date IS NOT NULL").fetchone()[0]
+        try:
+            played = dt.date.fromisoformat(str(latest)[:10])
+        except (TypeError, ValueError):
+            result["summary"] = f"unreadable game date {latest!r}"
+            return result
+        days = (today - played).days
+        limit = STALE_AFTER_DAYS.get(sport)
+        result.update({
+            "basis": "date",
+            "latest_game_date": played.isoformat(),
+            "days_since_latest_game": days,
+            "stale_after_days": limit,
+            "state": ("behind" if limit is not None and days > limit
+                      else "current"),
+            "summary": (f"last game {played.isoformat()}, {days} day"
+                        f"{'' if days == 1 else 's'} ago"),
+        })
+        return result
+
+    # Season-granular source.
+    limit = STALE_AFTER_SEASONS.get(sport)
+    behind = today.year - int(latest_season)
+    result.update({
+        "basis": "season",
+        "seasons_behind": behind,
+        "stale_after_seasons": limit,
+        "state": ("behind" if limit is not None and behind >= limit
+                  else "current"),
+        "summary": (f"latest season loaded is {latest_season}"
+                    + (f", {behind} behind {today.year}" if behind > 0 else "")),
+    })
+    return result
+
+
 def _database_snapshot(sport: str, *, quick: bool = False) -> dict:
     path = Path(data_paths.default_db(sport))
     result = {"path": str(path), "exists": path.exists()}
@@ -457,6 +596,7 @@ def _database_snapshot(sport: str, *, quick: bool = False) -> dict:
                         "SELECT MIN(season), MAX(season) FROM games"
                     ).fetchone()
                     result.update({"season_min": lo, "season_max": hi})
+                result["freshness"] = _freshness(sport, con, columns)
     except sqlite3.Error as exc:
         result["integrity"] = f"error: {exc}"
     return result
@@ -476,12 +616,20 @@ def check_databases(sports: Iterable[str] = SPORT_KEYS) -> dict:
         sport for sport, snapshot in databases.items()
         if not snapshot.get("exists") or snapshot.get("integrity") != "ok"
     ]
+    # Being behind is not a broken file, so it must not read as one: a
+    # stale database still passes integrity and still serves every query.
+    # It is reported alongside, not folded into, `failures`.
+    stale = [
+        sport for sport, snapshot in databases.items()
+        if snapshot.get("freshness", {}).get("state") == "behind"
+    ]
     result = {
         "state": "failed" if failures else "complete",
         "checked_at": checked_at,
         "sports": list(chosen),
         "databases": databases,
         "failures": failures,
+        "stale": stale,
         "mode": "read_only",
     }
     # Persist only the diagnostic report. The sports database files are
@@ -665,10 +813,14 @@ def run_job(event: str, sports: Iterable[str], trigger: str = "cli",
         LOCK_PATH.unlink(missing_ok=True)
 
 
-def start_background(event: str = "full", sports: Iterable[str] = SPORT_KEYS,
-                     trigger: str = "admin") -> int:
-    """Start an update without tying its lifetime to a Streamlit rerun."""
-    chosen = tuple(dict.fromkeys(sports))
+def _spawn_detached(command: list[str], status_path: Path,
+                    status: dict) -> int:
+    """Reserve the update lock, then hand it to a detached child process.
+
+    Shared by every administrator-triggered job. Without it a job runs
+    inside the Streamlit script run: the page blocks for as long as the
+    work takes, and a websocket timeout kills the job halfway through.
+    """
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     if LOCK_PATH.exists():
         if _lock_is_active(_read_lock()):
@@ -686,17 +838,11 @@ def start_background(event: str = "full", sports: Iterable[str] = SPORT_KEYS,
             "reservation": reservation,
             "started_at": dt.datetime.now().astimezone().isoformat(),
         }, handle)
-    _write_json(STATUS_PATH, {
-        "state": "starting", "event": event, "trigger": trigger,
-        "sports": list(chosen), "pid": None,
-        "started_at": dt.datetime.now().astimezone().isoformat(),
-    })
+    _write_json(status_path, status)
 
     launcher_log = None
     try:
         launcher_log = (LOG_DIR / "launcher.log").open("a", encoding="utf-8")
-        argv = [sys.executable, "-m", "database_updates", "run",
-                "--event", event, "--sports", *chosen, "--trigger", trigger]
         child_env = os.environ.copy()
         child_env["SPORTS_DATA_UPDATE_RESERVATION"] = reservation
         kwargs = {
@@ -710,7 +856,8 @@ def start_background(event: str = "full", sports: Iterable[str] = SPORT_KEYS,
             )
         else:
             kwargs["start_new_session"] = True
-        process = subprocess.Popen(argv, **kwargs)
+        process = subprocess.Popen(
+            [sys.executable, "-m", "database_updates", *command], **kwargs)
         return process.pid
     except Exception:
         LOCK_PATH.unlink(missing_ok=True)
@@ -718,6 +865,47 @@ def start_background(event: str = "full", sports: Iterable[str] = SPORT_KEYS,
     finally:
         if launcher_log is not None:
             launcher_log.close()
+
+
+def start_background(event: str = "full", sports: Iterable[str] = SPORT_KEYS,
+                     trigger: str = "admin") -> int:
+    """Start an update without tying its lifetime to a Streamlit rerun."""
+    chosen = tuple(dict.fromkeys(sports))
+    if not chosen:
+        raise ValueError("choose at least one sport")
+    unknown = set(chosen) - set(SPORT_KEYS)
+    if unknown:
+        raise ValueError(f"unknown sports: {', '.join(sorted(unknown))}")
+    if event not in EVENTS:
+        raise ValueError(f"unknown event: {event}")
+    return _spawn_detached(
+        ["run", "--event", event, "--sports", *chosen, "--trigger", trigger],
+        STATUS_PATH,
+        {
+            "state": "starting", "event": event, "trigger": trigger,
+            "sports": list(chosen), "pid": None,
+            "started_at": dt.datetime.now().astimezone().isoformat(),
+        },
+    )
+
+
+def start_gridley_scan_background(*, max_days: int = 31,
+                                  trigger: str = "admin") -> int:
+    """Start a Gridley scan detached from the Streamlit process.
+
+    The scan makes up to `max_days` sequential HTTP requests, which is far
+    too long to hold a script run open.
+    """
+    return _spawn_detached(
+        ["gridley-scan", "--max-days", str(max_days), "--trigger", trigger],
+        GRIDLEY_SCAN_STATUS_PATH,
+        {
+            "state": "starting", "trigger": trigger, "pid": None,
+            "started_at": dt.datetime.now().astimezone().isoformat(),
+        },
+    )
+
+
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -729,11 +917,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run.add_argument("--trigger", default="cli")
     run.add_argument("--only-if-due", action="store_true")
     run.add_argument("--dry-run", action="store_true")
+    scan = sub.add_parser(
+        "gridley-scan", help="fetch new Gridley boards into the AFL database")
+    scan.add_argument(
+        "--through", default=None,
+        help="last date to check, YYYY-MM-DD (default: today)")
+    scan.add_argument("--max-days", type=int, default=31)
+    scan.add_argument("--trigger", default="cli")
     scheduled = sub.add_parser(
         "scheduled", help="run a guarded update from an operating-system timer")
     scheduled.add_argument(
-        "event", choices=("regular", "brownlow-awards", "grand-final-awards"))
+        "event",
+        choices=("regular", "brownlow-awards", "grand-final-awards", "gridley"))
     sub.add_parser("status", help="print the last update status")
+    check = sub.add_parser(
+        "check", help="report currency and integrity without changing anything")
+    check.add_argument("--sports", nargs="+", choices=SPORT_KEYS,
+                       default=list(SPORT_KEYS))
     return parser.parse_args(argv)
 
 
@@ -742,12 +942,33 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         print(json.dumps(read_status(), indent=2))
         return 0
+    if args.command == "check":
+        report = check_databases(args.sports)
+        for sport in report["sports"]:
+            snapshot = report["databases"][sport]
+            fresh = snapshot.get("freshness", {})
+            print(f"{sport.upper():4} integrity={snapshot.get('integrity')} "
+                  f"currency={fresh.get('state', 'unknown')} "
+                  f"({fresh.get('summary', 'not measured')})")
+        if report["stale"]:
+            print("behind: " + ", ".join(s.upper() for s in report["stale"]))
+        return 1 if report["failures"] else 0
+    if args.command == "gridley-scan":
+        through = (dt.date.fromisoformat(args.through)
+                   if args.through else None)
+        status = run_gridley_scan(
+            through=through, max_days=args.max_days, trigger=args.trigger)
+        print(json.dumps(status.get("result", {}), indent=2))
+        return 0
     if args.command == "scheduled":
         if not event_is_due(args.event):
             print(
                 f"{args.event} is not due on "
                 f"{dt.datetime.now().astimezone().date().isoformat()}; skipped"
             )
+            return 0
+        if args.event == "gridley":
+            run_gridley_scan(trigger="systemd")
             return 0
         sports = ("afl",) if args.event != "regular" else SPORT_KEYS
         return run_job(args.event, sports, trigger="systemd")

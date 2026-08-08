@@ -98,7 +98,18 @@ class NbaApiSource:
                  verbose=True, api_key=None):
         self.cache = Path(cache) if cache else data_paths.cache_dir(
             "nba", "nba_api")
+        #: ``True`` re-requests everything, ``False`` nothing, and a
+        #: collection of season start years re-requests only those.
+        #:
+        #: The third form is what makes a scheduled rebuild reasonable.
+        #: A season that finished in 1974 cannot change, so re-requesting
+        #: all eighty of them every night is a few hundred pointless
+        #: requests against undocumented endpoints -- the surest way to be
+        #: blocked. Only seasons still being played need asking about.
         self.refresh = refresh
+        self.refresh_seasons = (
+            None if isinstance(refresh, bool)
+            else {int(season) for season in refresh})
         self.throttle = throttle
         self.verbose = verbose
         #: Empty unless one is configured. NBA.com's own endpoints need no
@@ -132,7 +143,16 @@ class NbaApiSource:
         stamp = hashlib.sha256(params.encode("utf-8")).hexdigest()[:16]
         return self.cache / endpoint / f"{stamp}.json"
 
-    def _cached(self, endpoint, params, call):
+    def _refreshing(self, season=None):
+        """Whether this particular request has to go back to NBA.com."""
+        if self.refresh_seasons is None:
+            return bool(self.refresh)
+        if season is None:
+            # Not season-scoped, so there is nothing to bound it by.
+            return True
+        return int(season) in self.refresh_seasons
+
+    def _cached(self, endpoint, params, call, season=None):
         """
         The response for one request, from disk when it is already there.
 
@@ -142,7 +162,7 @@ class NbaApiSource:
         """
         path = self._cache_path(endpoint, params)
         meta = path.with_suffix(".meta.json")
-        if path.exists() and not self.refresh:
+        if path.exists() and not self._refreshing(season):
             raw = path.read_bytes()
             info = {}
             if meta.exists():
@@ -272,8 +292,11 @@ class NbaApiSource:
             "player": p["full_name"],
             # The static list carries no biography. Left NULL rather than
             # guessed; a later layer can fill it from commonplayerinfo.
+            # birth_country belongs to that set and was simply missed when
+            # it joined PLAYER_COLUMNS, which made validate() reject every
+            # build from this adapter before it read a single game.
             "birth_year": None, "position": None,
-            "height_cm": None, "weight_kg": None,
+            "height_cm": None, "weight_kg": None, "birth_country": None,
         } for p in found])
         return validate(frame, PLAYER_COLUMNS, "players")
 
@@ -291,28 +314,49 @@ class NbaApiSource:
                 season=season_label(season),
                 season_type_all_star=SEASON_TYPE[phase],
                 player_or_team_abbreviation="T",
-                **self._auth()).get_dict()))
+                **self._auth()).get_dict(),
+            season=season))
 
     def matches(self, season):
         """
         One row per game, folded from the two team rows the log returns.
 
-        MATCHUP carries the orientation: 'BOS vs. LAL' is a home game,
-        'BOS @ LAL' an away one. Without it there is no way to tell which
-        score belongs to which side, and every venue answer would be a
-        coin toss.
+        MATCHUP normally carries the orientation: 'BOS vs. LAL' is a home
+        game, 'BOS @ LAL' an away one.
+
+        NEUTRAL SITES
+        -------------
+        At a neutral venue -- the NBA Cup semifinals and final in Las
+        Vegas, the Mexico City and Paris games -- *both* rows read '@':
+        'ORL @ NYK' and 'NYK @ ORL' for the same game. Reading each row
+        independently put both teams on the away side, the second
+        overwrote the first, and the game was left with no home team at
+        all. The strict build then rejected it, taking ten games and two
+        hundred and twenty player-game rows with it every season.
+
+        Row order does not rescue it -- measured across 3,680 games it
+        names the home side exactly 50.0% of the time -- and no second
+        field in this endpoint carries the designation. So both teams are
+        kept and the orientation is settled by team id, which is arbitrary
+        but stable.
+
+        That costs nothing real. Each team keeps its own score, so
+        points_for, points_against and the win or loss stay correct; the
+        only nominal value is `is_home`, which for a game at a neutral
+        venue has no true answer anyway, and which no NBA constraint
+        reads. Losing the game entirely was the worse trade.
         """
         import pandas as pd
 
         rows = {}
+        sides = {}
         for phase in PHASES:
             log = self._game_log(season, phase)
             if log.empty:
                 continue
             for _, r in log.iterrows():
                 gid = str(r["GAME_ID"])
-                home = " vs. " in str(r.get("MATCHUP", ""))
-                slot = rows.setdefault(gid, {
+                rows.setdefault(gid, {
                     "match_id": gid, "season": int(season),
                     "season_label": season_label(season),
                     "date": str(r.get("GAME_DATE", ""))[:10],
@@ -321,9 +365,31 @@ class NbaApiSource:
                     "home_team_id": None, "away_team_id": None,
                     "home_score": None, "away_score": None,
                     "venue": None, "attendance": None})
-                side = "home" if home else "away"
-                slot[f"{side}_team_id"] = str(r["TEAM_ID"])
-                slot[f"{side}_score"] = numeric(r.get("PTS"))
+                sides.setdefault(gid, []).append((
+                    str(r["TEAM_ID"]), numeric(r.get("PTS")),
+                    " vs. " in str(r.get("MATCHUP", ""))))
+
+        for gid, slot in rows.items():
+            playing = sides[gid]
+            hosts = [side for side in playing if side[2]]
+            if len(playing) == 2 and len(hosts) == 1:
+                home = hosts[0]
+                away = next(side for side in playing if side is not home)
+            elif len(playing) == 2:
+                # Neutral site, or a log that lost the designation.
+                home, away = sorted(playing, key=lambda side: side[0])
+            else:
+                # Only one team's row came back. Place it on the side its
+                # own MATCHUP claims and leave the other missing, which is
+                # what the strict build is there to catch.
+                for team_id, score, is_host in playing:
+                    which = "home" if is_host else "away"
+                    slot[f"{which}_team_id"] = team_id
+                    slot[f"{which}_score"] = score
+                continue
+            slot["home_team_id"], slot["home_score"] = home[0], home[1]
+            slot["away_team_id"], slot["away_score"] = away[0], away[1]
+
         if not rows:
             return None
         return validate(pd.DataFrame(list(rows.values())), MATCH_COLUMNS,
@@ -344,7 +410,8 @@ class NbaApiSource:
             lambda: playergamelogs.PlayerGameLogs(
                 season_nullable=season_label(season),
                 season_type_nullable=SEASON_TYPE[phase],
-                **self._auth()).get_dict())
+                **self._auth()).get_dict(),
+            season=season)
         log = self._frame(payload)
         if log.empty:
             return None

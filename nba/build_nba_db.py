@@ -1328,9 +1328,11 @@ def main(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--db", default=data_paths.default_db("nba"))
     ap.add_argument("--source", default="csv",
-                    help="csv (default), bbr or nba_api; see the licensing "
-                         "notes in nba/nba_source_bbr.py and nba/nba_source_api.py "
-                         "before using either of the last two")
+                    help="csv (default), live, bbr or nba_api; live takes "
+                         "games from NBA.com and player biography from the "
+                         "CSV export. See the licensing notes in "
+                         "nba/nba_source_bbr.py and nba/nba_source_api.py "
+                         "before using any of the last three")
     ap.add_argument("--csv-root", "--source-root", dest="source_root",
                     default=None,
                     help="where a file-backed source reads from (default: "
@@ -1346,6 +1348,12 @@ def main(argv=None):
                     help="start years, e.g. 1946-2026 or 2019,2021")
     ap.add_argument("--refresh", action="store_true",
                     help="re-request cached source responses")
+    ap.add_argument("--refresh-seasons", default=None,
+                    help="nba_api: re-request only these seasons and serve "
+                         "the rest from cache, e.g. 2025 or 2024-2026. The "
+                         "whole history is still built; a finished season "
+                         "cannot change, so a scheduled rebuild should ask "
+                         "about the current one only")
     ap.add_argument("--nba-api-key", default=None,
                     help="nba_api: API key, overriding NBA_API_KEY and "
                          ".streamlit/secrets.toml (see config.py). Not "
@@ -1383,9 +1391,17 @@ def main(argv=None):
         if args.include_aba:
             kwargs["leagues"] = None
     else:
-        kwargs = {"refresh": args.refresh}
+        if args.refresh_seasons:
+            refresh = nba_source.parse_seasons(args.refresh_seasons)
+        else:
+            refresh = args.refresh
+        kwargs = {"refresh": refresh}
         if args.nba_api_key:
             kwargs["api_key"] = args.nba_api_key
+        if args.source == "live":
+            kwargs["verbose"] = args.verbose
+            if args.source_root:
+                kwargs["root"] = args.source_root
     try:
         source = nba_source.get_source(args.source, **kwargs)
     except nba_source.SourceError as exc:

@@ -37,11 +37,40 @@ def _change_value(previous, current, key):
     return f"{int(new):,} ({delta:+,})"
 
 
+#: The events an administrator can start by hand, in plain words.
+#: brownlow-awards and grand-final-awards are deliberately absent: both are
+#: calendar-guarded jobs that do nothing away from their one due date, so
+#: offering them here would only produce a job that silently skips.
+_UPDATE_EVENTS = {
+    "regular": "Scores and statistics",
+    "full": "Everything including awards",
+}
+
+#: How a freshness verdict reads in the table.
+_CURRENCY_LABELS = {
+    "current": "up to date",
+    "behind": "BEHIND",
+    "unknown": "not measured",
+}
+
+
+def _currency(snapshot):
+    """The answer to "is this sport's data current", not "when was the file
+    written". A rebuild from a feed that stopped three weeks ago leaves a
+    fresh timestamp on stale data, so the two are shown side by side."""
+    fresh = snapshot.get("freshness") or {}
+    state = fresh.get("state", "unknown")
+    label = _CURRENCY_LABELS.get(state, state)
+    summary = fresh.get("summary")
+    return f"{label} - {summary}" if summary else label
+
+
 def _database_rows(snapshots, *, include_check=False):
     rows = []
     for sport, snapshot in snapshots.items():
         row = {
             "Sport": sport.upper(),
+            "Data currency": _currency(snapshot),
             "Last database update": _display_time(snapshot.get("modified_at")),
             "Size": _display_size(snapshot.get("bytes")),
         }
@@ -90,6 +119,17 @@ def _render_database_check(check):
             sport.upper() for sport in check.get("failures", [])
         ) or "unknown"
         st.error(f"Database check failed for: {failed}.")
+    # Being behind is a separate verdict from being broken: a stale
+    # database passes every integrity check and still answers every query.
+    stale = check.get("stale") or []
+    if stale:
+        st.warning(
+            "Data is behind for: "
+            + ", ".join(sport.upper() for sport in stale)
+            + ". The file is intact, but no recent games have loaded — run "
+              "an update for those sports and check the step log if it "
+              "keeps happening."
+        )
     st.caption(
         f"Checked: {_display_time(check.get('checked_at'))} - "
         "Read-only: no sources were downloaded and no sports database was changed."
@@ -104,10 +144,14 @@ def _render_gridley_scan(status):
     if not status:
         return
     result = status.get("result", {})
-    if status.get("state") == "failed":
+    state = status.get("state")
+    if state == "failed":
         st.error(status.get("error", "The Gridley scan failed."))
         return
-    if status.get("state") != "complete":
+    if state == "starting":
+        st.info("A Gridley scan is starting.")
+        return
+    if state != "complete":
         st.info("A Gridley scan is running.")
         return
     changes = result.get("inserted", 0) + result.get("updated", 0)
@@ -116,6 +160,11 @@ def _render_gridley_scan(status):
             f"Gridley scan saved {result.get('inserted', 0)} new board(s) "
             f"and refreshed {result.get('updated', 0)} board(s)."
         )
+        if status.get("promoted"):
+            st.caption(
+                "The AFL database was replaced. Use **Reload updated "
+                "databases** above to pick it up in this session."
+            )
     elif result.get("checked") and (
             result.get("unavailable") == result.get("checked")):
         st.warning(
@@ -265,9 +314,17 @@ def admin_page(user):
 
     status = database_updates.read_status()
     check_status = database_updates.read_check_status()
+    gridley_status = database_updates.read_gridley_scan_status()
     state = status.get("state", "unknown") if status else "unknown"
+    gridley_state = (gridley_status.get("state", "unknown")
+                     if gridley_status else "unknown")
+    # Both jobs take the same lock, so both have to count here. Watching
+    # only the main update's status left every button enabled while a
+    # Gridley scan was running, and clicking one produced "a database
+    # update is already running" instead of a disabled control.
     active = (
-        state in {"starting", "running"}
+        (state in {"starting", "running"}
+         or gridley_state in {"starting", "running"})
         and database_updates.update_is_active()
     )
     if status:
@@ -367,12 +424,28 @@ def admin_page(user):
     )
 
     with st.form("admin_database_update_form"):
+        st.caption(
+            "Scores and statistics refreshes every selected sport from its "
+            "own source. Everything including awards adds the AFL award "
+            "layers, which is much slower and only worth running after "
+            "Brownlow night or the Grand Final."
+        )
+        scope = st.columns(2)
+        event = scope[0].selectbox(
+            "What to refresh", _UPDATE_EVENTS,
+            format_func=lambda key: _UPDATE_EVENTS[key],
+        )
+        sports = scope[1].multiselect(
+            "Sports", database_updates.SPORT_KEYS,
+            default=list(database_updates.SPORT_KEYS),
+            format_func=str.upper,
+        )
         password = st.text_input(
             "Confirm your admin password", type="password",
             help="A fresh password check is required before starting a database write."
         )
         submitted = st.form_submit_button(
-            "Update all databases", type="primary", icon=":material/sync:",
+            "Start update", type="primary", icon=":material/sync:",
             disabled=active,
         )
     if submitted:
@@ -383,17 +456,21 @@ def admin_page(user):
         else:
             if confirmed is None or confirmed.id != user.id or not confirmed.is_admin:
                 st.error("Password confirmation failed.")
+            elif not sports:
+                st.error("Choose at least one sport to refresh.")
             else:
                 try:
-                    pid = database_updates.start_background()
-                except RuntimeError as exc:
+                    pid = database_updates.start_background(
+                        event=event, sports=sports)
+                except (RuntimeError, ValueError) as exc:
                     st.error(str(exc))
                 else:
                     st.session_state["database_update_notice"] = {
                         "kind": "success",
                         "message": (
-                            "Database update accepted and started in the "
-                            f"background (PID {pid})."
+                            f"{_UPDATE_EVENTS[event]} accepted for "
+                            f"{', '.join(s.upper() for s in sports)} and "
+                            f"started in the background (PID {pid})."
                         ),
                     }
                     st.rerun()
@@ -434,35 +511,36 @@ def admin_page(user):
     st.caption(
         "Checks Gridley's public daily AFL board feed from the newest saved "
         "date through today. New boards are validated in a copy before the "
-        "AFL database is atomically replaced. This does not scan Immaculate Grid."
+        "AFL database is atomically replaced. This does not scan Immaculate "
+        "Grid. It also runs on its own daily timer, so this button is for "
+        "picking up today's board early rather than for routine upkeep."
     )
-    gridley_status = database_updates.read_gridley_scan_status()
     if st.button(
         "Scan Gridley for new games", icon=":material/grid_view:",
         disabled=active,
         help="Checks at most 31 dates and keeps Gridley's real board numbers.",
     ):
-        with st.status("Scanning Gridley for new games...", expanded=True) as progress:
-            try:
-                gridley_status = database_updates.run_gridley_scan()
-            except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
-                progress.update(label="Gridley scan failed", state="error")
-                st.error(f"{type(exc).__name__}: {exc}")
-            else:
-                result = gridley_status.get("result", {})
-                changes = result.get("inserted", 0) + result.get("updated", 0)
-                progress.update(
-                    label=(f"Gridley scan complete - {changes} changed board(s)"),
-                    state="complete",
-                )
-                if gridley_status.get("promoted"):
-                    db_pool.close_all()
-                    st.cache_data.clear()
-                    st.rerun()
+        # Detached, like the main update. Run inline this made up to 31
+        # sequential HTTP requests inside the script run, which blocks the
+        # page and loses the job if the websocket times out first.
+        try:
+            pid = database_updates.start_gridley_scan_background()
+        except (OSError, RuntimeError, ValueError) as exc:
+            st.error(f"{type(exc).__name__}: {exc}")
+        else:
+            st.session_state["database_update_notice"] = {
+                "kind": "success",
+                "message": (
+                    f"Gridley scan started in the background (PID {pid}). "
+                    "Use Refresh update status to follow it."
+                ),
+            }
+            st.rerun()
     _render_gridley_scan(gridley_status)
 
     with st.expander("Automatic schedule"):
         st.write("Regular scores and statistics: Friday, Saturday, Sunday and Monday at 12:10 am Sydney time.")
+        st.write("Gridley board scan: every day at 6:30 am Sydney time.")
         st.write("Brownlow and awards: 1:00 am on the Tuesday after Brownlow night (22 September in 2026).")
         st.write("Grand Final and final awards: 1:00 am on the Sunday after the last Saturday in September (27 September in 2026).")
         st.caption(

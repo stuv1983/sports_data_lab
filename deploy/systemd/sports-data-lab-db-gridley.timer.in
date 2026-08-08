@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily Sports Data Lab Gridley board scan
+
+[Timer]
+# Gridley publishes one board a day, so this runs every day rather than
+# following the Friday-to-Monday scores schedule. It is a small job: a
+# handful of HTTP requests and an atomic promotion only when a board
+# actually changed.
+OnCalendar=*-*-* 06:30:00 Australia/Sydney
+Unit=sports-data-lab-db-update@gridley.service
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
