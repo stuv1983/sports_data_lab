@@ -17,6 +17,8 @@ import sqlite3
 from contextlib import closing
 from types import SimpleNamespace
 
+import pytest
+
 import database_updates as updates
 
 TODAY = dt.date(2026, 8, 8)
@@ -252,3 +254,69 @@ def test_an_admin_update_rejects_a_scope_it_cannot_run(tmp_path, monkeypatch):
         except ValueError:
             continue
         raise AssertionError(f"accepted {event!r} with {sports!r}")
+
+
+# ------------------------------- promoting past a running application
+
+def test_a_rebuild_promotes_while_the_app_holds_the_database_open(
+        tmp_path, monkeypatch):
+    """Windows will not rename over a file another process holds open.
+
+    db_pool gives the running app one read-only handle per thread with a
+    256 MB memory map on it, which is doubly unrenameable, so every
+    scheduled update failed with "stop the Streamlit server" on the very
+    machine that serves the app. Promotion copies the staged contents
+    through SQLite instead, which the attached readers take part in.
+    """
+    import db_pool
+
+    live = tmp_path / "afl.db"
+    staging = tmp_path / "afl.db.update-building"
+    with closing(sqlite3.connect(live)) as con:
+        con.execute("CREATE TABLE games (season INTEGER, date TEXT)")
+        con.execute("INSERT INTO games VALUES (2025, '2025-08-02')")
+        con.commit()
+    with closing(sqlite3.connect(staging)) as con:
+        con.execute("CREATE TABLE games (season INTEGER, date TEXT)")
+        con.executemany("INSERT INTO games VALUES (?, ?)",
+                        [(2026, "2026-08-02")] * 40)
+        con.commit()
+    monkeypatch.setattr(updates.data_paths, "default_db", lambda s: str(live))
+
+    reader = db_pool.open_read_only(str(live))
+    try:
+        assert reader.execute("SELECT MAX(date) FROM games").fetchone()[0] \
+            == "2025-08-02"
+
+        updates._backup_and_promote("afl", staging)
+
+        # The already-attached reader sees it without reconnecting.
+        assert reader.execute("SELECT MAX(date) FROM games").fetchone()[0] \
+            == "2026-08-02"
+        assert reader.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 40
+        assert reader.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert not staging.exists()
+    finally:
+        reader.close()
+
+
+def test_an_unlocked_promotion_still_takes_the_atomic_rename(
+        tmp_path, monkeypatch):
+    """The copy is the fallback, not the new normal: with nothing holding
+    the file, os.replace is instant and atomic."""
+    live = tmp_path / "afl.db"
+    staging = tmp_path / "afl.db.update-building"
+    for path, season in ((live, 2025), (staging, 2026)):
+        with closing(sqlite3.connect(path)) as con:
+            con.execute("CREATE TABLE games (season INTEGER)")
+            con.execute("INSERT INTO games VALUES (?)", (season,))
+            con.commit()
+    monkeypatch.setattr(updates.data_paths, "default_db", lambda s: str(live))
+    monkeypatch.setattr(
+        updates, "_promote_in_place",
+        lambda *a: pytest.fail("should not need the in-place copy"))
+
+    updates._backup_and_promote("afl", staging)
+
+    with closing(sqlite3.connect(live)) as con:
+        assert con.execute("SELECT season FROM games").fetchone()[0] == 2026

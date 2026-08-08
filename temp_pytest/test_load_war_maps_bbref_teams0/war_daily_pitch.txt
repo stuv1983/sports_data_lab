@@ -1,2 +1,0 @@
-player_ID,year_ID,team_ID,WAR
-playera,2020,AAA,0.5

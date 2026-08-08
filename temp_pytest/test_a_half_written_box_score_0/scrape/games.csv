@@ -1,5 +1,0 @@
-bbr_game_key,league,season,season_label,bbr_season_year,phase,game_date,game_time,visitor_team_name,visitor_team_key,visitor_points,home_team_name,home_team_key,home_points,overtime,attendance,arena,boxscore_url,game_path,source_url
-194611010TRH,NBA,1946,1946-47,1947,regular,194611010TRH,,New York Knicks,NYK,98,Toronto Huskies,TRH,100,,15000,Test Arena,,seasons/1946-47/regular/194611010TRH.json,
-201610250CLE,NBA,2016,2016-17,2017,regular,201610250CLE,,New York Knicks,NYK,98,Cleveland Cavaliers,CLE,100,,15000,Test Arena,,seasons/2016-17/regular/201610250CLE.json,
-201704150CLE,NBA,2016,2016-17,2017,playoff,201704150CLE,,Indiana Pacers,IND,98,Cleveland Cavaliers,CLE,100,,15000,Test Arena,,seasons/2016-17/playoff/201704150CLE.json,
-197204010NYA,ABA,1971,1971-72,1972,regular,197204010NYA,,Indiana Pacers,IND,98,New York Nets,NYA,100,,15000,Test Arena,,seasons/1971-72/regular/197204010NYA.json,

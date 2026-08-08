@@ -60,6 +60,11 @@ STARTING_LOCK_MAX_SECONDS = 120
 RUNNING_LOCK_MAX_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_STEP_TIMEOUT_SECONDS = 6 * 60 * 60
 
+#: How long a promotion waits for readers to finish a query before giving
+#: up. Generous: the alternative to waiting is discarding a rebuild that
+#: has already run to completion.
+PROMOTE_TIMEOUT_SECONDS = 60
+
 
 @dataclass(frozen=True)
 class Step:
@@ -144,10 +149,20 @@ def _build_steps(sport: str, db: str | None = None) -> list[Step]:
             argv.extend(("--refresh-seasons", _nba_open_seasons()))
         return [Step(f"Fetch and rebuild NBA ({source})", tuple(argv))]
     if sport == "mlb":
+        # The Lahman CSVs built this database once and are not read again.
+        # Lahman publishes a season only after it ends, so the rebuild
+        # this used to run could never produce a game the database did not
+        # already have -- MLB sat a season behind from April to November
+        # with no way to close the gap. The season in progress now comes
+        # from MLB's own Stats API and is appended in place.
+        #
+        # Retrosheet is not refreshed here. Its loader takes no --db, so
+        # in a staged update it would write to the live database instead
+        # of the copy, and its game-log URL is pinned to gl1871_2025.zip
+        # in any case -- it cannot yield a 2026 game to add.
         return [Step(
-            "Refresh Retrosheet and rebuild MLB",
-            _python("-m", "mlb.build_mlb_db", "--db", db,
-                    "--refresh-retrosheet"),
+            "Load the current MLB season from the Stats API",
+            _python("-m", "utils.mlb.load_statsapi", "--db", db),
         )]
     if sport == "nfl":
         return [
@@ -445,6 +460,22 @@ def _prepare_staging(event: str, sports: Iterable[str],
             shutil.copy2(live, staging)
 
 
+def _promote_in_place(staging: Path, live: Path) -> None:
+    """Copy a staged database over a live one that is still open.
+
+    SQLite's own backup API, so the write is a transaction the readers
+    already attached to the live file take part in, rather than a
+    filesystem operation they can veto.
+    """
+    with closing(sqlite3.connect(
+            f"file:{staging}?mode=ro", uri=True)) as source, \
+            closing(sqlite3.connect(
+                live, timeout=PROMOTE_TIMEOUT_SECONDS)) as target:
+        target.execute(
+            f"PRAGMA busy_timeout = {int(PROMOTE_TIMEOUT_SECONDS * 1000)}")
+        source.backup(target)
+
+
 def _backup_and_promote(sport: str, staging: Path,
                         keep: int = KEEP_BACKUPS) -> str | None:
     """Atomically promote a validated staged database, retaining backups."""
@@ -474,11 +505,28 @@ def _backup_and_promote(sport: str, staging: Path,
             stale.unlink(missing_ok=True)
     try:
         os.replace(staging, live)
-    except PermissionError as e:
-        raise RuntimeError(
-            f"Could not overwrite {live.name}. It is locked by another process (likely the Streamlit app). "
-            "Please stop the Streamlit server before running database updates."
-        ) from e
+    except PermissionError:
+        # Windows will not rename over a file another process holds open,
+        # and the running app holds one read-only handle per thread with a
+        # 256 MB memory map on it (db_pool.PRAGMAS), which is doubly
+        # unrenameable. Requiring the server to be stopped made every
+        # scheduled update fail on a machine that serves the app.
+        #
+        # Renaming is not the only way to promote. Copying the staged
+        # *contents* into the live file through SQLite goes via the pager,
+        # which coordinates with those readers rather than fighting the
+        # filesystem, and it is transactional -- an interrupted copy rolls
+        # back instead of leaving a torn file. Readers pick the new data
+        # up on their next query without reconnecting.
+        try:
+            _promote_in_place(staging, live)
+        except sqlite3.Error as exc:
+            raise RuntimeError(
+                f"Could not overwrite {live.name}: {exc}. Another process "
+                f"is holding a read transaction open on it; retry, or stop "
+                f"the Streamlit server for this run."
+            ) from exc
+        staging.unlink(missing_ok=True)
     return str(backup) if backup else None
 
 

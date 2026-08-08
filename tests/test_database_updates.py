@@ -14,11 +14,19 @@ def test_2026_afl_annual_dates_match_announced_calendar():
     assert updates.grand_final_refresh_date(2026) == dt.date(2026, 9, 27)
 
 
-def test_every_regular_sport_has_a_build_and_strict_health_check():
+def test_every_regular_sport_fetches_and_ends_with_a_strict_health_check():
+    """Each sport pulls from its source, then is checked strictly.
+
+    "rebuild" used to stand in for the fetch, but MLB no longer rebuilds:
+    its Lahman export is read once and never again, so the current season
+    is loaded into the database that exists rather than replacing it.
+    """
     planned = updates.plan("regular", updates.SPORT_KEYS)
     for sport in updates.SPORT_KEYS:
         labels = [step.label for key, step in planned if key == sport]
-        assert any("rebuild" in label.lower() for label in labels)
+        assert any(word in label.lower()
+                   for label in labels
+                   for word in ("rebuild", "load")), (sport, labels)
         assert labels[-1] == "Strict database health check"
 
 
