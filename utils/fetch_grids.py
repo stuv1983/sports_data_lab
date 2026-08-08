@@ -13,10 +13,10 @@ import datetime
 import json
 import os
 import re
-import sys
-import time
-import urllib.request
 import sqlite3
+import sys
+import urllib.request
+from contextlib import closing
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -100,7 +100,11 @@ def fetch_gridley(date):
         if "hItems" in nd and "vItems" in nd:
             rows = [gridley_label(item) for item in nd["vItems"]]
             cols = [gridley_label(item) for item in nd["hItems"]]
-            return {"rows": rows, "cols": cols}
+            return {
+                "grid_num": int(nd["level"]) if nd.get("level") else None,
+                "rows": rows,
+                "cols": cols,
+            }
             
         # fallback to original
         grid = walk_for_grid(nd)
@@ -150,9 +154,11 @@ def fetch_immaculate(sport, date_or_num):
     return None
 
 
-def save_grid(db_path, date, source, rows, cols):
+def save_grid(db_path, date, source, rows, cols, grid_num=None):
     """Insert or refresh one captured grid and return the action performed."""
-    with sqlite3.connect(db_path) as con:
+    rows_json = json.dumps(rows)
+    cols_json = json.dumps(cols)
+    with closing(sqlite3.connect(db_path)) as con:
         con.execute("""
             CREATE TABLE IF NOT EXISTS historic_grids (
                 grid_num INTEGER PRIMARY KEY,
@@ -166,29 +172,106 @@ def save_grid(db_path, date, source, rows, cols):
         """)
 
         existing = con.execute(
-            "SELECT grid_num FROM historic_grids "
+            "SELECT grid_num, rows_json, cols_json FROM historic_grids "
             "WHERE source=? AND date=? ORDER BY grid_num LIMIT 1",
             (source, date),
         ).fetchone()
         if existing:
+            existing_num, old_rows, old_cols = existing
+            target_num = int(grid_num) if grid_num is not None else existing_num
+            conflict = con.execute(
+                "SELECT source, date FROM historic_grids "
+                "WHERE grid_num=? AND grid_num<>?",
+                (target_num, existing_num),
+            ).fetchone()
+            if conflict:
+                raise RuntimeError(
+                    f"Grid #{target_num} is already saved as "
+                    f"{conflict[0]} on {conflict[1]}"
+                )
+            duplicate_count = con.execute(
+                "SELECT COUNT(1) FROM historic_grids WHERE source=? AND date=?",
+                (source, date),
+            ).fetchone()[0]
+            if (target_num == existing_num and old_rows == rows_json
+                    and old_cols == cols_json and duplicate_count == 1):
+                return "unchanged"
             con.execute("""
                 UPDATE historic_grids
-                SET rows_json=?, cols_json=?, unsupported_json='[]', note=''
+                SET grid_num=?, rows_json=?, cols_json=?,
+                    unsupported_json='[]', note=''
                 WHERE grid_num=?
-            """, (json.dumps(rows), json.dumps(cols), existing[0]))
+            """, (target_num, rows_json, cols_json, existing_num))
             con.execute(
                 "DELETE FROM historic_grids "
                 "WHERE source=? AND date=? AND grid_num<>?",
-                (source, date, existing[0]),
+                (source, date, target_num),
             )
+            con.commit()
             return "updated"
 
-        con.execute("""
-            INSERT INTO historic_grids (
-                date, source, rows_json, cols_json, unsupported_json, note
-            ) VALUES (?, ?, ?, ?, '[]', '')
-        """, (date, source, json.dumps(rows), json.dumps(cols)))
+        if grid_num is not None:
+            con.execute("""
+                INSERT INTO historic_grids (
+                    grid_num, date, source, rows_json, cols_json,
+                    unsupported_json, note
+                ) VALUES (?, ?, ?, ?, ?, '[]', '')
+            """, (int(grid_num), date, source, rows_json, cols_json))
+        else:
+            con.execute("""
+                INSERT INTO historic_grids (
+                    date, source, rows_json, cols_json, unsupported_json, note
+                ) VALUES (?, ?, ?, ?, '[]', '')
+            """, (date, source, rows_json, cols_json))
+        con.commit()
         return "inserted"
+
+
+def scan_gridley(db_path, through=None, max_days=31, fetcher=fetch_gridley):
+    """Fetch unsaved Gridley dates through today and report every outcome."""
+    through = through or datetime.date.today()
+    if isinstance(through, str):
+        through = datetime.date.fromisoformat(through)
+    if max_days < 1:
+        raise ValueError("max_days must be at least 1")
+
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+        tables = {row[0] for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        latest = None
+        if "historic_grids" in tables:
+            row = con.execute(
+                "SELECT MAX(date) FROM historic_grids WHERE source='Gridley'"
+            ).fetchone()
+            latest = datetime.date.fromisoformat(row[0]) if row and row[0] else None
+
+    start = through if latest is None else min(latest + datetime.timedelta(days=1), through)
+    earliest = through - datetime.timedelta(days=max_days - 1)
+    start = max(start, earliest)
+    dates = [
+        start + datetime.timedelta(days=offset)
+        for offset in range((through - start).days + 1)
+    ]
+    result = {
+        "checked": len(dates), "inserted": 0, "updated": 0,
+        "unchanged": 0, "unavailable": 0, "boards": [],
+        "from_date": start.isoformat(), "through_date": through.isoformat(),
+    }
+    for day in dates:
+        grid = fetcher(day.isoformat())
+        if not grid:
+            result["unavailable"] += 1
+            continue
+        action = save_grid(
+            db_path, day.isoformat(), "Gridley", grid["rows"], grid["cols"],
+            grid_num=grid.get("grid_num"),
+        )
+        result[action] += 1
+        result["boards"].append({
+            "date": day.isoformat(), "grid_num": grid.get("grid_num"),
+            "action": action, "rows": grid["rows"], "cols": grid["cols"],
+        })
+    return result
 
 def main():
     ap = argparse.ArgumentParser()
@@ -214,7 +297,9 @@ def main():
 
     db_path = sport_db(a.sport)
     
-    action = save_grid(db_path, date, source, rows, cols)
+    action = save_grid(
+        db_path, date, source, rows, cols, grid_num=grid.get("grid_num")
+    )
     print(f"Successfully {action} grid for {date} in the {a.sport} database!")
 
 if __name__ == "__main__":

@@ -102,6 +102,15 @@ def ensure_schema(path=DB_PATH):
             );
             CREATE INDEX IF NOT EXISTS saved_grids_owner
                 ON saved_grids(user_id, sport_key, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS game_stats (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                game_type TEXT NOT NULL,
+                score INTEGER NOT NULL,
+                played_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS game_stats_leaderboard
+                ON game_stats(game_type, score DESC);
         """)
 
         user_columns = {
@@ -224,14 +233,45 @@ def _verification_digest(token):
 
 
 def send_validation_email(email, token):
-    """Mock email sender that logs the verification link to a local file."""
-    log_path = Path(__file__).resolve().parent / "logs" / "emails.txt"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    """Sends verification email using real SMTP if configured, else mock."""
     base_url = os.environ.get(
         "SPORTS_DATA_LAB_BASE_URL", "http://localhost:8501"
     ).rstrip("/")
     link = f"{base_url}/?verify={token}"
-    msg = f"To: {email}\nSubject: Verify your Grid Solver account\n\nClick the link to verify: {link}\n\n"
+    msg_body = f"Click the link to verify your Sports Data Lab account: {link}"
+    
+    smtp_server = os.environ.get("SMTP_SERVER")
+    if smtp_server:
+        import smtplib
+        from email.mime.text import MIMEText
+        
+        smtp_port = int(os.environ.get("SMTP_PORT", 587))
+        smtp_user = os.environ.get("SMTP_USER")
+        smtp_pass = os.environ.get("SMTP_PASSWORD")
+        smtp_from = os.environ.get("SMTP_FROM", "noreply@sportsdatalab.com")
+        
+        msg = MIMEText(msg_body)
+        msg["Subject"] = "Verify your Sports Data Lab account"
+        msg["From"] = smtp_from
+        msg["To"] = email
+        
+        try:
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                if smtp_user and smtp_pass:
+                    server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+        except Exception as e:
+            # If SMTP fails, log it and fallback to mock
+            print(f"Failed to send email via SMTP: {e}")
+            _mock_email(email, link)
+    else:
+        _mock_email(email, link)
+
+def _mock_email(email, link):
+    log_path = Path(__file__).resolve().parent / "logs" / "emails.txt"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    msg = f"To: {email}\nSubject: Verify your Sports Data Lab account\n\nClick the link to verify: {link}\n\n"
     with log_path.open("a", encoding="utf-8") as f:
         f.write(msg)
 
@@ -523,3 +563,41 @@ def delete_grid(user_id, grid_id, path=DB_PATH):
     with _connect(path) as con:
         con.execute("DELETE FROM saved_grids WHERE id=? AND user_id=?",
                     (grid_id, user_id))
+
+def log_game_stat(user_id, game_type, score, path=DB_PATH):
+    with _connect(path) as con:
+        con.execute(
+            "INSERT INTO game_stats(user_id, game_type, score, played_at) VALUES (?, ?, ?, ?)",
+            (user_id, game_type, score, _now())
+        )
+
+def get_user_stats(user_id, path=DB_PATH):
+    with _connect(path) as con:
+        cur = con.execute(
+            "SELECT game_type, COUNT(*) as games_played, MAX(score) as top_score, AVG(score) as avg_score "
+            "FROM game_stats WHERE user_id=? GROUP BY game_type",
+            (user_id,)
+        )
+        stats = {}
+        for row in cur:
+            stats[row["game_type"]] = {
+                "games_played": row["games_played"],
+                "top_score": row["top_score"],
+                "avg_score": round(row["avg_score"], 1)
+            }
+        return stats
+
+def get_leaderboard(game_type, path=DB_PATH):
+    with _connect(path) as con:
+        cur = con.execute(
+            """
+            SELECT u.display_name, s.score, s.played_at 
+            FROM game_stats s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.game_type = ?
+            ORDER BY s.score DESC, s.played_at ASC
+            LIMIT 50
+            """,
+            (game_type,)
+        )
+        return [dict(r) for r in cur]

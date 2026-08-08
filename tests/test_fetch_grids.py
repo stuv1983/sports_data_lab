@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 import sqlite3
 
@@ -70,3 +71,46 @@ def test_save_grid_propagates_database_failures(tmp_path):
         pass
     else:
         raise AssertionError("database write failure was reported as success")
+
+
+def test_save_grid_keeps_gridleys_real_board_number(tmp_path):
+    path = tmp_path / "sport.db"
+    assert fetch_grids.save_grid(
+        path, "2026-08-08", "Gridley", ["r1", "r2", "r3"],
+        ["c1", "c2", "c3"], grid_num=1119,
+    ) == "inserted"
+    assert fetch_grids.save_grid(
+        path, "2026-08-08", "Gridley", ["r1", "r2", "r3"],
+        ["c1", "c2", "c3"], grid_num=1119,
+    ) == "unchanged"
+
+    with sqlite3.connect(path) as con:
+        assert con.execute(
+            "SELECT grid_num, date FROM historic_grids"
+        ).fetchall() == [(1119, "2026-08-08")]
+
+
+def test_scan_gridley_starts_after_latest_saved_date(tmp_path):
+    path = tmp_path / "sport.db"
+    fetch_grids.save_grid(
+        path, "2026-08-06", "Gridley", ["old1", "old2", "old3"],
+        ["old4", "old5", "old6"], grid_num=1117,
+    )
+    requested = []
+
+    def fake_fetch(date):
+        requested.append(date)
+        number = 1118 if date.endswith("07") else 1119
+        return {
+            "grid_num": number,
+            "rows": ["r1", "r2", "r3"],
+            "cols": ["c1", "c2", "c3"],
+        }
+
+    result = fetch_grids.scan_gridley(
+        path, through=dt.date(2026, 8, 8), fetcher=fake_fetch
+    )
+
+    assert requested == ["2026-08-07", "2026-08-08"]
+    assert result["inserted"] == 2
+    assert [board["grid_num"] for board in result["boards"]] == [1118, 1119]

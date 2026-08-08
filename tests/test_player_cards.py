@@ -1,6 +1,7 @@
 """Player cards surface the rich career data already loaded per sport."""
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -33,6 +34,35 @@ def test_dustin_martin_card_has_titles_draft_votes_and_major_honours():
             ("Draft", "Pick 3 · 2009 · National · Richmond")]
         assert honours["Norm Smith Medal"] == 3
         assert honours["All-Australian"] == 4
+        logos = explore._player_card_logos(sports.AFL, con, "Richmond")
+        assert [label for label, _path in logos] == [
+            "AFL Data Lab", "Richmond"
+        ]
+        assert all(Path(path).is_file() for _label, path in logos)
+    finally:
+        con.close()
+
+
+def test_card_blurb_uses_loaded_scores_titles_and_honours():
+    text = explore._career_blurb(
+        sports.AFL.vocab, 2010, 2024, 302, 1, 2009,
+        career_score=338, titles=3,
+        honours=[{"Honour": "All-Australian", "Times": 4}],
+    )
+
+    assert text.startswith("Drafted in 2009. Across 302 games")
+    assert "338 goals" in text
+    assert "3 premierships" in text
+    assert "4x All-Australian" in text
+
+
+@pytest.mark.parametrize("sport", [sports.AFL, sports.NBA, sports.MLB, sports.NFL])
+def test_every_sport_card_has_its_league_badge(sport):
+    con = sqlite3.connect(sport.db)
+    try:
+        logos = explore._player_card_logos(sport, con, "")
+        assert logos[0][0] == sport.label
+        assert Path(logos[0][1]).name == f"{sport.key}.png"
     finally:
         con.close()
 

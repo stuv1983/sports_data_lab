@@ -111,6 +111,7 @@ pages = {
     ],
     "Play": [],
     "Account & Settings": [
+        st.Page("app_pages/16_Profile.py", title="My Profile", icon=":material/person:"),
         st.Page("app_pages/2_Account.py", title="Account", icon=":material/account_circle:"),
     ]
 }
@@ -125,6 +126,7 @@ if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Grid Solver"]):
     pages["Play"].append(st.Page("app_pages/11_Grid_Solver.py", title="Grid Solver", icon=":material/grid_on:"))
 if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Play Grids"]):
     pages["Play"].append(st.Page("app_pages/15_Play_Grids.py", title="Play Grids", icon=":material/sports_esports:"))
+pages["Play"].append(st.Page("app_pages/17_Leaderboards.py", title="Leaderboards", icon=":material/leaderboard:"))
 if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Game Lab"]):
     pages["Play"].append(st.Page("app_pages/12_Game_Lab.py", title="Game Lab", icon=":material/science:"))
     

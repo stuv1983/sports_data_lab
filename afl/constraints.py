@@ -189,6 +189,20 @@ def grand_finals_played_min(times):
                GROUP BY player_id HAVING COUNT(*) >= ?""", [times])
 
 
+def derby_winning_record():
+    return ("""SELECT player_id FROM games
+               WHERE derby_status IN ('home','away')
+               GROUP BY player_id
+               HAVING SUM(result='W') > SUM(result='L')""", [])
+
+
+def winning_record():
+    return ("""SELECT player_id FROM club_player_register
+               WHERE player_id IS NOT NULL
+               GROUP BY player_id
+               HAVING SUM(wins) > SUM(losses)""", [])
+
+
 def premierships_won_min(times):
     return _G.round_outcome_min("GF", "W", times)
 
@@ -210,6 +224,27 @@ def wooden_spoon_player():
                  ON t.season = g.season AND t.club_now = g.club_now
                WHERE t.wooden_spoon = 1""", [])
 
+
+# ----------------------------------------------------- player physicals
+def height_min(cm):
+    """Player is at least `cm` tall."""
+    return (f"""SELECT player_id FROM club_player_register
+                WHERE height_cm >= ? AND player_id IS NOT NULL""", [cm])
+
+def height_max(cm):
+    """Player is at most `cm` tall."""
+    return (f"""SELECT player_id FROM club_player_register
+                WHERE height_cm <= ? AND height_cm IS NOT NULL AND player_id IS NOT NULL""", [cm])
+
+def weight_min(kg):
+    """Player is at least `kg` heavy."""
+    return (f"""SELECT player_id FROM club_player_register
+                WHERE weight_kg >= ? AND player_id IS NOT NULL""", [kg])
+
+def weight_max(kg):
+    """Player is at most `kg` heavy."""
+    return (f"""SELECT player_id FROM club_player_register
+                WHERE weight_kg <= ? AND weight_kg IS NOT NULL AND player_id IS NOT NULL""", [kg])
 
 # ----------------------------------------------------- draft constraints
 # These read draft_links, and deliberately only trust rows that
@@ -272,6 +307,8 @@ def drafted_between(lo, hi):
 # ---------------------------------------------------------------- registry
 
 BUILDERS = {
+    "X+ cm tall":                 (height_min, ["cm"]),
+    "X cm or shorter":            (height_max, ["cm"]),
     "Played for club":            (played_for, ["club"]),
     "150+ / X+ career games":     (career_games_min, ["games"]),
     "Fewer than X career games":  (career_games_max, ["games"]),

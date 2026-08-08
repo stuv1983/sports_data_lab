@@ -19,6 +19,7 @@ raw 0-100 score appears only where the exact number is the point.
 import os
 import random
 import sqlite3
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -121,8 +122,18 @@ def home_page(sport, con, draft_ok, awards_ok):
     revision = _db_revision(sport.db)
     s = _summary(sport.key, revision, con)
 
+    sport_logos = {
+        "afl": "https://upload.wikimedia.org/wikipedia/en/e/e4/Australian_Football_League.svg",
+        "nba": "https://upload.wikimedia.org/wikipedia/en/0/03/National_Basketball_Association_logo.svg",
+        "mlb": "https://upload.wikimedia.org/wikipedia/commons/a/a6/Major_League_Baseball_logo.svg",
+        "nfl": "https://upload.wikimedia.org/wikipedia/en/a/a2/National_Football_League_logo.svg"
+    }
+    logo_url = sport_logos.get(sport.key, "")
+    logo_html = f"<img src='{logo_url}' style='height: 80px; float: left; margin-right: 25px;' />" if logo_url else ""
+
     st.markdown(
-        "<div class='hero'>"
+        "<div class='hero' style='overflow: auto;'>"
+        f"{logo_html}"
         f"<div class='hero-title'>{sport.label}</div>"
         f"<div class='hero-copy'>A local {sport.key.upper()} research "
         f"database for finding players, exploring records, discovering "
@@ -509,7 +520,8 @@ def _format_weight(value, unit):
     return f"{value:.0f} {unit}"
 
 
-def _career_blurb(V, debut, final, games, n_clubs, draft_year=None):
+def _career_blurb(V, debut, final, games, n_clubs, draft_year=None,
+                  career_score=0, titles=None, honours=()):
     """One flavour-text sentence, in the voice of a trading card back.
 
     `position` is deliberately not woven into the sentence: the data holds
@@ -524,10 +536,44 @@ def _career_blurb(V, debut, final, games, n_clubs, draft_year=None):
     if not (debut and final and games):
         return ""
     club_clause = f"one {V.club}" if n_clubs == 1 else f"{n_clubs} {V.clubs}"
-    prefix = f"Drafted in {int(draft_year)}, " if draft_year else ""
-    sentence = (f"{prefix}this player played {games:,} {V.games} for "
-                f"{club_clause} between {debut} and {final}.")
-    return sentence[0].upper() + sentence[1:]
+    prefix = f"Drafted in {int(draft_year)}. " if draft_year else ""
+    sentence = (f"Across {games:,} {V.games} for {club_clause} from "
+                f"{debut} to {final}, this player")
+    achievements = []
+    if career_score:
+        achievements.append(f"recorded {int(career_score):,} {V.score}")
+    if titles:
+        title_label = V.title if int(titles) == 1 else V.title_plural.lower()
+        achievements.append(f"won {int(titles)} {title_label}")
+    for honour in list(honours)[:2]:
+        achievements.append(
+            f"earned {int(honour['Times'])}x {honour['Honour']}"
+        )
+    if achievements:
+        if len(achievements) == 1:
+            sentence += " " + achievements[0]
+        else:
+            sentence += " " + ", ".join(achievements[:-1])
+            sentence += ", and " + achievements[-1]
+    else:
+        sentence += " built the career shown here"
+    return prefix + sentence + "."
+
+
+def _player_card_logos(sport, con, clubs_hist):
+    """League badge and resolved team logos for a player's card header."""
+    import overlays
+
+    league = (Path(__file__).resolve().parent / "resources" / "teams" /
+              sport.key / f"{sport.key}.png")
+    logos = [(sport.label, str(league))] if league.is_file() else []
+    seen = {str(league)} if league.is_file() else set()
+    for club in (part.strip() for part in clubs_hist.split("|") if part.strip()):
+        path = overlays.logo_for(sport, con, club)
+        if path and path not in seen:
+            logos.append((club, path))
+            seen.add(path)
+    return logos
 
 
 def render_player_profile(sport, con, pid, key_prefix="explore",
@@ -610,6 +656,21 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
     # can actually answer it.
     titles = _titles_won(sport, con, pid, revision)
     enrichment = _player_card_enrichment(sport.key, pid, revision, con)
+    tiles = [
+        (V.games.capitalize(), f"{career_games:,}"),
+        (V.score.capitalize(), f"{int(p[4] or 0):,}"),
+        (V.postseason.capitalize(), p[5] if p[5] is not None else 0),
+    ]
+    if titles is not None:
+        tiles.append((V.title_plural, titles))
+    tiles.extend(enrichment["metrics"])
+
+    import overlays
+    card_logos = _player_card_logos(sport, con, clubs_hist)
+    logos_html = "".join(
+        overlays.logo_html(path, height=42, alt=label)
+        for label, path in card_logos[:8]
+    )
 
     span = (f"{debut}–{final}" if debut and final
             else str(debut or final or ""))
@@ -619,11 +680,13 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
     with st.container(border=True):
         st.markdown(
             f"<div class='card-banner'>"
-            f"<div class='card-banner-name'>{p[0]}</div>"
+            f"<div><div class='card-banner-name'>{p[0]}</div>"
+            f"<div class='card-banner-logos'>{logos_html}</div></div>"
             f"<div class='card-banner-stars'>{core.stars_html(p[8])}</div>"
             f"</div>"
             f"<div class='card-banner-sub'>{subtitle}</div>",
             unsafe_allow_html=True)
+        _render_card_tiles(tiles)
         if captain_line:
             st.caption(captain_line)
 
@@ -654,8 +717,11 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                     f"<div class='bio-row'><span class='bio-label'>{label}"
                     f"</span><span class='bio-value'>{val}</span></div>",
                     unsafe_allow_html=True)
-            blurb = _career_blurb(V, debut, final, career_games, n_clubs,
-                                  bio.get("draft_year"))
+            blurb = _career_blurb(
+                V, debut, final, career_games, n_clubs,
+                bio.get("draft_year"), p[4] or 0, titles,
+                enrichment["honours"],
+            )
             if blurb:
                 st.caption(blurb)
 
@@ -722,27 +788,17 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
         if honours:
             st.markdown("<div class='card-section-label'>Career honours</div>",
                         unsafe_allow_html=True)
-            summary = " · ".join(
-                f"{row['Times']}× {row['Honour']}" for row in honours[:6])
-            st.markdown(summary)
-            if len(honours) > 6:
-                with st.expander(
-                        f"All honours ({len(honours)} types)",
-                        icon=":material/military_tech:"):
-                    st.dataframe(pd.DataFrame(honours), hide_index=True)
-
-        tiles = [
-            (V.games.capitalize(), f"{career_games:,}"),
-            (V.score.capitalize(), f"{int(p[4] or 0):,}"),
-            (V.postseason.capitalize(), p[5] if p[5] is not None else 0),
-        ]
-        if titles is not None:
-            tiles.append((V.title_plural, titles))
-        tiles.extend(enrichment["metrics"])
-
-        st.markdown("<div class='card-footer-divider'></div>",
-                   unsafe_allow_html=True)
-        _render_card_tiles(tiles)
+            selected_award = st.pills(
+                "Select an award for details:", 
+                [f"{r['Times']}× {r['Honour']}" for r in honours],
+                label_visibility="collapsed",
+                key=sport.k(key_prefix, "awards", pid)
+            )
+            if selected_award:
+                for r in honours:
+                    if f"{r['Times']}× {r['Honour']}" == selected_award:
+                        st.info(f"**{r['Honour']}** (Won {r['Times']} times)\n\nSeasons: {r['Seasons']}")
+                        break
 
     # Brownlow voting is an optional AFL-only enrichment. Keep it as its own
     # compact season record rather than repeating one season total on every
@@ -1258,9 +1314,22 @@ def game_lab_page(sport, con, player_picker):
                "challenges. This first prototype is a clue-based player "
                "game.")
 
-    st.markdown(f"### Prototype: Guess the Player ({sport.label})")
-    st.caption("The full clue ladder and the Gridley criterion bank are "
-               "AFL-only for now — this is the sport-agnostic version.")
+    st.markdown("### Prototype Modes")
+    st.caption("These modes are sport-agnostic and work across AFL, NBA, MLB, and NFL.")
+    
+    t1, t2, t3, t4 = st.tabs(["Guess the Player", "Guess the Career Path", "Higher or Lower", "Stat Threshold Challenge"])
+    
+    with t1:
+        _game_guess_player(sport, con, player_picker)
+    with t2:
+        _game_career_path(sport, con, player_picker)
+    with t3:
+        _game_higher_lower(sport, con)
+    with t4:
+        _game_stat_threshold(sport, con)
+
+def _game_guess_player(sport, con, player_picker):
+    V, sc = sport.vocab, sport.schema
     target_key = sport.k("game_target")
     state_key = sport.k("game_state")
     
@@ -1338,6 +1407,106 @@ def game_lab_page(sport, con, player_picker):
 
     with st.expander("Possible next game modes"):
         st.write(
-            "Higher or Lower · Guess the career path · Name the teammate · "
-            "Stat threshold challenge · Daily mystery player · Draft and "
-            "award trivia")
+            "Name the teammate · Daily mystery player · Draft and award trivia")
+
+def _game_career_path(sport, con, player_picker):
+    V, sc = sport.vocab, sport.schema
+    target_key = sport.k("career_target")
+    if target_key not in st.session_state:
+        st.session_state[target_key] = _new_game_target(sport, con)
+        
+    if st.button("New Mystery Career", key=sport.k("new_career_target")):
+        st.session_state[target_key] = _new_game_target(sport, con)
+        
+    pid = st.session_state[target_key]
+    # Fetch career path
+    rows = con.execute(f"""
+        SELECT {sc.season}, {sc.club_hist} 
+        FROM {sc.games} 
+        WHERE {sc.player_id} = ? 
+        GROUP BY {sc.season}, {sc.club_hist}
+        ORDER BY {sc.season}
+    """, (pid,)).fetchall()
+    
+    st.write("Can you guess the player from their career path?")
+    import pandas as pd
+    st.dataframe(pd.DataFrame(rows, columns=["Season", "Club"]), hide_index=True)
+    
+    guess = player_picker(sport.k("career_guess"), label="Who is this?")
+    if guess is not None and st.button("Submit Guess", key=sport.k("submit_career_guess")):
+        if guess[0] == pid:
+            st.success("Correct!")
+            st.balloons()
+        else:
+            st.error("Incorrect, keep trying!")
+            
+def _game_higher_lower(sport, con):
+    V, sc = sport.vocab, sport.schema
+    import random
+    
+    st.write(f"Which player has more career {V.games}?")
+    
+    keys = (sport.k("hl_p1"), sport.k("hl_p2"))
+    if keys[0] not in st.session_state:
+        st.session_state[keys[0]] = _new_game_target(sport, con)
+        st.session_state[keys[1]] = _new_game_target(sport, con)
+        
+    if st.button("Next Matchup", key=sport.k("new_hl")):
+        st.session_state[keys[0]] = _new_game_target(sport, con)
+        st.session_state[keys[1]] = _new_game_target(sport, con)
+        
+    p1_id, p2_id = st.session_state[keys[0]], st.session_state[keys[1]]
+    
+    def get_info(pid):
+        return con.execute(f"SELECT {sc.player}, {sc.career_games} FROM {sc.players} WHERE {sc.player_id} = ?", (pid,)).fetchone()
+        
+    p1 = get_info(p1_id)
+    p2 = get_info(p2_id)
+    
+    if not p1 or not p2:
+        return
+        
+    c1, c2 = st.columns(2)
+    c1.markdown(f"### {p1[0]}")
+    c2.markdown(f"### {p2[0]}")
+    
+    if c1.button("Higher", key=sport.k("hl_b1"), use_container_width=True):
+        if (p1[1] or 0) >= (p2[1] or 0):
+            st.success(f"Correct! {p1[0]} ({p1[1]}) >= {p2[0]} ({p2[1]})")
+        else:
+            st.error(f"Wrong! {p1[0]} ({p1[1]}) < {p2[0]} ({p2[1]})")
+            
+    if c2.button("Higher", key=sport.k("hl_b2"), use_container_width=True):
+        if (p2[1] or 0) >= (p1[1] or 0):
+            st.success(f"Correct! {p2[0]} ({p2[1]}) >= {p1[0]} ({p1[1]})")
+        else:
+            st.error(f"Wrong! {p2[0]} ({p2[1]}) < {p1[0]} ({p1[1]})")
+            
+def _game_stat_threshold(sport, con):
+    V, sc = sport.vocab, sport.schema
+    st.write(f"Name players with at least **300 {V.games}**!")
+    
+    if sport.k("st_correct") not in st.session_state:
+        st.session_state[sport.k("st_correct")] = []
+        
+    import ui_widgets
+    query = st.text_input("Enter player name:", key=sport.k("st_input"))
+    if query:
+        matches = ui_widgets.player_matches(query, sport, _db_revision(sport.db), limit=5)
+        if matches:
+            for pid, label, _, _ in matches:
+                if st.button(label, key=sport.k(f"st_btn_{pid}")):
+                    row = con.execute(f"SELECT {sc.player}, {sc.career_games} FROM {sc.players} WHERE {sc.player_id} = ?", (pid,)).fetchone()
+                    if row and (row[1] or 0) >= 300:
+                        if row[0] not in st.session_state[sport.k("st_correct")]:
+                            st.session_state[sport.k("st_correct")].append(row[0])
+                            st.success(f"Correct! {row[0]} has {row[1]} {V.games}!")
+                        else:
+                            st.warning("You already guessed that player.")
+                    else:
+                        st.error(f"Incorrect. {row[0]} only has {row[1] or 0} {V.games}.")
+                        
+    if st.session_state[sport.k("st_correct")]:
+        st.write("### Found so far:")
+        for name in st.session_state[sport.k("st_correct")]:
+            st.write(f"✅ {name}")

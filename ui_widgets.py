@@ -373,6 +373,10 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
             args.append(st.number_input(
                 word.capitalize(), min_value=1,
                 value=int(defaults.get(a, fallback)), step=1, key=wk))
+        elif a == "cm":
+            args.append(st.number_input(
+                "Height (cm)", min_value=150, max_value=250,
+                value=int(defaults.get("cm", 190)), step=1, key=wk))
         else:
             year_kinds = {
                 "Played between seasons", "Debuted between seasons",

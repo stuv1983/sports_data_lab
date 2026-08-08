@@ -100,6 +100,46 @@ def _render_database_check(check):
     )
 
 
+def _render_gridley_scan(status):
+    if not status:
+        return
+    result = status.get("result", {})
+    if status.get("state") == "failed":
+        st.error(status.get("error", "The Gridley scan failed."))
+        return
+    if status.get("state") != "complete":
+        st.info("A Gridley scan is running.")
+        return
+    changes = result.get("inserted", 0) + result.get("updated", 0)
+    if changes:
+        st.success(
+            f"Gridley scan saved {result.get('inserted', 0)} new board(s) "
+            f"and refreshed {result.get('updated', 0)} board(s)."
+        )
+    elif result.get("checked") and (
+            result.get("unavailable") == result.get("checked")):
+        st.warning(
+            "Gridley did not return a readable board for any checked date. "
+            "Nothing was written; try again later or review server connectivity."
+        )
+    else:
+        st.info("Gridley scan completed. No new or changed boards were found.")
+    st.caption(
+        f"Finished: {_display_time(status.get('finished_at'))} - "
+        f"Dates checked: {result.get('checked', 0)} - "
+        f"Unavailable: {result.get('unavailable', 0)}"
+    )
+    boards = [{
+        "Gridley": (f"#{board['grid_num']}" if board.get("grid_num") else "-"),
+        "Date": board.get("date"),
+        "Result": board.get("action"),
+        "Rows": " / ".join(board.get("rows", [])),
+        "Columns": " / ".join(board.get("cols", [])),
+    } for board in result.get("boards", [])]
+    if boards:
+        st.dataframe(boards, width="stretch", hide_index=True)
+
+
 def _login_form(prefix="sidebar"):
     with st.form(f"{prefix}_login_form"):
         email = st.text_input("Email", key=f"{prefix}_login_email")
@@ -389,6 +429,37 @@ def admin_page(user):
         st.rerun()
 
     _render_database_check(check_status)
+
+    st.markdown("#### Gridley game scan")
+    st.caption(
+        "Checks Gridley's public daily AFL board feed from the newest saved "
+        "date through today. New boards are validated in a copy before the "
+        "AFL database is atomically replaced. This does not scan Immaculate Grid."
+    )
+    gridley_status = database_updates.read_gridley_scan_status()
+    if st.button(
+        "Scan Gridley for new games", icon=":material/grid_view:",
+        disabled=active,
+        help="Checks at most 31 dates and keeps Gridley's real board numbers.",
+    ):
+        with st.status("Scanning Gridley for new games...", expanded=True) as progress:
+            try:
+                gridley_status = database_updates.run_gridley_scan()
+            except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                progress.update(label="Gridley scan failed", state="error")
+                st.error(f"{type(exc).__name__}: {exc}")
+            else:
+                result = gridley_status.get("result", {})
+                changes = result.get("inserted", 0) + result.get("updated", 0)
+                progress.update(
+                    label=(f"Gridley scan complete - {changes} changed board(s)"),
+                    state="complete",
+                )
+                if gridley_status.get("promoted"):
+                    db_pool.close_all()
+                    st.cache_data.clear()
+                    st.rerun()
+    _render_gridley_scan(gridley_status)
 
     with st.expander("Automatic schedule"):
         st.write("Regular scores and statistics: Friday, Saturday, Sunday and Monday at 12:10 am Sydney time.")

@@ -164,7 +164,7 @@ def _parse_family_criterion(t):
     return None
 
 
-def parse(text):
+def _parse_exact(text):
     """
     Return (constraint, label) or (None, reason).
     `text` is one Gridley criterion, e.g. "30+ GOALS TWO DIFF CLUBS".
@@ -279,6 +279,11 @@ def parse(text):
 
     if re.search(r"(number|pick) ?(one|1)\b.*(draft|pick)|#1 (draft )?pick", t):
         return A.number_one_draft_pick(), "number one draft pick"
+    
+    m = re.search(r"\btop\s*(\d+)", t)
+    if m:
+        n = int(m.group(1))
+        return C.draft_pick_between(1, n), f"top {n} draft pick"
     if re.search(r"\bfather[- ]son(?: selection)?\b", t):
         return A.father_son(), "father-son selection"
     if re.search(r"\bacademy selection\b", t):
@@ -343,6 +348,18 @@ def parse(text):
     if m:
         name = m.group(1).strip().title()
         return C.teammate_of(name), f"{name} teammate"
+
+    # 4b. Implicit teammate (just a player's name)
+    # Gridley sometimes omits the word "teammate" entirely (e.g. "Colby McKercher").
+    # If the text is just 2-4 words of letters/hyphens, and doesn't contain any stat 
+    # or scope keywords, assume it's a teammate name.
+    if re.match(r"^[a-z]+(?: [a-z\-]+){1,3}$", t):
+        if not re.search(r"\b(?:game|match|season|career|final|club|draft|award|medal|star|pick|win|winning|loss|draw|tied|brownlow|premiership|spoon|record|first|last|debut|retire|year|age|team|player|stadium|played)s?\b", t):
+            if not any(w in t for w in STAT_WORDS):
+                name = t.strip().title()
+                # Fix up "Mc" capitalization since title() makes it e.g. "Mckercher"
+                name = re.sub(r"\bMc([a-z])", lambda m: f"Mc{m.group(1).upper()}", name)
+                return C.teammate_of(name), f"{name} teammate"
 
     # 3b. Venue squares. "MCG WON A FINAL" must beat the generic rules.
     venue_hit = None
@@ -474,6 +491,10 @@ def parse(text):
                 return (C.season_stat_average_min(col, n),
                         f"{n}+ {col} avg in a season "
                         f"(min {C.SEASON_AVG_MIN_GAMES} games)")
+            
+            # Implicit Gridley scope: if no explicit scope is provided for a stat 
+            # total (like "20+ Kicks"), Gridley means "in a single game".
+            return C.stat_in_a_game(col, n), f"{n}+ {col} in a game"
 
     # 3e. Season and club awards derivable from the data.
     if re.search(r"leading goal ?kicker", t):
@@ -498,6 +519,12 @@ def parse(text):
             return (C.crowd_min_in_final(people),
                     f"crowd of {people:,}+ at a final")
         return C.crowd_min(people), f"crowd of {people:,}+"
+
+    if re.search(r"derby winning record", t):
+        return C.derby_winning_record(), "derby winning record"
+    
+    if re.search(r"\bwinning record\b", t):
+        return C.winning_record(), "winning record"
 
     m = re.search(r"(\d+)\+?\s*point (?:win|victory)"
                   r"|(?:win|won|winning).{0,10}by (\d+)", t)
@@ -549,6 +576,23 @@ def parse(text):
     if m and not re.search(r"goal|game", t):
         n = int(m.group(1))
         return C.played_for_n_clubs(n), f"{n}+ clubs"
+
+    # 5b. Physicals
+    m = re.search(r"(\d+)\+?\s*cm", t)
+    if m:
+        cm = int(m.group(1))
+        if _is_max(t) or "under" in t or "shorter" in t:
+            bound = _max_bound(t, cm)
+            return C.height_max(bound), f"{bound} cm or shorter"
+        return C.height_min(cm), f"{cm}+ cm tall"
+
+    m = re.search(r"(\d+)\+?\s*kg", t)
+    if m:
+        kg = int(m.group(1))
+        if _is_max(t) or "under" in t or "lighter" in t:
+            bound = _max_bound(t, kg)
+            return C.weight_max(bound), f"{bound} kg or lighter"
+        return C.weight_min(kg), f"{kg}+ kg heavy"
 
     # 6. "N+ goals/games for two different clubs".
     two_clubs = re.search(r"(two|2|three|3)\s*(?:diff\w*|different)?\s*clubs", t)
@@ -613,6 +657,55 @@ def parse(text):
     for alias, club in CLUB_ALIASES.items():
         if re.search(rf"\b{re.escape(alias)}\b", t):
             return C.played_for(club), club
+
+    return None, f"couldn't interpret: {text!r}"
+
+
+def _fuzzy_correct(text):
+    import difflib
+    keywords = list(CLUB_ALIASES.keys()) + list(STAT_WORDS.keys()) + [
+        "all-australian", "australian", "brownlow", "medal", "medallist", "coleman", "norm smith",
+        "rising star", "nominee", "winner", "magarey", "sandover", "liston", "morrish",
+        "larke", "hunter harrison", "best and fairest", "b&f", "draft", "pick",
+        "father-son", "academy", "captain", "brother", "sibling", "sister", "twin",
+        "father", "dad", "mother", "mum", "parent", "son", "daughter", "child",
+        "grand", "cousin", "uncle", "aunt", "nephew", "niece", "in-law", "relative",
+        "family", "teammate", "first", "debut", "career", "game", "match", "season",
+        "goals", "finals", "grand final", "premiership", "flag", "win", "won",
+        "loss", "lost", "defeat", "draw", "tied", "crowd", "attendance", "people",
+        "fans", "spectators", "different", "clubs", "played", "avg", "average", "per game"
+    ]
+    
+    words = text.split()
+    corrected_words = []
+    for w in words:
+        if len(w) < 4 or re.match(r"^\d", w) or w == "teammate":
+            corrected_words.append(w)
+            continue
+        matches = difflib.get_close_matches(w, keywords, n=1, cutoff=0.75)
+        corrected_words.append(matches[0] if matches else w)
+    return " ".join(corrected_words)
+
+
+def parse(text, fuzzy=True):
+    """
+    Return (constraint, label) or (None, reason).
+    `text` is one Gridley criterion, e.g. "30+ GOALS TWO DIFF CLUBS".
+    If fuzzy=True, applies a spelling correction fallback for typos.
+    """
+    if not text:
+        return None, "empty criterion"
+
+    con, label = _parse_exact(text)
+    if con is not None:
+        return con, label
+
+    if fuzzy:
+        fuzzy_text = _fuzzy_correct(str(text).lower())
+        if fuzzy_text != str(text).lower():
+            con, label = _parse_exact(fuzzy_text)
+            if con is not None:
+                return con, label
 
     return None, f"couldn't interpret: {text!r}"
 

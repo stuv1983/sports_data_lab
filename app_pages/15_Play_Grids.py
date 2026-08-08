@@ -25,7 +25,11 @@ def render_grid_selection():
     sources = ["Saved Grids"]
     if SPORT.key == "afl":
         sources.append("Past Grids (Gridley)")
-    source = st.radio("Grid source", sources, key=SPORT.k("play_source"))
+    
+    default_source = "Past Grids (Gridley)" if "Past Grids (Gridley)" in sources else "Saved Grids"
+    source = st.pills("Grid source", sources, key=SPORT.k("play_source"), label_visibility="collapsed", default=default_source)
+    if not source:
+        source = default_source
     
     if source == "Saved Grids":
         saved = accounts.list_all_grids(SPORT.key)
@@ -37,7 +41,7 @@ def render_grid_selection():
             "Saved grid", list(by_id), key=SPORT.k("play_saved_grid_id"),
             format_func=lambda grid_id: by_id[grid_id]["name"])
         
-        if st.button("Load Grid", key=SPORT.k("play_load_grid"), type="primary"):
+        if st.button("Load Grid", key=SPORT.k("play_load_grid"), type="primary", use_container_width=True):
             try:
                 grid_data = accounts.load_any_grid(chosen_id)
                 st.session_state[SPORT.k("play_loaded_grid")] = grid_data
@@ -49,7 +53,8 @@ def render_grid_selection():
                 st.error(str(exc))
     else:
         try:
-            cur = con.execute("SELECT grid_num, date, source, rows_json, cols_json FROM historic_grids ORDER BY date DESC")
+            # Fetch all grids without LIMIT 7 and across all sources
+            cur = con.execute("SELECT grid_num, date, source, rows_json, cols_json FROM historic_grids ORDER BY date DESC, grid_num DESC")
             past_grids = [
                 {"grid_num": r[0], "date": r[1], "source": r[2], "rows_json": r[3], "cols_json": r[4]} 
                 for r in cur.fetchall()
@@ -61,61 +66,117 @@ def render_grid_selection():
             st.info(f"No captured grid library exists for {SPORT.label} yet. Run the fetch_grids script.")
             return
             
-        by_label = {f"{g['source']} - {g['date']} (Grid {g['grid_num'] or 'N/A'})": g for g in past_grids}
+        st.write("### Past Grids Collection")
+        
+        # Use a dictionary to map a friendly label to the grid dictionary
+        grid_options = {f"🔴 {g['source']} #{g['grid_num']} • {g['date']}": g for g in past_grids}
+        
         chosen_label = st.selectbox(
-            "Grid", list(by_label.keys()), key=SPORT.k("play_historic_grid")
+            "Select a Grid",
+            options=list(grid_options.keys()),
+            key=SPORT.k("play_past_grid_id")
         )
-            
-        if st.button("Load Grid", key=SPORT.k("play_load_historic"), type="primary"):
-            picked = by_label[chosen_label]
-            
+        
+        if st.button("Load Past Grid", key=SPORT.k("play_load_past_grid"), type="primary", use_container_width=True):
+            picked = grid_options[chosen_label]
             try:
                 cols_labels = tuple(json.loads(picked["cols_json"]))
                 rows_labels = tuple(json.loads(picked["rows_json"]))
             except (TypeError, ValueError, json.JSONDecodeError):
                 st.error("This grid contains invalid saved criteria.")
-                return
+                st.stop()
 
-            from afl import historic_grids as HG
-            grid = HG.HistoricGrid(
-                number=picked["grid_num"], date=picked["date"],
-                source=picked["source"], rows=rows_labels, cols=cols_labels,
-            )
-            report = HG.analyse(grid, con, SPORT)
-            if not report.authentic_playable:
-                st.error(f"This grid cannot be played: {report.status}.")
-                for criterion in report.unsupported:
-                    st.caption(
-                        f"{criterion.text}: "
-                        f"{criterion.reason or 'criterion is unsupported'}"
-                    )
-                for error in report.square_errors:
-                    st.caption(error)
-                return
+                from afl import historic_grids as HG
+                grid = HG.HistoricGrid(
+                    number=picked["grid_num"], date=picked["date"],
+                    source=picked["source"], rows=rows_labels, cols=cols_labels,
+                )
+                report = HG.analyse(grid, con, SPORT)
+                if not report.authentic_playable:
+                    st.error(f"This grid cannot be played: {report.status}.")
+                    for criterion in report.unsupported:
+                        st.caption(f"{criterion.text}: {criterion.reason or 'criterion is unsupported'}")
+                    for err in report.square_errors:
+                        st.caption(err)
+                else:
+                    rows = [(item.display, item.constraint) for item in report.rows]
+                    cols = [(item.display, item.constraint) for item in report.cols]
 
+                    st.session_state[SPORT.k("play_loaded_grid")] = {"rows": rows, "cols": cols, "grid_num": picked["grid_num"]}
+                    st.session_state[SPORT.k("play_state")] = {
+                        "guesses": 0, "undo_used": False, "answers": {}, "history": [], "cell": None
+                    }
+                    st.rerun()
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _get_newest_grid_cached(sport_key, db_revision):
+    if sport_key != "afl": return None
+    try:
+        import db_pool
+        import sports
+        from afl import historic_grids as HG
+        local_con = db_pool.get_con("afl.db", db_revision)
+        local_sport = sports.get(sport_key)
+        cur = local_con.execute("SELECT grid_num, date, source, rows_json, cols_json FROM historic_grids WHERE source='Gridley' ORDER BY date DESC, grid_num DESC LIMIT 1")
+        latest = cur.fetchone()
+        if not latest: return None
+        picked = {"grid_num": latest[0], "date": latest[1], "source": latest[2], "rows_json": latest[3], "cols_json": latest[4]}
+        cols_labels = tuple(json.loads(picked["cols_json"]))
+        rows_labels = tuple(json.loads(picked["rows_json"]))
+        grid = HG.HistoricGrid(
+            number=picked["grid_num"], date=picked["date"],
+            source=picked["source"], rows=rows_labels, cols=cols_labels,
+        )
+        report = HG.analyse(grid, local_con, local_sport)
+        if report.authentic_playable:
             rows = [(item.display, item.constraint) for item in report.rows]
             cols = [(item.display, item.constraint) for item in report.cols]
+            return {"rows": rows, "cols": cols, "grid_num": picked["grid_num"]}
+    except Exception as e:
+        pass
+    return None
 
-            st.session_state[SPORT.k("play_loaded_grid")] = {"rows": rows, "cols": cols}
-            st.session_state[SPORT.k("play_state")] = {
-                "guesses": 0, "undo_used": False, "answers": {}, "history": [], "cell": None
-            }
-            st.rerun()
+def auto_load_newest_grid():
+    grid_data = _get_newest_grid_cached(SPORT.key, DB_REVISION)
+    if grid_data:
+        st.session_state[SPORT.k("play_loaded_grid")] = grid_data
+        st.session_state[SPORT.k("play_state")] = {
+            "guesses": 0, "undo_used": False, "answers": {}, "history": [], "cell": None
+        }
+        return True
+    return False
+
+@st.dialog("Select a Grid")
+def grid_selector_dialog():
+    render_grid_selection()
 
 loaded = st.session_state.get(SPORT.k("play_loaded_grid"))
+if not loaded and not st.session_state.get(SPORT.k("play_explicitly_cleared")):
+    if auto_load_newest_grid():
+        loaded = st.session_state.get(SPORT.k("play_loaded_grid"))
+
 if not loaded:
-    st.markdown("### Select Grid")
-    render_grid_selection()
+    st.markdown("### No Grid Loaded")
+    if st.button("Select a Grid", key=SPORT.k("play_empty_select_btn")):
+        grid_selector_dialog()
     st.stop()
-else:
-    with st.sidebar.expander("Change Grid", expanded=False):
-        render_grid_selection()
 
 state = st.session_state[SPORT.k("play_state")]
 rows_def = loaded["rows"]
 cols_def = loaded["cols"]
 
+# Top action bar
+col_btn, _ = st.columns([1, 4])
+with col_btn:
+    grid_title = "Select Grid"
+    if "grid_num" in loaded:
+        grid_title = f"Gridley #{loaded['grid_num']}"
+    if st.button(f"📅 {grid_title}", key=SPORT.k("play_select_btn"), use_container_width=True):
+        grid_selector_dialog()
+
 st.markdown("---")
+
+st.markdown('<div class="grid-board-container">', unsafe_allow_html=True)
 
 # Draw the board
 header = st.columns([1.1, 1, 1, 1])
@@ -157,6 +218,8 @@ for r in range(3):
             state["cell"] = (r, c)
             st.rerun()
 
+st.markdown("</div>", unsafe_allow_html=True)
+
 st.markdown("---")
 
 # Game Status
@@ -187,12 +250,18 @@ elif state['guesses'] >= 9:
     st.error("Game Over! You've used all 9 guesses.")
     game_over = True
 
+if game_over and not state.get("game_logged"):
+    user_id = st.session_state.get("auth_user_id")
+    user = accounts.get_user(user_id) if user_id else None
+    if user:
+        accounts.log_game_stat(user.id, "gridley", completed)
+    state["game_logged"] = True
+
 if not game_over and state["cell"]:
     r, c = state["cell"]
     rlab, clab = rows_def[r][0], cols_def[c][0]
     st.markdown(f"### {rlab.replace(chr(10), ' ')} × {clab.replace(chr(10), ' ')}")
-    
-    selected = player_picker(SPORT.k("game_pick", r, c))
+    selected = player_picker(SPORT.k("game_pick", r, c), SPORT, DB_REVISION)
     
     if st.button("Submit answer", type="primary", key=SPORT.k("game_submit", r, c), disabled=selected is None):
         player_id, player_name = selected

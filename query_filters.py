@@ -149,6 +149,17 @@ def compile_query(schema, query: str, con=None):
             lo, hi = _range(value, "debut")
             player_where.append(f"p.{s.debut_season} BETWEEN ? AND ?")
             params.extend([lo, hi])
+        elif key in {"height", "weight"}:
+            if con and _table_exists(con, "dg_people"):
+                table = "dg_people"
+            elif con and _table_exists(con, "person_details"):
+                table = "person_details"
+            else:
+                raise QuerySyntaxError(f"{key.title()} data is not loaded")
+            col = "height_cm" if key == "height" else "weight_kg"
+            fragment, bound = _comparison(col, operator, value)
+            player_where.append(f"p.{s.player_id} IN (SELECT player_id FROM {table} WHERE {fragment})")
+            params.extend(bound)
         elif key in aliases:
             fragment, bound = _comparison(f"p.{aliases[key]}", operator, value)
             player_where.append(fragment)

@@ -410,6 +410,18 @@ div[data-testid="column"] .stButton > button:focus:not(:active) {{
   line-height: 1.1;
 }}
 .card-banner-stars {{ padding-top: .3rem; white-space: nowrap; }}
+.card-banner-logos {{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .45rem;
+  min-height: 44px;
+  margin-top: .55rem;
+}}
+.card-banner-logos img {{
+  object-fit: contain;
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,.2));
+}}
 .card-banner-sub {{
   font-family: 'IBM Plex Mono', monospace;
   font-size: .74rem;
@@ -537,6 +549,15 @@ hr {{ border-color: var(--line); }}
   font-size: .64rem;
   color: var(--muted);
   letter-spacing: .03em;
+}}
+
+/* Mobile layout fixes to prevent st.columns from wrapping to a vertical stack */
+.grid-board-container [data-testid="stHorizontalBlock"] {{
+  flex-wrap: nowrap !important;
+  overflow-x: auto;
+}}
+.grid-board-container [data-testid="column"] {{
+  min-width: 0 !important;
 }}
 </style>
 """

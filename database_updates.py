@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parent
 LOG_DIR = ROOT / "logs" / "database_updates"
 STATUS_PATH = LOG_DIR / "status.json"
 CHECK_STATUS_PATH = LOG_DIR / "check-status.json"
+GRIDLEY_SCAN_STATUS_PATH = LOG_DIR / "gridley-scan-status.json"
 LOCK_PATH = LOG_DIR / "update.lock"
 SPORT_KEYS = ("afl", "nba", "mlb", "nfl")
 EVENTS = ("regular", "brownlow-awards", "grand-final-awards", "full")
@@ -222,6 +223,13 @@ def read_check_status() -> dict:
         return {}
 
 
+def read_gridley_scan_status() -> dict:
+    try:
+        return json.loads(GRIDLEY_SCAN_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def update_is_active() -> bool:
     """Whether the cross-process update lock still belongs to live work."""
     return LOCK_PATH.exists() and _lock_is_active(_read_lock())
@@ -400,7 +408,13 @@ def _backup_and_promote(sport: str, staging: Path,
         )
         for stale in backups[keep:]:
             stale.unlink(missing_ok=True)
-    os.replace(staging, live)
+    try:
+        os.replace(staging, live)
+    except PermissionError as e:
+        raise RuntimeError(
+            f"Could not overwrite {live.name}. It is locked by another process (likely the Streamlit app). "
+            "Please stop the Streamlit server before running database updates."
+        ) from e
     return str(backup) if backup else None
 
 
@@ -474,6 +488,56 @@ def check_databases(sports: Iterable[str] = SPORT_KEYS) -> dict:
     # opened mode=ro and are never downloaded, rebuilt, or promoted here.
     _write_json(CHECK_STATUS_PATH, result)
     return result
+
+
+def run_gridley_scan(*, through: dt.date | None = None, max_days: int = 31,
+                      trigger: str = "admin", fetcher=None) -> dict:
+    """Fetch new Gridley boards into a copy, then atomically promote it."""
+    from utils import fetch_grids
+
+    _acquire_lock()
+    started = dt.datetime.now().astimezone()
+    live = Path(data_paths.default_db("afl"))
+    staging = live.with_suffix(live.suffix + ".gridley-scan-building")
+    status = {
+        "state": "running", "trigger": trigger,
+        "started_at": started.isoformat(), "database": str(live),
+    }
+    _write_json(GRIDLEY_SCAN_STATUS_PATH, status)
+    try:
+        if not live.exists():
+            raise RuntimeError(f"No live AFL database at {live}")
+        staging.unlink(missing_ok=True)
+        shutil.copy2(live, staging)
+        kwargs = {"through": through, "max_days": max_days}
+        if fetcher is not None:
+            kwargs["fetcher"] = fetcher
+        result = fetch_grids.scan_gridley(staging, **kwargs)
+        changes = result["inserted"] + result["updated"]
+        if changes:
+            backup = _backup_and_promote("afl", staging)
+            promoted = True
+        else:
+            staging.unlink(missing_ok=True)
+            backup = None
+            promoted = False
+        status.update({
+            "state": "complete", "finished_at": dt.datetime.now(
+                ).astimezone().isoformat(),
+            "result": result, "promoted": promoted, "backup": backup,
+            "after": _database_snapshot("afl", quick=True),
+        })
+        _write_json(GRIDLEY_SCAN_STATUS_PATH, status)
+        return status
+    except Exception as exc:
+        status.update({
+            "state": "failed", "error": f"{type(exc).__name__}: {exc}",
+            "finished_at": dt.datetime.now().astimezone().isoformat(),
+        })
+        _write_json(GRIDLEY_SCAN_STATUS_PATH, status)
+        raise
+    finally:
+        LOCK_PATH.unlink(missing_ok=True)
 
 
 def run_job(event: str, sports: Iterable[str], trigger: str = "cli",

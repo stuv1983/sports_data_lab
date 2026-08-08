@@ -22,6 +22,7 @@ Tables inside an overview are therefore plain, not clickable.
 from __future__ import annotations
 
 import base64
+import html
 import mimetypes
 import os
 import pathlib
@@ -102,7 +103,7 @@ def logo_for(sport, con, club) -> str | None:
     return index.get(str(club).strip().lower())
 
 
-def logo_html(path, height=64) -> str:
+def logo_html(path, height=64, alt="") -> str:
     """Inline the image as a data URI.
 
     Streamlit serves static files only from a configured folder and does
@@ -112,6 +113,8 @@ def logo_html(path, height=64) -> str:
     mime = mimetypes.guess_type(path)[0] or "image/svg+xml"
     return (f"<img src='data:{mime};base64,"
             f"{base64.b64encode(data).decode('ascii')}' "
+            f"alt='{html.escape(str(alt), quote=True)}' "
+            f"title='{html.escape(str(alt), quote=True)}' "
             f"style='height:{height}px;width:auto;max-width:100%;'/>")
 
 

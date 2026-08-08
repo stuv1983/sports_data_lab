@@ -669,6 +669,14 @@ def health_page(SPORT, con) -> None:
     c4.metric("Matches", f"{core.get('matches', 0):,}",
               help=f"{inv.get('finals', 0):,} finals player-{SPORT.vocab.games}")
 
+    import os
+    import datetime
+    db_path = con.execute("PRAGMA database_list").fetchall()[0][2]
+    last_updated = "Unknown"
+    if db_path and os.path.exists(db_path):
+        mtime = os.path.getmtime(db_path)
+        last_updated = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+        
     d1, d2, d3, d4 = st.columns(4)
     d1.metric(SPORT.vocab.title_case("clubs"), f"{inv.get('clubs', 0)}",
               help=f"{inv.get('club_identities', 0)} identities including "
@@ -678,8 +686,7 @@ def health_page(SPORT, con) -> None:
               help=f"final season is {core['season_max']}")
     d4.metric("Database size",
               f"{fileinfo.get('bytes', 0) / 1_048_576:.0f} MB",
-              help=f"{fileinfo.get('indexes', 0)} indexes, "
-                   f"{fileinfo.get('free_pages', 0):,} free pages")
+              help=f"Last updated: {last_updated}")
 
     warnings = report["warnings"]
     if warnings:
@@ -688,56 +695,56 @@ def health_page(SPORT, con) -> None:
     else:
         st.success("All integrity checks clean.")
 
-    st.subheader("Optional layers")
-    rows = []
-    for entry in report["links"]:
-        rows.append({
-            "Layer": entry["layer"],
-            "State": entry["state"],
-            "Trusted": f"{entry.get('trusted', 0):,}",
-            "Not trusted": entry.get("untrusted", 0),
-            "Total": f"{entry.get('total', 0):,}",
-            "Loader": entry["script"],
-        })
-    st.dataframe(rows, width="stretch", hide_index=True)
+    with st.expander("Optional layers"):
+        rows = []
+        for entry in report["links"]:
+            rows.append({
+                "Layer": entry["layer"],
+                "State": entry["state"],
+                "Trusted": f"{entry.get('trusted', 0):,}",
+                "Not trusted": entry.get("untrusted", 0),
+                "Total": f"{entry.get('total', 0):,}",
+                "Loader": entry["script"],
+            })
+        st.dataframe(rows, width="stretch", hide_index=True)
 
     if report["untrusted"]:
-        st.subheader("Rows needing review")
-        st.caption("Retained for audit; excluded from search and solver results.")
-        st.dataframe(report["untrusted"], width="stretch", hide_index=True)
+        with st.expander("Rows needing review"):
+            st.caption("Retained for audit; excluded from search and solver results.")
+            st.dataframe(report["untrusted"], width="stretch", hide_index=True)
 
     rs = report["rising_star"]
     if rs.get("state") == "loaded":
-        st.subheader("Rising Star coverage")
-        st.write(f"Archived {rs['season_min']}–{rs['season_max']} "
-                 f"({rs['seasons']} seasons). Latest: {rs['season_max']} "
-                 f"with {rs['latest_count']} nominations.")
-        if rs["missing_seasons"]:
-            st.warning(f"Missing seasons: {rs['missing_seasons']}")
-        st.bar_chart({str(season): count for season, count in rs["by_season"]})
+        with st.expander("Rising Star coverage"):
+            st.write(f"Archived {rs['season_min']}–{rs['season_max']} "
+                     f"({rs['seasons']} seasons). Latest: {rs['season_max']} "
+                     f"with {rs['latest_count']} nominations.")
+            if rs["missing_seasons"]:
+                st.warning(f"Missing seasons: {rs['missing_seasons']}")
+            st.bar_chart({str(season): count for season, count in rs["by_season"]})
 
     mc = report["match_coverage"]
     if mc.get("state") == "loaded":
-        st.subheader("Match data")
-        st.caption(
-            "The all-games layer: one row per club per match, which is what "
-            "Past Games, club history and the crowd constraints read.")
-        e1, e2, e3, e4 = st.columns(4)
-        e1.metric("Matches", f"{mc['matches']:,}",
-                  help=f"{mc['observations']:,} club-match observations")
-        e2.metric("Seasons", f"{mc['season_min']}–{mc['season_max']}")
-        pct = (100 * mc["with_attendance"] / mc["observations"]
-               if mc["observations"] else 0)
-        e3.metric("With attendance", f"{pct:.0f}%",
-                  help=f"{mc['with_attendance']:,} of {mc['observations']:,}; "
-                       "the rest are unrecorded at source, not a link failure")
-        not_unique = sum(n for s, n in mc["statuses"].items() if s != "unique")
-        e4.metric("Not cleanly linked", f"{mc['statuses'] and not_unique:,}",
-                  help="Excluded from club history and crowd constraints")
-        st.caption(
-            f"{mc['clubs']} clubs · {mc['venues']} grounds · "
-            f"{mc['finals']:,} finals observations · link outcomes: "
-            + ", ".join(f"{n:,} {s}" for s, n in mc["statuses"].items()))
+        with st.expander("Match data"):
+            st.caption(
+                "The all-games layer: one row per club per match, which is what "
+                "Past Games, club history and the crowd constraints read.")
+            e1, e2, e3, e4 = st.columns(4)
+            e1.metric("Matches", f"{mc['matches']:,}",
+                      help=f"{mc['observations']:,} club-match observations")
+            e2.metric("Seasons", f"{mc['season_min']}–{mc['season_max']}")
+            pct = (100 * mc["with_attendance"] / mc["observations"]
+                   if mc["observations"] else 0)
+            e3.metric("With attendance", f"{pct:.0f}%",
+                      help=f"{mc['with_attendance']:,} of {mc['observations']:,}; "
+                           "the rest are unrecorded at source, not a link failure")
+            not_unique = sum(n for s, n in mc["statuses"].items() if s != "unique")
+            e4.metric("Not cleanly linked", f"{mc['statuses'] and not_unique:,}",
+                      help="Excluded from club history and crowd constraints")
+            st.caption(
+                f"{mc['clubs']} clubs · {mc['venues']} grounds · "
+                f"{mc['finals']:,} finals observations · link outcomes: "
+                + ", ".join(f"{n:,} {s}" for s, n in mc["statuses"].items()))
 
     # Collapsed by default: this is the longest table on the page -- one
     # row per table in the database -- and it pushed the coverage panels

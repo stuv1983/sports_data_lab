@@ -121,6 +121,42 @@ def test_check_only_reports_contents_without_changing_database(
     assert updates.read_check_status() == result
 
 
+def test_gridley_scan_promotes_new_board_atomically(tmp_path, monkeypatch):
+    live = tmp_path / "afl.db"
+    with closing(sqlite3.connect(live)) as con:
+        con.execute("CREATE TABLE players (player_id INTEGER)")
+        con.execute("CREATE TABLE games (season INTEGER)")
+        con.commit()
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(updates, "LOG_DIR", log_dir)
+    monkeypatch.setattr(updates, "LOCK_PATH", log_dir / "update.lock")
+    monkeypatch.setattr(
+        updates, "GRIDLEY_SCAN_STATUS_PATH", log_dir / "gridley-scan.json"
+    )
+    monkeypatch.setattr(updates.data_paths, "default_db", lambda sport: str(live))
+
+    def fake_fetch(date):
+        return {
+            "grid_num": 1119,
+            "rows": ["r1", "r2", "r3"],
+            "cols": ["c1", "c2", "c3"],
+        }
+
+    status = updates.run_gridley_scan(
+        through=dt.date(2026, 8, 8), fetcher=fake_fetch
+    )
+
+    assert status["state"] == "complete"
+    assert status["promoted"] is True
+    assert status["result"]["inserted"] == 1
+    assert not updates.LOCK_PATH.exists()
+    assert not live.with_suffix(".db.gridley-scan-building").exists()
+    with closing(sqlite3.connect(live)) as con:
+        assert con.execute(
+            "SELECT grid_num, date FROM historic_grids"
+        ).fetchall() == [(1119, "2026-08-08")]
+
+
 def test_required_failure_skips_that_sport_and_does_not_block_others(
         tmp_path, monkeypatch):
     log_dir = tmp_path / "logs"
