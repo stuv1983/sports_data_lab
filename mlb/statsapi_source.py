@@ -183,7 +183,16 @@ class StatsApiSource:
 
     def __init__(self, cache=None, refresh=False, verbose=True):
         self.cache = _cache_dir(cache)
+        #: True re-requests everything; False serves whatever is cached.
+        #: A collection of seasons is the third and important form: a
+        #: season that ended cannot change and stays on disk forever,
+        #: while the season being played must never be served from cache
+        #: -- a nightly job reading yesterday's file would insert
+        #: yesterday's data and report success.
         self.refresh = refresh
+        self.refresh_seasons = (
+            None if isinstance(refresh, bool)
+            else {int(season) for season in refresh})
         self.verbose = verbose
         self._crosswalk = None
 
@@ -197,9 +206,15 @@ class StatsApiSource:
                 "python -m pip install MLB-StatsAPI") from exc
         return statsapi
 
-    def _cached(self, name, call):
+    def _refreshing(self, season=None) -> bool:
+        """Whether this particular request has to go back to MLB."""
+        if self.refresh_seasons is None:
+            return bool(self.refresh)
+        return season is not None and int(season) in self.refresh_seasons
+
+    def _cached(self, name, call, season=None):
         path = self.cache / f"{name}.json"
-        if path.exists() and not self.refresh:
+        if path.exists() and not self._refreshing(season):
             try:
                 return json.loads(path.read_text(encoding="utf-8"))
             except ValueError:
@@ -213,8 +228,11 @@ class StatsApiSource:
 
     def crosswalk(self):
         if self._crosswalk is None:
+            # Explicitly the bool form: the register is sixteen files and
+            # 65 MB, and naming a season to refresh is no reason to fetch
+            # it again.
             self._crosswalk = chadwick_crosswalk(
-                self.cache, refresh=self.refresh, verbose=self.verbose)
+                self.cache, refresh=self.refresh is True, verbose=self.verbose)
         return self._crosswalk
 
     # -- reading -------------------------------------------------------
@@ -222,7 +240,8 @@ class StatsApiSource:
         """The clubs playing that season, named as the database names them."""
         payload = self._cached(
             f"teams_{season}",
-            lambda: self._api().get("teams", {"sportId": 1, "season": season}))
+            lambda: self._api().get("teams", {"sportId": 1, "season": season}),
+            season=season)
         out = []
         for team in payload.get("teams", []):
             name = str(team.get("name", "")).strip()
@@ -242,7 +261,7 @@ class StatsApiSource:
                 "stats": "season", "group": group, "season": season,
                 "sportId": 1, "playerPool": "All", "teamId": team_id,
                 "limit": 500,
-            }))
+            }), season=season)
         blocks = payload.get("stats") or []
         return blocks[0].get("splits", []) if blocks else []
 
@@ -302,3 +321,90 @@ class StatsApiSource:
         if not rows:
             raise SourceError(f"the Stats API returned no players for {season}")
         return list(rows.values())
+
+    def season_schedule(self, season):
+        """Completed regular-season matches, shaped for club_match_sources.
+
+        Note the `round` convention differs from `games`. In `games` a
+        regular-season row reads 'R' and October carries the series code;
+        in club_match_sources the Retrosheet build left regular-season
+        rows NULL and used 'WS', 'LCS', 'DS', 'WC'. These rows follow the
+        table they land in, so a season loaded here sorts and filters
+        alongside the seasons already there.
+        """
+        start_date = f"01/01/{season}"
+        end_date = f"12/31/{season}"
+        payload = self._cached(
+            f"schedule_{season}",
+            lambda: self._api().get("schedule", {
+                "sportId": 1, "startDate": start_date, "endDate": end_date,
+                "gameType": "R"
+            }), season=season)
+
+        matches = []
+        seen_games = set()
+        team_dict = {str(t["team_id"]): t["club_now"] for t in self.teams(season)}
+
+        for date_node in payload.get("dates", []):
+            for game in date_node.get("games", []):
+                if game.get("status", {}).get("statusCode") != "F":
+                    continue
+
+                game_id = str(game.get("gamePk"))
+                if game_id in seen_games:
+                    continue
+                seen_games.add(game_id)
+                
+                match_date = game.get("gameDate", "")[:10]
+                venue = game.get("venue", {}).get("name")
+
+                teams = game.get("teams", {})
+                away = teams.get("away", {})
+                home = teams.get("home", {})
+
+                away_id = str(away.get("team", {}).get("id"))
+                home_id = str(home.get("team", {}).get("id"))
+
+                away_club = team_dict.get(away_id)
+                home_club = team_dict.get(home_id)
+
+                if not away_club or not home_club:
+                    continue
+
+                away_score = away.get("score")
+                home_score = home.get("score")
+
+                if away_score is None or home_score is None:
+                    continue
+
+                margin = abs(home_score - away_score)
+
+                for team_pos, club_id, pts_for, pts_against in [
+                    ("A", away_club, away_score, home_score),
+                    ("H", home_club, home_score, away_score)
+                ]:
+                    if pts_for > pts_against:
+                        result = "W"
+                    elif pts_for < pts_against:
+                        result = "L"
+                    else:
+                        result = "T"
+
+                    matches.append({
+                        "source_game_key": f"statsapi-{game_id}",
+                        "source_club_id": club_id,
+                        "season": int(season),
+                        "round": None,
+                        "is_final": 1,
+                        "match_date": match_date,
+                        "venue_raw": venue,
+                        "team_position": team_pos,
+                        "result": result,
+                        "points_for": pts_for,
+                        "points_against": pts_against,
+                        "margin": margin,
+                        "attendance": None,
+                        "match_id": None,
+                        "match_status": "unique"
+                    })
+        return matches

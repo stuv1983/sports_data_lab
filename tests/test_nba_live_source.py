@@ -278,3 +278,64 @@ def test_live_takes_teams_from_the_same_side_as_the_games(
     source.matches(2025)
     source.player_games(2025, "regular")
     assert asked == ["teams", "matches", "player_games"]
+
+
+# ------------------------------------------------------ real doubleheaders
+
+def _game(player_id, date, match_id, club, opponent, points, career_game_no):
+    return {"player_id": player_id, "date": date, "match_id": match_id,
+            "club_hist": club, "opponent": opponent, "points": points,
+            "career_game_no": career_game_no}
+
+
+def test_a_doubleheader_is_not_mistaken_for_a_duplicate():
+    """The early NBA played two games in a day.
+
+    Bob Cousy played New York and then Minneapolis on 1955-11-12, and both
+    games are in the shipped database. The (player, date) duplicate pass
+    leans on the career sequence to tell repeats apart, and that sequence
+    is derived rather than sourced when the games come from NBA.com -- so
+    it reported the pair unresolved and strict mode failed the whole
+    build over a fixture that really happened.
+    """
+    from nba import build_nba_db
+
+    frame = pd.DataFrame([
+        _game(1, "1955-11-12", "A", "Boston Celtics", "New York Knicks", 13, 1),
+        _game(1, "1955-11-12", "B", "Boston Celtics", "Los Angeles Lakers", 9, 2),
+    ])
+    issues = []
+    out, unresolved = build_nba_db._deduplicate(
+        frame, issues, "live", strict=True, verbose=False)
+
+    assert unresolved == []
+    assert sorted(out["match_id"]) == ["A", "B"], "a real game was dropped"
+    assert any(i["kind"] == "doubleheader" for i in issues)
+
+
+def test_the_same_fixture_recorded_twice_is_still_collapsed():
+    """The carve-out must not become a way for real duplicates to survive:
+    two rows naming the same club and the same opponent are one game."""
+    from nba import build_nba_db
+
+    frame = pd.DataFrame([
+        _game(2, "2024-01-01", "C", "Boston Celtics", "New York Knicks", 5, 1),
+        _game(2, "2024-01-01", "D", "Boston Celtics", "New York Knicks", 5, 2),
+    ])
+    out, unresolved = build_nba_db._deduplicate(
+        frame, [], "live", strict=True, verbose=False)
+
+    assert unresolved == []
+    assert len(out) == 1
+
+
+def test_an_exact_repeat_is_collapsed_before_anything_else():
+    """The common NBA duplicate is the same box score arriving twice."""
+    from nba import build_nba_db
+
+    row = _game(3, "2024-01-01", "E", "Boston Celtics", "New York Knicks", 7, 1)
+    out, unresolved = build_nba_db._deduplicate(
+        pd.DataFrame([row, dict(row)]), [], "live", strict=True, verbose=False)
+
+    assert unresolved == []
+    assert len(out) == 1

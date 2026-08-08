@@ -427,6 +427,10 @@ def create_players(con: sqlite3.Connection) -> None:
     if "season" not in game_cols:
         raise BuildError("games is missing season")
 
+    # Purge team-level aggregate rows nflreadpy sometimes mixes into player stats.
+    con.execute(f"DELETE FROM games WHERE {quote_ident(game_player)} IS NULL")
+    con.commit()
+
     game_key = first_existing(game_cols, ("game_id",))
     season_type = first_existing(game_cols, ("season_type", "game_type"))
     team_col = first_existing(game_cols, ("team", "recent_team"))
@@ -474,6 +478,7 @@ def create_players(con: sqlite3.Connection) -> None:
             "special_teams_tds",
             "def_tds",
             "defensive_tds",
+            "fumble_recovery_tds",
         )
         if column in game_cols
     ]

@@ -275,7 +275,52 @@ class NbaApiSource:
                     "name": historical, "city": None, "nickname": None,
                     "abbreviation": None, "first_season": None,
                     "last_season": None, "is_current": 0})
+        rows.extend(self._folded_teams({row["team_id"] for row in rows}))
         return validate(pd.DataFrame(rows), TEAM_COLUMNS, "teams")
+
+    def _folded_teams(self, known_ids):
+        """Franchises only the game logs remember.
+
+        The static list is the thirty clubs playing now, and a franchise
+        that survives under a new name keeps its team id -- Rochester
+        Royals games carry the id the Sacramento Kings carry today, so
+        they resolve. The ones that folded outright do not: the Anderson
+        Packers, the Sheboygan Redskins and thirteen others hold ids of
+        their own that appear nowhere in the list, and the strict build
+        rejects a match naming a team it has never heard of. That was
+        1,771 matches and their player statistics.
+
+        Their identity comes from the same rows the games do, which is the
+        only place it is written down. Reading those logs costs no extra
+        requests: `matches` is about to read every one of them, and both
+        passes go through the same cache.
+        """
+        found = {}
+        for season in self.seasons():
+            for phase in PHASES:
+                log = self._game_log(season, phase)
+                if log.empty:
+                    continue
+                unseen = log[~log["TEAM_ID"].astype(str).isin(known_ids)]
+                for team_id, name, abbreviation in zip(
+                        unseen["TEAM_ID"].astype(str),
+                        unseen["TEAM_NAME"], unseen["TEAM_ABBREVIATION"]):
+                    row = found.get(team_id)
+                    if row is None:
+                        found[team_id] = {
+                            "team_id": team_id, "franchise_id": team_id,
+                            "name": str(name), "city": None,
+                            "nickname": None,
+                            "abbreviation": (None if abbreviation is None
+                                             else str(abbreviation)),
+                            "first_season": int(season),
+                            "last_season": int(season), "is_current": 0}
+                    else:
+                        row["first_season"] = min(row["first_season"],
+                                                  int(season))
+                        row["last_season"] = max(row["last_season"],
+                                                 int(season))
+        return list(found.values())
 
     def players(self):
         import pandas as pd

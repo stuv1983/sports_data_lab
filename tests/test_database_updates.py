@@ -230,3 +230,96 @@ def test_systemd_templates_use_sydney_time_and_persistent_timers():
         content = timer.read_text()
         assert "Australia/Sydney" in content
         assert "Persistent=true" in content
+
+
+# -------------------------------------- what a rebuild must not destroy
+
+def _grid_db(path, boards):
+    with closing(sqlite3.connect(path)) as con:
+        con.execute("CREATE TABLE historic_grids (grid_num INTEGER PRIMARY "
+                    "KEY, date TEXT, source TEXT)")
+        con.executemany("INSERT INTO historic_grids VALUES (?,?,?)", boards)
+        con.commit()
+    return path
+
+
+def test_a_rebuild_does_not_empty_the_captured_grid_library(tmp_path,
+                                                            monkeypatch):
+    """`afl.build_db` writes a database from nothing.
+
+    The Gridley feed serves recent boards only, so a board captured on the
+    day it was published is the only copy there will ever be. Promoting a
+    fresh build over the live file took the library from thirteen boards
+    down to whatever that morning's scan had found.
+    """
+    live = _grid_db(tmp_path / "afl.db",
+                    [(1118, "2026-08-05", "Gridley"),
+                     (1119, "2026-08-08", "Gridley")])
+    staging = tmp_path / "afl.db.update-building"
+    with closing(sqlite3.connect(staging)) as con:
+        con.execute("CREATE TABLE games (player_id)")
+        con.commit()
+
+    carried = updates._carry_forward("afl", staging, live)
+
+    assert carried == {"historic_grids": 2}
+    with closing(sqlite3.connect(f"file:{staging}?mode=ro", uri=True)) as con:
+        assert [row[0] for row in con.execute(
+            "SELECT grid_num FROM historic_grids ORDER BY grid_num")] == [
+            1118, 1119]
+
+
+def test_a_board_the_rebuild_already_has_is_not_duplicated(tmp_path):
+    """The scan writes to the live database and a rebuild may run after
+    it, so the same board can exist on both sides."""
+    live = _grid_db(tmp_path / "afl.db", [(1120, "2026-08-09", "Gridley")])
+    staging = _grid_db(tmp_path / "afl.db.update-building",
+                       [(1120, "2026-08-09", "Gridley")])
+
+    updates._carry_forward("afl", staging, live)
+
+    with closing(sqlite3.connect(f"file:{staging}?mode=ro", uri=True)) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM historic_grids").fetchone()[0] == 1
+
+
+def test_only_data_with_no_link_into_the_rebuild_is_carried():
+    """Hall of Fame and teams of the century hold `name_key` and link to
+    players, and a rebuild reassigns player ids -- carrying those rows
+    across would point them at the wrong people. They are reloaded from
+    their own CSVs instead."""
+    for tables in updates.CARRIED_TABLES.values():
+        for forbidden in ("hall_of_fame", "team_selections", "players",
+                          "games"):
+            assert forbidden not in tables
+
+
+def test_a_sport_with_nothing_to_carry_is_untouched(tmp_path):
+    live = _grid_db(tmp_path / "nfl.db", [(1, "2026-08-09", "Gridley")])
+    staging = tmp_path / "nfl.db.update-building"
+    with closing(sqlite3.connect(staging)) as con:
+        con.execute("CREATE TABLE games (player_id)")
+        con.commit()
+
+    assert updates._carry_forward("nfl", staging, live) == {}
+
+
+def test_a_regular_rebuild_restores_the_layers_it_wipes():
+    """A rebuild drops every table a separate loader owns. Leaving those
+    to the awards event meant the Hall of Fame was missing from the live
+    database from a regular update in August until Brownlow night."""
+    labels = [step.label for sport, step in updates.plan("regular", ["afl"])
+              if sport == "afl"]
+    for expected in ("Load AFL Hall of Fame", "Load teams of the century",
+                     "Load stat coverage"):
+        assert expected in labels, expected
+    assert labels.index("Fetch and rebuild AFL") < labels.index(
+        "Load AFL Hall of Fame"), "a loader ran before the rebuild wiped it"
+
+
+def test_nfl_club_history_is_projected_after_a_rebuild():
+    """Without it the club pages read "Past games are not loaded"."""
+    labels = [step.label for sport, step in updates.plan("regular", ["nfl"])]
+    assert "Project NFL club history" in labels
+    assert labels.index("Fetch and rebuild NFL") < labels.index(
+        "Project NFL club history")

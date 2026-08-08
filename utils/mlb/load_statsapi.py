@@ -19,6 +19,9 @@ WHAT IT TOUCHES
             doubling them.
 `players`   a row is inserted for anyone new, and the career columns are
             recomputed for everyone -- from `games`, not from Lahman.
+`club_match_sources`
+            the season's completed fixtures, but only for a season no
+            fuller source has already covered. See replace_match_sources.
 
 Obscurity is not scored here. utils/shared/recompute_obscurity.py owns
 that formula and already runs as the next step of every update job.
@@ -71,9 +74,35 @@ def parse_seasons(text) -> list[int]:
     return sorted(out)
 
 
+def _table_exists(con, name) -> bool:
+    return bool(con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,)).fetchone())
+
+
 def _existing_players(con) -> dict[str, str]:
     return {row[0]: row[1] for row in
             con.execute("SELECT player_id, player FROM players")}
+
+
+#: Columns the Stats API does not serve. WAR is a derived rating that came
+#: in with the original build, and the CSVs it came from are not read any
+#: more -- so the value already in the database is the only one there will
+#: ever be. Replacing a season blindly would blank it for everyone in that
+#: season, which is why the old rows are read before they are deleted.
+CARRIED_COLUMNS = ("war",)
+
+
+def _carried(con, season: int) -> dict:
+    """(player_id, club) -> the values only the old rows know."""
+    selected = ", ".join(CARRIED_COLUMNS)
+    return {
+        (row[0], row[1]): row[2:]
+        for row in con.execute(
+            f"SELECT player_id, club_now, {selected} FROM games "
+            "WHERE season=? AND is_postseason=0", (season,))
+        if any(value is not None for value in row[2:])
+    }
 
 
 def replace_season(con, season: int, rows: list[dict]) -> dict:
@@ -84,20 +113,88 @@ def replace_season(con, season: int, rows: list[dict]) -> dict:
 
     The postseason rows of that season, if the database has any, are left
     untouched -- this loader does not produce them and must not delete
-    what an earlier Lahman build did.
+    what an earlier Lahman build did. CARRIED_COLUMNS are moved across for
+    the same reason: they cannot be re-fetched, so they must survive.
     """
+    carried = _carried(con, season)
     before = con.execute(
         "SELECT COUNT(*) FROM games WHERE season=? AND is_postseason=0",
         (season,)).fetchone()[0]
     con.execute(
         "DELETE FROM games WHERE season=? AND is_postseason=0", (season,))
 
+    kept = 0
+    for row in rows:
+        old = carried.get((row["player_id"], row["club_now"]))
+        if not old:
+            continue
+        for column, value in zip(CARRIED_COLUMNS, old):
+            if row.get(column) is None and value is not None:
+                row[column] = value
+                kept += 1
+
     columns = statsapi_source.GAME_COLUMNS
     marks = ", ".join("?" * len(columns))
     con.executemany(
         f"INSERT INTO games ({', '.join(columns)}) VALUES ({marks})",
         [tuple(row.get(column) for column in columns) for row in rows])
-    return {"season": season, "removed": before, "inserted": len(rows)}
+    return {"season": season, "removed": before, "inserted": len(rows),
+            "carried": kept}
+
+
+#: Every match row this loader writes is keyed with this prefix, which is
+#: what lets a re-run replace its own work and nothing else.
+MATCH_KEY_PREFIX = "statsapi-"
+
+
+def replace_match_sources(con, season: int, matches: list[dict],
+                          verbose=True) -> int:
+    """Swap this loader's club_match_sources rows for a freshly fetched set.
+
+    Two things are deliberately narrow here.
+
+    The delete is scoped to rows this loader wrote. Deleting the season
+    outright would take October with it -- the Retrosheet build's 'WS',
+    'LCS', 'DS' and 'WC' rows are what mlb/constraints_mlb.py reads for
+    the World Series square, and only regular-season games come back.
+
+    And a season Retrosheet already covers is left alone entirely.
+    Retrosheet's rows carry attendance and real game keys; overlaying a
+    thinner second copy of the same fixtures would double every game.
+    This loader exists to fill the seasons Retrosheet has not reached.
+    """
+    if not _table_exists(con, "club_match_sources"):
+        return 0
+    # Coverage is judged on regular-season rows alone -- those are the
+    # only ones this loader would duplicate. A season whose October came
+    # from Retrosheet but whose summer has not been loaded yet is still
+    # ours to fill.
+    foreign = con.execute(
+        "SELECT COUNT(*) FROM club_match_sources "
+        "WHERE season=? AND round IS NULL AND source_game_key NOT LIKE ?",
+        (season, f"{MATCH_KEY_PREFIX}%")).fetchone()[0]
+    if foreign:
+        if verbose:
+            print(f"  {season} matches already come from a fuller source "
+                  f"({foreign:,} rows) -- left as they are")
+        return 0
+
+    # The delete goes by the key prefix, not by `round`: the prefix is what
+    # marks a row as this loader's own, and rows written before the round
+    # convention was settled have to be replaceable too. (source_game_key,
+    # source_club_id) is the primary key, so a row left behind is not a
+    # duplicate but an IntegrityError.
+    con.execute(
+        "DELETE FROM club_match_sources WHERE season=? AND source_game_key "
+        "LIKE ?", (season, f"{MATCH_KEY_PREFIX}%"))
+    if not matches:
+        return 0
+    columns = list(matches[0].keys())
+    marks = ", ".join("?" * len(columns))
+    con.executemany(
+        f"INSERT INTO club_match_sources ({', '.join(columns)}) VALUES ({marks})",
+        [tuple(row[col] for col in columns) for row in matches])
+    return len(matches)
 
 
 #: How many people to ask about at once. The `people` endpoint takes a
@@ -230,10 +327,23 @@ def recompute_careers(con) -> int:
         "SELECT COUNT(DISTINCT player_id) FROM games").fetchone()[0]
 
 
+def live_seasons(seasons, today=None) -> set:
+    """Of the seasons asked for, the ones that can still change.
+
+    Stats API responses are cached to disk, which is right for a season
+    that has ended and wrong for the one being played: a nightly job
+    would read yesterday's file, insert yesterday's numbers and report
+    success, leaving the database quietly frozen on the day it first ran.
+    """
+    now = current_season(today)
+    return {int(season) for season in seasons if int(season) >= now}
+
+
 def load(db_path, seasons=None, refresh=False, verbose=True,
          dry_run=False) -> dict:
     seasons = seasons or [current_season()]
-    source = statsapi_source.StatsApiSource(refresh=refresh, verbose=verbose)
+    source = statsapi_source.StatsApiSource(
+        refresh=True if refresh else live_seasons(seasons), verbose=verbose)
 
     result = {"database": str(db_path), "seasons": [], "new_players": 0,
               "dry_run": dry_run}
@@ -249,7 +359,17 @@ def load(db_path, seasons=None, refresh=False, verbose=True,
                 continue
             result["new_players"] += add_missing_players(
                 con, rows, source, verbose=verbose)
-            result["seasons"].append(replace_season(con, season, rows))
+            outcome = replace_season(con, season, rows)
+            if verbose and outcome["removed"] > outcome["inserted"]:
+                # Only reachable when a season that already has a full
+                # build is reloaded. Worth saying out loud: the Stats API
+                # does not list quite everyone the original build did.
+                print(f"  warning: {season} went from "
+                      f"{outcome['removed']:,} rows to "
+                      f"{outcome['inserted']:,}")
+            outcome["matches"] = replace_match_sources(
+                con, season, source.season_schedule(season), verbose=verbose)
+            result["seasons"].append(outcome)
         if dry_run:
             return result
         if verbose:

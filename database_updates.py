@@ -124,8 +124,33 @@ def _nba_open_seasons(today: dt.date | None = None) -> str:
 def _build_steps(sport: str, db: str | None = None) -> list[Step]:
     db = db or data_paths.default_db(sport)
     if sport == "afl":
-        return [Step("Fetch and rebuild AFL", _python(
-            "-m", "afl.build_db", "--db", db, "--refresh"))]
+        # The three loaders after the rebuild are not awards work, even
+        # though _award_steps runs two of them too. `afl.build_db` writes
+        # a database from nothing, so every layer a separate loader owns
+        # is absent from it -- and a regular update promoting that build
+        # took the Hall of Fame, the teams of the century and the stat
+        # coverage notes out of the live database until the next awards
+        # run, which is in September. All three read checked-in CSVs, need
+        # no network, and take about a second.
+        #
+        # Rebuilding them rather than carrying the old rows across is
+        # deliberate: they hold `name_key` and link to players, and the
+        # rebuild reassigns player ids. Stale rows would point at the
+        # wrong people. See CARRIED_TABLES for the data that cannot be
+        # rebuilt and so must be carried.
+        return [
+            Step("Fetch and rebuild AFL", _python(
+                "-m", "afl.build_db", "--db", db, "--refresh")),
+            Step("Load AFL Hall of Fame", _python(
+                "-m", "utils.afl.load_hall_of_fame", "--db", db),
+                optional=True),
+            Step("Load teams of the century", _python(
+                "-m", "utils.afl.load_teams_of_the_century", "--db", db),
+                optional=True),
+            Step("Load stat coverage", _python(
+                "-m", "utils.shared.load_stat_coverage", "--sport", "afl",
+                "--db", db), optional=True),
+        ]
     if sport == "nba":
         # config.secret reads the environment first and
         # .streamlit/secrets.toml second. The environment alone was not
@@ -171,6 +196,13 @@ def _build_steps(sport: str, db: str | None = None) -> list[Step]:
                 "--all-history", "--replace")),
             Step("Patch NFL application tables", _python(
                 "-m", "utils.nfl.patch_nfl_db", "--db", db)),
+            # Without this the club pages read "Past games are not
+            # loaded". `nfl.build_db --replace` writes the schedule but
+            # not the club-history rows projected from it, so a rebuild
+            # left every club without a game list.
+            Step("Project NFL club history", _python(
+                "-m", "utils.nfl.load_club_history", "--db", db),
+                optional=True),
         ]
     raise ValueError(f"unknown sport: {sport}")
 
@@ -440,7 +472,7 @@ def _staging_paths(sports: Iterable[str]) -> dict[str, Path]:
 def _rebuild_sports(event: str, sports: Iterable[str]) -> set[str]:
     chosen = set(sports)
     if event in {"regular", "full"}:
-        return chosen
+        return chosen - {"mlb"}
     if event == "grand-final-awards" and "afl" in chosen:
         return {"afl"}
     return set()
@@ -476,11 +508,75 @@ def _promote_in_place(staging: Path, live: Path) -> None:
         source.backup(target)
 
 
+#: Tables a rebuild cannot reproduce, and so must never destroy.
+#:
+#: `historic_grids` is captured, not derived. The Gridley feed serves
+#: recent boards only, so a board scraped on the day it was published is
+#: the only copy there will ever be -- and `afl.build_db` writes a
+#: database from nothing, which does not include it. Promoting that build
+#: silently emptied the captured library: it went from thirteen boards to
+#: whatever the next morning's scan happened to find.
+#:
+#: Only for data with no link into the rebuilt tables. Anything carrying a
+#: player id or `name_key` must be rebuilt by its own loader instead --
+#: see the AFL branch of _build_steps -- because a rebuild reassigns those
+#: ids and carried rows would point at the wrong people.
+CARRIED_TABLES: dict[str, tuple[str, ...]] = {"afl": ("historic_grids",)}
+
+
+def _table_columns(con, table: str, schema: str = "main") -> list[str]:
+    return [row[1] for row in
+            con.execute(f"PRAGMA {schema}.table_info({table})")]
+
+
+def _carry_forward(sport: str, staging: Path, live: Path) -> dict[str, int]:
+    """Copy the tables a rebuild cannot reproduce into the staged database.
+
+    Runs before promotion, so what the health check validated is what is
+    promoted plus rows the build never claimed to own.
+    """
+    tables = CARRIED_TABLES.get(sport, ())
+    if not tables or not live.exists():
+        return {}
+    carried: dict[str, int] = {}
+    with closing(sqlite3.connect(staging)) as con:
+        con.execute("ATTACH DATABASE ? AS live", (str(live),))
+        try:
+            for table in tables:
+                created = con.execute(
+                    "SELECT sql FROM live.sqlite_master WHERE type='table' "
+                    "AND name=?", (table,)).fetchone()
+                if not created or not created[0]:
+                    continue
+                if not con.execute(
+                        "SELECT 1 FROM main.sqlite_master WHERE type='table' "
+                        "AND name=?", (table,)).fetchone():
+                    con.execute(created[0])
+                # Column-wise rather than SELECT *: if a later build ever
+                # does write this table, the two shapes need not agree.
+                shared = [column for column
+                          in _table_columns(con, table, "live")
+                          if column in _table_columns(con, table)]
+                if not shared:
+                    continue
+                names = ", ".join(f'"{column}"' for column in shared)
+                con.execute(
+                    f"INSERT OR REPLACE INTO main.{table} ({names}) "
+                    f"SELECT {names} FROM live.{table}")
+                carried[table] = con.execute(
+                    f"SELECT COUNT(*) FROM main.{table}").fetchone()[0]
+            con.commit()
+        finally:
+            con.execute("DETACH DATABASE live")
+    return carried
+
+
 def _backup_and_promote(sport: str, staging: Path,
                         keep: int = KEEP_BACKUPS) -> str | None:
     """Atomically promote a validated staged database, retaining backups."""
     if not staging.exists():
         raise RuntimeError(f"staged {sport.upper()} database was not created")
+    _carry_forward(sport, staging, Path(data_paths.default_db(sport)))
     with closing(sqlite3.connect(
             f"file:{staging}?mode=ro", uri=True)) as con:
         integrity = con.execute("PRAGMA integrity_check").fetchone()[0]

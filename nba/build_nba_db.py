@@ -270,6 +270,16 @@ def log(verbose, message):
         print(message)
 
 
+def _era(rows):
+    """'1949-50', or '1946-47 to 1949-50' -- the seasons a team played."""
+    first, last = _int(rows["first_season"].min()), _int(rows["last_season"].max())
+    if first is None:
+        return "defunct"
+    if last is None or last == first:
+        return season_label(first)
+    return f"{season_label(first)} to {season_label(last)}"
+
+
 def issue(issues, kind, detail, severity="warn", season=None, phase=None,
           source_key=""):
     """Record something the build reconciled rather than trusted."""
@@ -311,14 +321,26 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
     current = teams.loc[teams["is_current"] == 1]
     franchise_name = dict(zip(current["franchise_id"], current["name"]))
     missing = sorted(set(teams["franchise_id"]) - set(franchise_name))
+    taken = set(franchise_name.values())
     for fid in missing:
         # A franchise with no current identity is a defunct one. Its own
         # earliest name stands in, so its players are still findable.
         rows = teams.loc[teams["franchise_id"] == fid]
-        franchise_name[fid] = rows["name"].iloc[0]
+        name = rows["name"].iloc[0]
+        # Two franchises can honestly share a name. The Denver Nuggets of
+        # 1949-50 played one season and folded; the club of that name
+        # today arrived from the ABA a quarter of a century later, and
+        # they are not the same club. `franchises.current_name` is unique,
+        # so the one still playing keeps the plain name and the one that
+        # folded is told apart by when it played -- which is the fact that
+        # actually separates them.
+        if name in taken:
+            name = f"{name} ({_era(rows)})"
+        taken.add(name)
+        franchise_name[fid] = name
         issue(issues, "defunct_franchise",
               f"franchise {fid} has no current team; using "
-              f"{franchise_name[fid]!r} as its club_now name",
+              f"{name!r} as its club_now name",
               source_key=source.key)
 
     team_now = {row.team_id: franchise_name[row.franchise_id]
@@ -778,6 +800,23 @@ def _deduplicate(out, issues, source_key, strict, verbose):
         out = out.loc[~exact].reset_index(drop=True)
 
     duplicated = out.duplicated(subset=["player_id", "date"], keep=False)
+    # A player can legitimately appear twice on one date. The early NBA
+    # played doubleheaders -- Bob Cousy played New York and then Minneapolis
+    # on 1955-11-12, and both games are in the shipped database. Two rows
+    # are the same game recorded twice only if they agree on the fixture,
+    # so rows naming a different opponent are held back from the
+    # career-sequence pass, which cannot tell the two cases apart and
+    # would fail the build over a real doubleheader.
+    same_fixture = out.duplicated(
+        subset=["player_id", "date", "club_hist", "opponent"], keep=False)
+    genuine = int((duplicated & ~same_fixture).sum())
+    if genuine:
+        log(verbose, f"  {genuine:,} row(s) share a (player, date) key with a "
+                     f"different opponent -- kept as doubleheaders")
+        issue(issues, "doubleheader",
+              f"{genuine} player-date pair(s) are separate fixtures",
+              source_key=source_key)
+    duplicated &= same_fixture
     if not duplicated.any():
         return out, []
 
