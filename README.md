@@ -2,9 +2,9 @@
 
 A local-first sports database, research toolkit and puzzle-solving application.
 
-Sports Data Lab currently focuses on Australian Football League and historical VFL/AFL data. It combines a reproducible SQLite database build, structured player and match search, statistical exploration, data-quality checks and a Gridley-compatible grid solver in one Streamlit interface.
+Sports Data Lab combines a reproducible SQLite database build, structured player and match search, statistical exploration, data-quality checks and a Gridley-compatible grid solver in one Streamlit interface.
 
-The underlying query engine and application shell are designed to support additional sports. AFL is the implemented sport today; NBA support is planned but is not yet production-ready.
+The application supports **AFL/VFL** (primary and most complete), **NBA** (full support with incremental live updates), **MLB** (via Lahman database with incremental appends), and **NFL** (1999 onward via nflverse with incremental appends). A common query engine and application shell serve all four sports; sport-specific extensions (constraints, grid criteria, award data, captaincy) live in their own packages.
 
 ## What it does
 
@@ -28,36 +28,36 @@ The application reads the generated database locally. Database files and downloa
 
 | Area | Status |
 |---|---|
-| AFL/VFL player-game history | Supported |
-| Career and season summaries | Supported |
-| Derived matches and stable match IDs | Supported |
-| Grid Solver | Supported |
-| Player Search | Supported |
-| Advanced Search | Supported |
-| Stats Explorer | Supported |
-| Game Lab | Supported |
-| Database Health | Supported |
-| Draft and recruitment data | Optional local import |
-| Awards and All-Australian data | Optional local import |
-| Club captaincy | Optional local import |
-| Rising Star nominations | Optional local import |
-| Family-draft relationships | Optional local import |
-| Club metadata and records | Optional local import |
-| NBA player-game history | Supported (private local build) |
-| NBA Player Search, Advanced Search, Stats Explorer, Grid Solver | Supported |
-| NBA Club Explorer, Past Games, Awards, Game Lab, grid library | Not implemented |
-| NBA draft, awards, teammates, coaches | Not implemented |
-| MLB career history from the Lahman database | Supported |
-| MLB Player Search, Advanced Search, Stats Explorer, Grid Solver | Supported |
-| MLB single-game squares | Not possible from Lahman (see below) |
-| MLB Club Explorer, Past Games, Awards page, Game Lab, grid library | Not implemented |
-| NFL player-game history from nflverse, 1999 onward | Supported |
-| NFL Player Search, Advanced Search, Stats Explorer, Grid Solver | Supported |
-| NFL draft squares | Supported |
-| NFL pre-1999 careers | Not possible from the weekly data (see below) |
-| NFL snap counts, injuries, depth charts, contracts, trades | Imported with `--extended`; no squares read them yet |
-| NFL Club Explorer, Past Games, Awards page, Game Lab, grid library | Not implemented |
-| Daily grid, practice grid, crowd rarity | Not implemented for any sport |
+| **AFL/VFL** — player-game history | Supported; optional draft, awards, captaincy, Rising Star, family data |
+| **AFL** — Career and season summaries | Supported |
+| **AFL** — Club metadata, records, all-time players | Optional local import from Wikipedia/AFL Tables |
+| **AFL** — Grid Solver | Supported; captured grids; criterion parser; practice mode for unsupported axes |
+| **AFL** — Game Lab | Supported (player, match, career-stat modes) |
+| **All sports** — Player Search | Supported; accented names, fuzzy matching |
+| **All sports** — Advanced Search | Supported; compact query language with URL parameters |
+| **All sports** — Stats Explorer | Supported; leaderboards and discovery |
+| **All sports** — Database Health | Supported; schema, row counts, optional-data status |
+| **All sports** — Grid Solver | Supported; find eligible players, ranked by obscurity |
+| **All sports** — Club Explorer | Supported (current-club metadata per-sport) |
+| **All sports** — Past Games | Supported; match search and filtering |
+| **All sports** — Awards page | Supported (award lists per-sport) |
+| **All sports** — Game Lab | Supported (generic modes for all sports) |
+| **NBA** — player-game history | Supported (private local build, incremental live updates) |
+| **NBA** — Automated updates | Incremental current-season append from NBA.com via `load_current_season.py` |
+| **NBA** — draft, teammates, coaches, grid library | Not implemented |
+| **MLB** — career history | Supported via Lahman database CSV export |
+| **MLB** — Automated updates | Incremental season append from Stats API via `load_statsapi.py` |
+| **MLB** — single-game squares | Not possible (Lahman grain is player-season, not per-game) |
+| **MLB** — draft, awards, grid library | Not implemented |
+| **NFL** — player-game history | Supported, 1999 onward via nflverse (weekly data) |
+| **NFL** — Automated updates | Incremental weekly data fetch via nflverse |
+| **NFL** — snap counts, injuries, depth charts, contracts, trades | Imported with `--extended`; no game squares use them yet |
+| **NFL** — draft squares | Supported |
+| **NFL** — pre-1999 careers | Not possible (nflverse data begins 1999) |
+| **NFL** — grid library | Not implemented |
+| **Cross-sport** — Dark, Light, Custom themes | Supported |
+| **Cross-sport** — CSV export, standalone SQL | Supported |
+| **Cross-sport** — Daily grid, practice grid, crowd rarity | Not implemented |
 
 Exact season coverage and row counts depend on the version of the upstream cached dataset used for the local build. The application displays live database counts in its **Database status** panel rather than relying on hard-coded numbers.
 
@@ -231,23 +231,47 @@ Match derivation can then be run separately:
 python -m afl.derive_matches --db my_afl.db
 ```
 
+## Automated database updates
+
+The `database_updates.py` script runs on a schedule and keeps the AFL, NBA, and MLB databases current without rebuilding them from scratch. A **"regular"** update runs frequently (every ~7 days for AFL, ~5 months for NBA, etc.) and appends/refreshes only the most recent season's games. A **"full"** rebuild is manual and rare (after a source format change or a deliberate reset):
+
+```bash
+python database_updates.py              # automated regular update
+python database_updates.py --full       # manual full rebuild (rare)
+python database_updates.py --dry-run    # preview without writing
+```
+
+**MLB and NBA no longer rebuild from scratch in automated updates.** Instead:
+
+- **MLB**: appends/replaces the current season from the Stats API via `utils/mlb/load_statsapi.py`
+- **NBA**: appends/replaces the current seasons from NBA.com via `utils/nba/load_current_season.py`
+
+This preserves historical team identities (e.g., Seattle SuperSonics for 1985, not Oklahoma City Thunder), ensures career totals stay accurate, and keeps the updates fast. A full rebuild is still possible manually when needed (e.g., after importing a new source dataset).
+
+**AFL** continues to rebuild from the cached fitzRoy dataset every run because it is small and reliable; a rebuild is fast and catches edge cases reliably.
+
 ## Build the NBA database
 
 The NBA build is a **private, local prototype**. Read the licensing note
 under [NBA.com via nba_api](#nbacom-via-nba_api) before using that source.
 
 ```bash
+# Full rebuild (manual, rare)
 python -m nba.build_nba_db --source csv                      # from CSV exports
 python -m nba.build_nba_db --source csv --seasons 2018-2023  # a subset
 python -m nba.build_nba_db --source bbr --source-root C:/nbaData/data
-python -m nba.build_nba_db --source nba_api --seasons 1946-2026
+python -m nba.build_nba_db --source nba_api --seasons 1946-2026  # caution: see licensing note below
+
+# Incremental update (automated, regular)
+python -m utils.nba.load_current_season --db data/nba/nba.db
+python -m utils.nba.load_current_season --db data/nba/nba.db --dry-run
+
 python health.py --sport nba --strict
 ```
 
-The builder talks to a source adapter (`nba_source.NbaSource`) and never to
-a website, so the same build works from a CSV export, from a local scrape,
-from NBA.com, or from a licensed provider added later. `--source csv` is the
-default because it is the one with no conditions attached.
+**Full rebuilds** work from a CSV export, Basketball-Reference scrape, NBA.com live data, or other sources. The builder uses a source adapter (`nba_source.NbaSource`) and never talks to a website directly. `--source csv` is the default because it is the one with no conditions attached.
+
+**Automated updates** (run by `database_updates.py` on schedule) use `utils/nba/load_current_season.py`, which appends/refreshes only the current season(s) from the live source. This preserves historical accuracy and keeps updates fast, since a franchise's current season is always played under its current name (no historical-identity mismatch). See [Automated database updates](#automated-database-updates) above for context.
 
 ### Build from the Basketball-Reference scrape
 
@@ -372,16 +396,22 @@ frozen dataclass.
 
 ## Build the MLB database
 
-The MLB build reads the [Lahman baseball database](#lahman-baseball-database)
-CSV export. Put the extracted CSVs under `data/mlb/raw/` (or drop the
-`lahman_*_csv.zip` in there and leave it zipped), then:
+The MLB build reads the [Lahman baseball database](#lahman-baseball-database) CSV export. Put the extracted CSVs under `data/mlb/raw/` (or drop the `lahman_*_csv.zip` in there and leave it zipped):
 
 ```bash
+# Full rebuild (manual, rare)
 python -m mlb.build_mlb_db                       # -> data/mlb/mlb.db
 python -m mlb.build_mlb_db --raw path/to/csv     # a different export
 python -m mlb.build_mlb_db --db /tmp/mlb.db      # a different output
+
+# Incremental update (automated, regular)
+python -m utils.mlb.load_statsapi --db data/mlb/mlb.db
+python -m utils.mlb.load_statsapi --db data/mlb/mlb.db --dry-run
+
 python health.py --sport mlb --strict
 ```
+
+**Full rebuilds** use the Lahman CSV export to establish a complete, historically accurate database. **Automated updates** (run by `database_updates.py` on schedule) use `utils/mlb/load_statsapi.py`, which appends/replaces only the current season from the Stats API. This mirrors the [Automated database updates](#automated-database-updates) pattern described above.
 
 The build reads `People`, `Appearances`, `Batting`, `Pitching`, their
 `*Post` counterparts, `Teams`, `TeamsFranchises`, `SeriesPost`,
@@ -441,17 +471,17 @@ hint instead.
 
 ## Build the NFL database
 
-The NFL build downloads [nflverse](#nflverse) data through `nflreadpy`. It is
-a standalone script at the repository root, not a package module, and it is
-the one build in two steps: a builder that imports nflverse faithfully, then
-an adapter that derives the columns the application reads.
+The NFL build downloads [nflverse](#nflverse) data through `nflreadpy`. It is a standalone script at the repository root, not a package module, and it runs in two steps: a builder that imports nflverse faithfully, then an adapter that derives the columns the application reads.
 
 ```bash
 pip install nflreadpy
 python build_nfl_db.py --all-history --replace              # -> data/nfl/nfl.db
-python build_nfl_db.py --all-history --extended --replace   # + 8 more datasets
-python -m utils.nfl.patch_nfl_db                            # adapter step
-python -m utils.shared.recompute_obscurity --sport nfl
+python build_nfl_db.py --all-history --extended --replace   # + 8 more optional datasets
+python -m utils.nfl.patch_nfl_db                            # adapter step (required)
+python -m utils.shared.recompute_obscurity --sport nfl      # recompute career scores
+
+# Incremental updates are handled by nflreadpy's own schedule
+python build_nfl_db.py --all-history --replace --dry-run    # check for new data
 ```
 
 `--replace` is not optional once a database exists. Without it the builder
@@ -848,6 +878,20 @@ Gridley inspired the original grid-solving workflow. Sports Data Lab is an unaff
 
 See [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md) for source credits, terms and reuse notes.
 
+## Architecture and design patterns
+
+**One app, multiple sports**: A shared query engine (`core.py`), database schema interface (`sports.py`), and Streamlit application serve all four sports. Sport-specific logic (constraints, awards, draft data) lives in each sport's package; pages check for capabilities rather than hardcoding sport names. This keeps the sport-agnostic framework clean and makes adding a sport straightforward.
+
+**Incremental database updates**: MLB and NBA adopt a "build once, append current data" pattern. A full rebuild establishes complete history from a canonical source (Lahman CSV for MLB, a cached NBA.com snapshot for NBA); subsequent automated updates from the live source (Stats API for MLB, NBA.com for NBA) append/replace only the current season. This sidesteps source limitations (Lahman has no per-game data; NBA.com cannot represent historical team identity changes) and keeps updates fast. See [Automated database updates](#automated-database-updates).
+
+**Stable match and player IDs**: Matches are identified by a stable `match_id` derived from (season, round, date, home_team, away_team); this lets refreshes reuse IDs rather than creating duplicates. Players are tracked by `player_id` (internal sequential) and optionally by `source_player_id` (from the upstream source), which is how incremental loaders match incoming rows to existing roster entries without name ambiguity.
+
+**Conservative data linking**: Optional data layers (awards, captaincy, draft history) are resolved to `player_id` only when the link is trusted and unique. Ambiguous or unmatched records are retained for reporting and debugging but excluded from search and grid results.
+
+**Query parameterisation**: User input is never concatenated into SQL. Every filter compiles to a parameterised query with bound values, which prevents injection and makes caching safe.
+
+**Read-only application**: The Streamlit app opens its database in read-only mode. All mutations (builds, imports, updates) happen offline through command-line scripts, which are staged and promoted atomically (write to `.building`, verify, replace).
+
 ## Repository layout
 
 Each sport owns a runtime package for constraints, builds, source adapters,
@@ -881,49 +925,60 @@ Two rules keep the split honest, and both are enforced by
 sport-only page is reached through a capability field on the `Sport`
 object rather than an `if`.
 
-Selected files:
+**Key active files:**
 
 | File | Purpose |
 |---|---|
-| `app.py` | Streamlit application, navigation and Grid Solver |
-| `core.py` | Sport-agnostic schema, query engine and result ranking |
-| `sports.py` | Sport registry, schemas and vocabulary |
-| `afl/constraints.py` | AFL-specific constraint builders |
-| `advanced_search.py` | URL-addressable advanced player search |
-| `query_filters.py` | Query parser and SQL compiler |
-| `explore.py` | Home, player search, leaderboards and discovery pages |
-| `afl/game_lab.py` | Player and criterion exploration |
-| `health.py` | Database health and integrity page |
-| `theme.py` | Dark, Light and Custom themes |
-| `afl/build_db.py` | Base AFL SQLite database builder |
-| `obscurity.py` | Sport-agnostic, term-driven obscurity model |
-| `nba/constraints_nba.py` | NBA-specific constraint builders |
-| `nba/build_nba_db.py` | NBA SQLite database builder |
-| `nba/nba_source.py` | NBA source-adapter contract and the CSV adapter |
-| `nba/nba_source_api.py` | NBA.com adapter (private local prototype only) |
-| `nba/nba_reference.py` | NBA team list, franchise lineage and measured eras |
-| `mlb/constraints_mlb.py` | MLB-specific constraint builders |
-| `mlb/build_mlb_db.py` | MLB SQLite builder, from the Lahman CSV export |
-| `mlb/mlb_reference.py` | MLB franchise list, lineage and measured eras |
-| `afl/derive_matches.py` | Canonical match table and stable match IDs |
-| `utils/shared/repair_database.py` | Non-download database repair workflow |
-| `data_paths.py` | Single source of truth for every database and data path |
-| `wiki_sports_scraper.py` | NBA/NFL/MLB Wikipedia reference scraper |
-| `wiki_reference.py` | Staging schema, validation and team mapping for that scrape |
-| `utils/shared/load_wiki_reference.py` | Validate/import the scrape into sport databases |
-| `afl/awards.py` | Award and recruitment constraints |
-| `afl/captains.py` | Club captaincy constraints |
-| `afl/rising_star.py` | Rising Star nomination constraints |
-| `afl/historic_grids.py` | Captured-grid validation and practice support |
-| `afl/parse_criteria.py` | Grid criterion parser |
-| `afl/club_explorer.py` | Current-club metadata and records page |
-| `utils/afl/fetch_club_sources.py` | Cache current-club source pages |
-| `utils/afl/load_club_sources.py` | Parse/load club metadata and records |
-| `utils/afl/load_club_all_games.py` | Reconcile per-club match sources |
-| `utils/shared/clean_project.py` | Review and remove generated artefacts |
-| `utils/shared/optimise_database.py` | Propose and create missing indexes |
-| `tests/` | Every test, runnable under pytest or standalone |
-| `ACKNOWLEDGEMENTS.md` | Data-source credits and reuse notes |
+| `database_updates.py` | Automated pipeline: manages "regular" and "full" update events |
+| `app.py` | Streamlit application, navigation, multi-sport picker |
+| `core.py` | Sport-agnostic: schema, query compiler, obscurity ranking, intersection engine |
+| `sports.py` | Sport registry; each sport declares its schema, constraints, pages, vocabulary |
+| `advanced_search.py` | URL-addressable player search with a compact query language |
+| `explore.py` | Core pages: Home, Player Search, Game Lab, Stats Explorer, Discovery |
+| `query_filters.py` | Parser and SQL compiler for the search language |
+| `obscurity.py` | Sport-agnostic, term-driven obscurity model for ranking |
+| `afl/constraints.py` | AFL constraint builders (via re-export from captains, brownlow, rising_star, etc.) |
+| `afl/build_db.py` | AFL full rebuild from fitzRoy cached dataset |
+| `afl/game_lab.py` | AFL-specific game exploration modes |
+| `nba/constraints_nba.py` | NBA constraint builders |
+| `nba/build_nba_db.py` | NBA full rebuild (from CSV, BBR scrape, or NBA.com) |
+| **`utils/nba/load_current_season.py`** | **NBA incremental loader: appends/refreshes current seasons from live source** |
+| `nba/nba_source.py` | NBA source adapter contract; CSV and live-source adapters |
+| `nba/nba_source_api.py` | NBA.com adapter via nba_api (private local use only) |
+| `nba/nba_reference.py` | NBA team list, franchise lineage, measured stat eras |
+| `mlb/constraints_mlb.py` | MLB constraint builders (row-scoped team/stat pairing for Immaculate Grid) |
+| `mlb/build_mlb_db.py` | MLB full rebuild from Lahman CSV export |
+| **`utils/mlb/load_statsapi.py`** | **MLB incremental loader: appends/refreshes seasons from Stats API** |
+| `mlb/mlb_reference.py` | MLB franchise list, lineage, measured stat eras |
+| `nfl/constraints_nfl.py` | NFL constraint builders |
+| `build_nfl_db.py` | NFL builder (standalone, downloads nflverse data) |
+| `utils/nfl/patch_nfl_db.py` | NFL adapter: derives columns the app needs from nflverse tables |
+| `afl/derive_matches.py` | Match derivation and stable match ID assignment (reusable for any sport) |
+| `data_paths.py` | Single source of truth for all database and data paths |
+| `theme.py` | Dark, Light, and Custom appearance modes |
+| `health.py` | Database health page: schema, row counts, optional-data status |
+| `afl/historic_grids.py` | Captured Gridley board validation and practice-mode support |
+| `afl/parse_criteria.py` | Text parser for grid criteria (e.g., "50+ GAMES TWO DIFF CLUBS") |
+| `afl/club_explorer.py` | Club metadata and records page |
+| `ui_widgets.py` | Search widgets, player options, axis builders, label rendering |
+| `accounts_ui.py` | Account/session management UI |
+| `tests/` | Regression tests, integration tests, live smoke tests |
+| `ACKNOWLEDGEMENTS.md` | Data-source credits and reuse terms |
+
+**Utilities and optional loaders** (sport-specific data layers):
+
+| File | Purpose |
+|---|---|
+| `utils/afl/load_draftguru.py` | Parse Draftguru scrape for draft, recruitment, awards |
+| `utils/afl/load_captains.py` | Link captaincy data |
+| `utils/afl/fetch_footywire_rising_star.py` | Rising Star nomination scraper and loader |
+| `utils/afl/load_family_relationships.py` | Wikipedia family-relationship parser and loader |
+| `utils/afl/load_family_draft.py` | Family-draft relationship loader |
+| `utils/afl/load_club_sources.py` | Club metadata and all-time records loader |
+| `utils/afl/fetch_club_sources.py` | Cache club source pages |
+| `utils/shared/load_wiki_reference.py` | Wikipedia reference import (NBA/NFL/MLB) |
+| `utils/shared/clean_project.py` | Identify and remove generated artefacts |
+| `utils/shared/optimise_database.py` | Index optimization suggestions |
 
 Database files, caches, downloaded pages, generated SQL and third-party source datasets are excluded through `.gitignore`, as is `archive/`.
 
@@ -1012,25 +1067,18 @@ Build your own database from the documented sources and follow each source's ter
 
 ## Known limitations
 
-- The AFL is the more complete implementation. The NBA has a database and the
-  research pages; it has no Club Explorer, Past Games, Awards page, Game Lab,
-  captured grid library or criterion parser.
-- The NBA build is a private local prototype. It is not cleared for
-  redistribution or for backing a hosted application.
-- NBA seasons are stored as start years, so `played:2005` means 2005-06.
-- There is no NBA teammate constraint. `core.Generic.teammate_of_id` matches
-  on a shared team and season, which the NBA's trade window makes wrong often
-  enough to matter; answering it properly needs shared matches, which is not
-  built. It is absent rather than present and wrong.
-- Obscurity scores from the two sports are not comparable. They come from
-  different models with different terms, which is what the model version
-  stored alongside every score records.
-- Optional source coverage can be incomplete.
-- Name matching cannot safely resolve every historical record.
-- Some historical grids contain unsupported or partially captured criteria.
-- The obscurity rating is heuristic and is not an official rarity score.
-- Historical statistics are limited by the era in which each statistic was recorded.
-- The project does not currently provide a hosted database or hosted application.
+- **AFL is the most complete implementation.** It includes all application pages and optional data layers (draft, awards, captaincy, Rising Star, family relationships, club metadata). The other sports have all core pages (search, grid solver, game lab, stats) but lack sport-specific grid libraries and some optional extensions.
+- **The NBA build is a private, local prototype.** It is not cleared for redistribution or for backing a hosted application. See [NBA.com via nba_api](#nbacom-via-nba_api) for licensing.
+- **No teammate constraint for NBA.** Teammates cannot be reliably matched because trades can put players on the same team mid-season without a shared match. Answering "was a teammate" properly would require shared game lineups (`player_game` linking), which is not built. The constraint is absent rather than present and wrong.
+- **NBA seasons are stored as start years:** `played:2005` means the 2005-06 season.
+- **MLB row grain is player-season, not player-game.** Lahman's finest detail is a player's season total for one team; there are no per-game statistics. This prevents "X+ of a stat in one game" and per-game teammate squares. Multi-stat squares still work ("100+ RBI and 200+ hits in the same season" is valid).
+- **NFL coverage is 1999 onward.** nflverse's weekly statistics begin in 1999; rosters and schedules reach further back but are not usable for game squares.
+- **Obscurity models differ by sport.** Scores come from different formulas with different terms, which is why the model version is stored alongside every score.
+- **Name matching is conservative.** Historical player records cannot be safely resolved by name alone; internal ID matching is preferred. Ambiguous unresolved records are retained for reporting but excluded from answers.
+- **Some historical grids contain unsupported criteria.** The grid parser reports these rather than guessing. Practice mode can substitute a supported alternative with a clear label.
+- **The obscurity rating is heuristic and not official.** It is a database proxy, not Gridley's live crowd percentage.
+- **Historical statistics are limited by recording era.** Each statistic was recorded starting in a different season; empty historical values are NULL, not zero.
+- **The project does not provide a hosted database or application.** It is a local-first research tool.
 
 ## Contributing
 
