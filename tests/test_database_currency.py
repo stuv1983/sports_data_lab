@@ -242,6 +242,24 @@ def test_an_admin_update_can_target_one_event_and_one_sport(
     assert spawned[-1][2:] == [
         "database_updates", "run", "--event", "regular",
         "--sports", "afl", "--trigger", "admin"]
+    status = json.loads(
+        (updates.STATUS_PATH).read_text(encoding="utf-8"))
+    assert status["sports"] == ["afl"]
+    assert status["total_steps"] == len(updates.plan("regular", ["afl"]))
+    assert status["completed_steps"] == 0
+
+
+def test_an_admin_update_targets_every_sport_by_default(tmp_path, monkeypatch):
+    _log_dir, spawned = _detached(tmp_path, monkeypatch)
+
+    assert updates.start_background(event="regular") == 4242
+
+    assert spawned[-1][2:] == [
+        "database_updates", "run", "--event", "regular", "--sports",
+        "afl", "nba", "mlb", "nfl", "--trigger", "admin",
+    ]
+    status = json.loads(updates.STATUS_PATH.read_text(encoding="utf-8"))
+    assert status["sports"] == list(updates.SPORT_KEYS)
 
 
 def test_an_admin_update_rejects_a_scope_it_cannot_run(tmp_path, monkeypatch):

@@ -43,6 +43,13 @@ NBA_LINEAGE = ("NBA", "BAA")
 
 REFERENCE = Path("reference") / "playoff_series.csv"
 
+#: The 1953-54 playoffs opened with the only round-robin stage in NBA
+#: history. It was the division semifinal round, but it was not a series, so
+#: the series extract correctly has no team-pair row for its eight games.
+#: The NBA's own season review describes the top-three round robin feeding
+#: two teams into each division final.
+NON_SERIES_ROUNDS = {1953: "CSF"}
+
 
 class Series:
     """One playoff series, as the reference file records it."""
@@ -131,6 +138,11 @@ def assign(matches, index, issue, verbose_log=None):
             continue
 
         if found is None or found.round is None:
+            exceptional_round = NON_SERIES_ROUNDS.get(int(row["season"]))
+            if found is None and exceptional_round:
+                matches.at[position, "round"] = exceptional_round
+                assigned += 1
+                continue
             unresolved += 1
             unmatched.append((int(row["season"]), row.get("home_hist"),
                               row.get("away_hist")))
@@ -175,6 +187,28 @@ def _lookup(row, index):
         series = index.get((season, frozenset((home, away))))
         if series is not None:
             return series
+
+    # NBA.com's old game logs reuse today's franchise id, so the historical
+    # column can still say "Golden State Warriors" for a 1947 Philadelphia
+    # Warriors game. Expand only as a fallback after both exact identities
+    # failed. That order preserves defunct/reused names such as the original
+    # Baltimore Bullets, while allowing a source with franchise-level ids to
+    # meet the historical series reference honestly.
+    from . import nba_reference
+
+    lineage = nba_reference.club_lineage()
+    home = row.get("home_team")
+    away = row.get("away_team")
+    home_names = lineage.get(home, [home])
+    away_names = lineage.get(away, [away])
+    for home_name in home_names:
+        for away_name in away_names:
+            if not home_name or not away_name:
+                continue
+            series = index.get(
+                (season, frozenset((home_name, away_name))))
+            if series is not None:
+                return series
     return None
 
 

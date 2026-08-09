@@ -118,6 +118,10 @@ class NbaApiSource:
         self.api_key = (api_key if api_key is not None
                         else config.nba_api_key())
         self._fetches = []
+        # NBA.com's static player index is not exhaustive for historical
+        # logs. Names observed in playergamelogs let the builder retain those
+        # real rows with unknown biography instead of dropping them.
+        self._seen_player_names = {}
 
     # -- authentication ------------------------------------------------
     def _auth(self):
@@ -460,6 +464,13 @@ class NbaApiSource:
         log = self._frame(payload)
         if log.empty:
             return None
+        if "PLAYER_NAME" in log.columns:
+            self._seen_player_names.update({
+                str(player_id): str(player_name)
+                for player_id, player_name in zip(
+                    log["PLAYER_ID"], log["PLAYER_NAME"])
+                if player_id is not None and player_name is not None
+            })
 
         # Provider header -> our column. Anything absent stays NULL, which
         # is what an unrecorded statistic is.
@@ -482,6 +493,21 @@ class NbaApiSource:
                            if source and source in log.columns else None)
         return validate(out, PLAYER_GAME_COLUMNS,
                         f"player games {season} {phase}")
+
+    def discovered_players(self, player_ids=None):
+        """Players present in game logs but absent from the static index."""
+        import pandas as pd
+
+        wanted = ({str(value) for value in player_ids}
+                  if player_ids is not None else None)
+        rows = [{
+            "source_player_id": player_id, "player": player_name,
+            "birth_year": None, "position": None, "height_cm": None,
+            "weight_kg": None, "birth_country": None,
+        } for player_id, player_name in sorted(self._seen_player_names.items())
+            if wanted is None or player_id in wanted]
+        return validate(pd.DataFrame(rows, columns=PLAYER_COLUMNS),
+                        PLAYER_COLUMNS, "players discovered in game logs")
 
     def fetches(self):
         return list(self._fetches)

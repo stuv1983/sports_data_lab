@@ -357,18 +357,6 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
     people = (people.drop_duplicates(subset=["source_player_id"])
                     .sort_values("source_player_id", kind="stable")
                     .reset_index(drop=True))
-    # Sorted on the source's own id, so the same source always yields the
-    # same player_id. Anything holding an id survives a rebuild.
-    people["player_id"] = range(1, len(people) + 1)
-    pid_of = dict(zip(people["source_player_id"], people["player_id"]))
-    people["name_key"] = people["player"].map(names.normalise_name)
-
-    namesakes = people.groupby("name_key").size()
-    shared = int((namesakes > 1).sum())
-    if shared:
-        log(verbose, f"  {shared:,} name keys are shared by more than one "
-                     f"player -- searches must disambiguate by player_id")
-
     # 3. Matches ---------------------------------------------------------
     wanted = sorted(seasons) if seasons else list(source.seasons())
     if not wanted:
@@ -469,6 +457,38 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
     out["source_player_id"] = out["source_player_id"].astype(str)
     out["match_id"] = out["match_id"].astype(str)
     out["team_id"] = out["team_id"].astype(str)
+
+    # NBA.com's static player table omits a small number of historical
+    # players who are nevertheless named in its own game logs. A source can
+    # expose those observations after player_games() has run. Keep their
+    # rows with NULL biography; dropping valid games is neither safer nor
+    # more accurate than recording that biography is unknown.
+    missing_ids = set(out["source_player_id"]) - set(
+        people["source_player_id"])
+    discover = getattr(source, "discovered_players", None)
+    if missing_ids and callable(discover):
+        discovered = discover(missing_ids)
+        if discovered is not None and not discovered.empty:
+            discovered = discovered.copy()
+            discovered["source_player_id"] = discovered[
+                "source_player_id"].astype(str)
+            discovered = discovered[
+                discovered["source_player_id"].isin(missing_ids)]
+            people = pd.concat([people, discovered], ignore_index=True)
+            people = (people.drop_duplicates(subset=["source_player_id"])
+                            .sort_values("source_player_id", kind="stable")
+                            .reset_index(drop=True))
+
+    # Sorted on the complete source id universe, so the same source always
+    # yields the same player_id. Anything holding an id survives a rebuild.
+    people["player_id"] = range(1, len(people) + 1)
+    pid_of = dict(zip(people["source_player_id"], people["player_id"]))
+    people["name_key"] = people["player"].map(names.normalise_name)
+    namesakes = people.groupby("name_key").size()
+    shared = int((namesakes > 1).sum())
+    if shared:
+        log(verbose, f"  {shared:,} name keys are shared by more than one "
+                     f"player -- searches must disambiguate by player_id")
 
     known = out["source_player_id"].isin(pid_of)
     if not known.all():
@@ -682,7 +702,7 @@ KEEP_BACKUPS = 5
 
 
 def build_atomic(db_path, source, keep_backups=KEEP_BACKUPS, verbose=True,
-                 **kwargs):
+                 write_reference=True, **kwargs):
     """Build into a working file and replace `db_path` only once it passes.
 
     The build used to write straight over the live database, which meant a
@@ -694,6 +714,18 @@ def build_atomic(db_path, source, keep_backups=KEEP_BACKUPS, verbose=True,
     atomic on both platforms, so a reader either gets the whole old database
     or the whole new one. On failure the working file stays put with a
     report beside it and the live database is untouched.
+
+    `write_reference=False` is for callers where `db_path` is itself a
+    staging file outside this function's own knowledge -- database_updates.py
+    builds every sport into `<live>.update-building` before running its own
+    validation and promotion. load_reference() writes beside `db_path`'s
+    *directory*, not `db_path` itself, so for a staging file that sits next
+    to the real database (same directory, different name) this function's
+    own promotion above is not the one that makes the result live -- yet
+    load_reference() cannot tell the difference and would overwrite the real
+    data/nba/reference/nba_reference.json regardless of whether the staged
+    build is ever promoted or the outer job later fails. Pass False and call
+    load_reference() again yourself once the caller's own promotion succeeds.
     """
     final = Path(db_path)
     working = final.with_name(final.name + ".building")
@@ -729,7 +761,8 @@ def build_atomic(db_path, source, keep_backups=KEEP_BACKUPS, verbose=True,
                           "backup": summary["backup"],
                           "summary": {k: v for k, v in summary.items()
                                       if k != "warnings"}})
-    load_reference(final, verbose=verbose)
+    if write_reference:
+        load_reference(final, verbose=verbose)
     return summary
 
 
@@ -1403,6 +1436,12 @@ def main(argv=None):
                     help="skip the optional layers")
     ap.add_argument("--reference-only", action="store_true",
                     help="only rewrite data/nba/reference from an existing db")
+    ap.add_argument("--no-reference", action="store_true",
+                    help="do not write data/nba/reference after promoting; "
+                         "for building a staging file that sits beside the "
+                         "real database under a caller who promotes it and "
+                         "regenerates the reference itself, e.g. --reference-"
+                         "only against the caller's own final path")
     ap.add_argument("--no-strict", dest="strict", action="store_false",
                     help="keep the database even if health checks fail")
     ap.add_argument("--in-place", action="store_true",
@@ -1449,7 +1488,9 @@ def main(argv=None):
     seasons = (nba_source.parse_seasons(args.seasons)
                if args.seasons else None)
     runner = build if args.in_place else build_atomic
-    kwargs = {} if args.in_place else {"keep_backups": args.keep_backups}
+    kwargs = ({} if args.in_place else
+             {"keep_backups": args.keep_backups,
+              "write_reference": not args.no_reference})
     try:
         runner(args.db, source, seasons=seasons,
                strict=args.strict and not args.allow_duplicates,

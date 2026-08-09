@@ -334,6 +334,35 @@ def test_an_unknown_team_is_recorded_as_an_error_issue(tmp_path):
     assert "unknown_team" in kinds
 
 
+def test_a_player_named_by_game_logs_can_fill_a_static_index_gap(tmp_path):
+    """NBA.com's static index omits some historical players even though its
+    game log supplies both their id and name. Those games must not be lost."""
+    root = tmp_path / "discovered-player"
+    nba_fixture.write(root / "csv")
+    source = nba_source.CsvNbaSource(root / "csv")
+    players = source.players()
+    missing_id = str(source.player_games(
+        source.seasons()[0], "regular").iloc[0]["source_player_id"])
+    discovered = players[
+        players["source_player_id"].astype(str) == missing_id].copy()
+    source.players = lambda: players[
+        players["source_player_id"].astype(str) != missing_id].copy()
+    source.discovered_players = lambda ids: discovered[
+        discovered["source_player_id"].astype(str).isin(ids)].copy()
+
+    db = root / "nba.db"
+    build_nba_db.build(db, source, verbose=False)
+
+    con = sqlite3.connect(db)
+    assert con.execute(
+        "SELECT COUNT(*) FROM games g JOIN players p USING (player_id) "
+        "WHERE p.source_player_id=?", (missing_id,)).fetchone()[0] > 0
+    assert con.execute(
+        "SELECT COUNT(*) FROM source_issues WHERE kind='unknown_player'"
+    ).fetchone()[0] == 0
+    con.close()
+
+
 def test_an_unresolved_match_team_takes_the_match_out_of_the_schedule(tmp_path):
     """Keeping it left a fixture whose result counted for nobody and whose
     player-games joined to a NULL club -- visible only in an issue row."""

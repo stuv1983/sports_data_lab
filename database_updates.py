@@ -162,7 +162,14 @@ def _build_steps(sport: str, db: str | None = None) -> list[Step]:
             raise ValueError(
                 "SPORTS_DATA_NBA_SOURCE must be csv, live, bbr, or nba_api")
         argv = list(_python(
-            "-m", "nba.build_nba_db", "--db", db, "--source", source))
+            "-m", "nba.build_nba_db", "--db", db, "--source", source,
+            # This step runs against a staging file that sits beside the
+            # live database. build_nba_db's own reference write would land
+            # on data/nba/reference/nba_reference.json regardless of whether
+            # this staging build is ever promoted -- see _refresh_reference,
+            # which redoes it against the live path only after promotion
+            # actually succeeds.
+            "--no-reference"))
         source_root = config.secret("SPORTS_DATA_NBA_SOURCE_ROOT", "").strip()
         if source_root:
             argv.extend(("--source-root", source_root))
@@ -311,11 +318,36 @@ def plan(event: str, sports: Iterable[str],
     return out
 
 
-def _write_json(path: Path, payload: dict) -> None:
+def _write_json(path: Path, payload: dict, *, best_effort: bool = False) -> None:
+    """Write ``payload`` to ``path`` atomically.
+
+    Windows can hand back a transient ``PermissionError`` (WinError 5) when
+    something else -- an antivirus scan, the Admin page's own
+    ``read_status()`` -- has the destination open at the exact instant of
+    ``os.replace``. A short retry rides that out. ``best_effort=True`` is for
+    progress-reporting writes: one of those failing must never take down a
+    rebuild that has real, possibly hours of, promotable work in progress --
+    see run_job, where every step and the final promotion both write through
+    here inside the same try block that would otherwise abort the whole job.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(temporary, path)
+    attempts = 5
+    for attempt in range(attempts):
+        try:
+            os.replace(temporary, path)
+            return
+        except OSError:
+            if attempt == attempts - 1:
+                if not best_effort:
+                    raise
+                print(f"warning: could not update {path} (left locked by "
+                      "another process); continuing without this status "
+                      "update", file=sys.stderr)
+                temporary.unlink(missing_ok=True)
+                return
+            time.sleep(0.2 * (attempt + 1))
 
 
 def read_status() -> dict:
@@ -489,6 +521,27 @@ def _staging_paths(sports: Iterable[str]) -> dict[str, Path]:
     }
 
 
+def _retained_staging_path(staging: Path) -> Path:
+    """Resolve a builder's actual diagnostic file after a failed build.
+
+    Most builders write directly to our staging path. The NBA builder adds
+    its own atomic ``.building`` suffix and reports that path beside it; on
+    failure the old UI linked to a staging file that never existed.
+    """
+    if staging.exists():
+        return staging
+    report = Path(str(staging) + ".build-report.json")
+    try:
+        payload = json.loads(report.read_text(encoding="utf-8"))
+        working = Path(str(payload.get("working_db", "")))
+        if working.exists():
+            return working
+    except (OSError, ValueError, TypeError):
+        pass
+    building = Path(str(staging) + ".building")
+    return building if building.exists() else staging
+
+
 def _rebuild_sports(event: str, sports: Iterable[str]) -> set[str]:
     chosen = set(sports)
     if event in {"regular", "full"}:
@@ -589,6 +642,39 @@ def _carry_forward(sport: str, staging: Path, live: Path) -> dict[str, int]:
         finally:
             con.execute("DETACH DATABASE live")
     return carried
+
+
+#: Sports whose builder writes a measured reference sidecar (franchise
+#: lineage, current team list, stat eras) beside its own database, keyed to
+#: the CLI arguments that recompute it against an already-built database
+#: without touching the database itself.
+_REFERENCE_REFRESH: dict[str, tuple[str, ...]] = {
+    "nba": ("-m", "nba.build_nba_db", "--reference-only"),
+}
+
+
+def _refresh_reference(sport: str) -> None:
+    """Recompute a promoted sport's reference sidecar against the live db.
+
+    The build step for this sport ran with --no-reference, against a
+    staging file the outer promotion above had not yet accepted -- see the
+    comment beside --no-reference in _build_steps. Now that the staging
+    file *is* the live database, redo that measurement for real. Best
+    effort: the database itself already promoted successfully, and a
+    reference file one rebuild out of date is far better than failing an
+    otherwise-complete update over a sidecar file.
+    """
+    argv = _REFERENCE_REFRESH.get(sport)
+    if not argv:
+        return
+    live = data_paths.default_db(sport)
+    try:
+        subprocess.run(_python(*argv, "--db", live), cwd=ROOT,
+                       capture_output=True, text=True, check=True,
+                       timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"warning: could not refresh {sport} reference data: {exc}",
+              file=sys.stderr)
 
 
 def _backup_and_promote(sport: str, staging: Path,
@@ -798,7 +884,7 @@ def check_databases(sports: Iterable[str] = SPORT_KEYS) -> dict:
     }
     # Persist only the diagnostic report. The sports database files are
     # opened mode=ro and are never downloaded, rebuilt, or promoted here.
-    _write_json(CHECK_STATUS_PATH, result)
+    _write_json(CHECK_STATUS_PATH, result, best_effort=True)
     return result
 
 
@@ -815,7 +901,7 @@ def run_gridley_scan(*, through: dt.date | None = None, max_days: int = 31,
         "state": "running", "trigger": trigger,
         "started_at": started.isoformat(), "database": str(live),
     }
-    _write_json(GRIDLEY_SCAN_STATUS_PATH, status)
+    _write_json(GRIDLEY_SCAN_STATUS_PATH, status, best_effort=True)
     try:
         if not live.exists():
             raise RuntimeError(f"No live AFL database at {live}")
@@ -839,14 +925,14 @@ def run_gridley_scan(*, through: dt.date | None = None, max_days: int = 31,
             "result": result, "promoted": promoted, "backup": backup,
             "after": _database_snapshot("afl", quick=True),
         })
-        _write_json(GRIDLEY_SCAN_STATUS_PATH, status)
+        _write_json(GRIDLEY_SCAN_STATUS_PATH, status, best_effort=True)
         return status
     except Exception as exc:
         status.update({
             "state": "failed", "error": f"{type(exc).__name__}: {exc}",
             "finished_at": dt.datetime.now().astimezone().isoformat(),
         })
-        _write_json(GRIDLEY_SCAN_STATUS_PATH, status)
+        _write_json(GRIDLEY_SCAN_STATUS_PATH, status, best_effort=True)
         raise
     finally:
         LOCK_PATH.unlink(missing_ok=True)
@@ -869,13 +955,29 @@ def run_job(event: str, sports: Iterable[str], trigger: str = "cli",
         "state": "running", "event": event, "trigger": trigger,
         "sports": list(chosen), "pid": os.getpid(),
         "started_at": stamp.isoformat(), "log_path": str(log_path),
-        "steps": [], "before": {s: _database_snapshot(s) for s in chosen},
+        "steps": [], "completed_steps": 0, "total_steps": len(steps),
+        "current_step": {
+            "sport": None, "label": "Inspecting live databases",
+            "step_number": 0,
+            "started_at": stamp.isoformat(),
+        },
+        "before": {},
     }
-    _write_json(STATUS_PATH, status)
+    _write_json(STATUS_PATH, status, best_effort=True)
     required_failure = False
     optional_failure = False
     failed_sports = set()
     try:
+        # Publish a live state before these snapshots scan several large
+        # SQLite files. Previously the Admin page sat at "Starting, 0s" for
+        # minutes even though the child process was doing real work.
+        status["before"] = {s: _database_snapshot(s) for s in chosen}
+        status["current_step"] = {
+            "sport": None, "label": "Preparing staging databases",
+            "step_number": 0,
+            "started_at": dt.datetime.now().astimezone().isoformat(),
+        }
+        _write_json(STATUS_PATH, status, best_effort=True)
         _prepare_staging(event, chosen, staging)
         steps = plan(
             event, chosen,
@@ -889,9 +991,18 @@ def run_job(event: str, sports: Iterable[str], trigger: str = "cli",
                         "returncode": None, "optional": step.optional,
                         "seconds": 0, "state": "skipped",
                     })
-                    _write_json(STATUS_PATH, status)
+                    status["completed_steps"] = len(status["steps"])
+                    _write_json(STATUS_PATH, status, best_effort=True)
                     continue
                 started = time.monotonic()
+                step_started_at = dt.datetime.now().astimezone().isoformat()
+                status["current_step"] = {
+                    "sport": sport,
+                    "label": step.label,
+                    "step_number": len(status["steps"]) + 1,
+                    "started_at": step_started_at,
+                }
+                _write_json(STATUS_PATH, status, best_effort=True)
                 log.write(f"\n[{dt.datetime.now().astimezone().isoformat()}] [{sport}] {step.label}\n")
                 log.write(f"$ {subprocess.list2cmdline(step.argv)}\n")
                 log.flush()
@@ -926,9 +1037,13 @@ def run_job(event: str, sports: Iterable[str], trigger: str = "cli",
                     "optional": step.optional,
                     "seconds": round(time.monotonic() - started, 2),
                     "state": "complete" if returncode == 0 else "failed",
+                    "started_at": step_started_at,
+                    "finished_at": dt.datetime.now().astimezone().isoformat(),
                 }
                 status["steps"].append(record)
-                _write_json(STATUS_PATH, status)
+                status["completed_steps"] = len(status["steps"])
+                status["current_step"] = None
+                _write_json(STATUS_PATH, status, best_effort=True)
                 if returncode:
                     if step.optional:
                         optional_failure = True
@@ -941,7 +1056,7 @@ def run_job(event: str, sports: Iterable[str], trigger: str = "cli",
             if sport in failed_sports:
                 status["promotions"][sport] = {
                     "state": "retained_live",
-                    "staging": str(staging[sport]),
+                    "staging": str(_retained_staging_path(staging[sport])),
                 }
                 continue
             try:
@@ -958,20 +1073,26 @@ def run_job(event: str, sports: Iterable[str], trigger: str = "cli",
                 status["promotions"][sport] = {
                     "state": "promoted", "backup": backup,
                 }
+                _refresh_reference(sport)
         status["after"] = {s: _database_snapshot(s) for s in chosen}
         status["state"] = (
             "failed" if required_failure else
             "complete_with_warnings" if optional_failure else "complete"
         )
         status["finished_at"] = dt.datetime.now().astimezone().isoformat()
-        _write_json(STATUS_PATH, status)
+        status["current_step"] = None
+        # best_effort: every promotion decision above is already final: a
+        # locked status file here must not turn a successful run into a
+        # reported failure, and must not throw away completed promotions by
+        # falling into the except block below.
+        _write_json(STATUS_PATH, status, best_effort=True)
         return 1 if required_failure else 0
     except Exception as exc:
         status.update({
             "state": "failed", "error": f"{type(exc).__name__}: {exc}",
             "finished_at": dt.datetime.now().astimezone().isoformat(),
         })
-        _write_json(STATUS_PATH, status)
+        _write_json(STATUS_PATH, status, best_effort=True)
         raise
     finally:
         LOCK_PATH.unlink(missing_ok=True)
@@ -1002,7 +1123,7 @@ def _spawn_detached(command: list[str], status_path: Path,
             "reservation": reservation,
             "started_at": dt.datetime.now().astimezone().isoformat(),
         }, handle)
-    _write_json(status_path, status)
+    _write_json(status_path, status, best_effort=True)
 
     launcher_log = None
     try:
@@ -1042,6 +1163,7 @@ def start_background(event: str = "full", sports: Iterable[str] = SPORT_KEYS,
         raise ValueError(f"unknown sports: {', '.join(sorted(unknown))}")
     if event not in EVENTS:
         raise ValueError(f"unknown event: {event}")
+    total_steps = len(plan(event, chosen))
     return _spawn_detached(
         ["run", "--event", event, "--sports", *chosen, "--trigger", trigger],
         STATUS_PATH,
@@ -1049,6 +1171,8 @@ def start_background(event: str = "full", sports: Iterable[str] = SPORT_KEYS,
             "state": "starting", "event": event, "trigger": trigger,
             "sports": list(chosen), "pid": None,
             "started_at": dt.datetime.now().astimezone().isoformat(),
+            "steps": [], "completed_steps": 0,
+            "total_steps": total_steps, "current_step": None,
         },
     )
 

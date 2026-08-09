@@ -251,6 +251,42 @@ def test_a_relocated_team_is_matched_on_the_name_it_played_under(tmp_path):
     assert issues == []
 
 
+def test_a_franchise_level_source_can_match_a_historical_series(tmp_path):
+    """NBA.com reuses today's franchise id in old game logs, so both the
+    current and nominally historical columns can carry the modern name."""
+    write_reference(tmp_path, [
+        reference_row(1946, "F", "Philadelphia Warriors", "Chicago Stags",
+                      wins=(1, 0), league="BAA")])
+    frame = match_frame([{
+        "match_id": "m1", "season": 1946, "phase": "playoff", "round": None,
+        "home_team": "Golden State Warriors", "away_team": "Chicago Stags",
+        "home_hist": "Golden State Warriors", "away_hist": "Chicago Stags",
+    }])
+    issues = []
+
+    result = rounds.assign(frame, rounds.load(tmp_path), collect(issues))
+
+    assert result["assigned"] == 1
+    assert frame.at[0, "round"] == "F"
+    assert issues == []
+
+
+def test_the_1954_round_robin_is_the_non_series_semifinal_stage():
+    frame = match_frame([{
+        "match_id": "0045300911", "season": 1953, "phase": "playoff",
+        "round": None, "home_team": "New York Knicks",
+        "away_team": "Boston Celtics", "home_hist": "New York Knicks",
+        "away_hist": "Boston Celtics",
+    }])
+    issues = []
+
+    result = rounds.assign(frame, {}, collect(issues))
+
+    assert result == {"assigned": 1, "already_set": 0, "unresolved": 0}
+    assert frame.at[0, "round"] == "CSF"
+    assert issues == []
+
+
 def test_a_playoff_game_with_no_series_is_left_alone_and_fails_the_build(
         tmp_path):
     write_reference(tmp_path, [

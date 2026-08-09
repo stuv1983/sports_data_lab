@@ -70,6 +70,9 @@ class LiveNbaSource:
     def player_games(self, season, phase):
         return self.live.player_games(season, phase)
 
+    def discovered_players(self, player_ids=None):
+        return self.live.discovered_players(player_ids)
+
     # -- from the CSV export, because NBA.com's static list has none ---
     def players(self):
         """The CSV biography, widened with anyone NBA.com knows and it does not.

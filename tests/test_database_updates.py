@@ -1,9 +1,12 @@
 import datetime as dt
 import json
 import sqlite3
+import sys
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 import database_updates as updates
 
@@ -188,9 +191,13 @@ def test_required_failure_skips_that_sport_and_does_not_block_others(
             _create_db(paths[sport], sport)
 
     calls = []
+    observed_current_steps = []
 
     def fake_run(argv, **kwargs):
         calls.append(argv[0])
+        live_status = json.loads(
+            (log_dir / "status.json").read_text(encoding="utf-8"))
+        observed_current_steps.append(live_status["current_step"])
         return SimpleNamespace(returncode=1 if argv[0] == "afl-fail" else 0)
 
     promoted = []
@@ -203,13 +210,64 @@ def test_required_failure_skips_that_sport_and_does_not_block_others(
     )
 
     assert updates.run_job("regular", ["afl", "nba"], trigger="test") == 1
-    assert calls == ["afl-fail", "nba-ok"]
+    # The trailing call is _refresh_reference's own subprocess.run, fired
+    # only for nba because only nba reached "promoted" -- afl's failure
+    # skipped its promotion, and with it, its reference refresh.
+    assert calls == ["afl-fail", "nba-ok", sys.executable]
+    # The refresh call above runs after the step loop has already cleared
+    # current_step, so it observes None -- unlike the two step calls, which
+    # each observe the status this same job published for themselves.
+    assert observed_current_steps == [
+        {
+            "sport": "afl", "label": "AFL fails", "step_number": 1,
+            "started_at": observed_current_steps[0]["started_at"],
+        },
+        {
+            "sport": "nba", "label": "NBA succeeds", "step_number": 3,
+            "started_at": observed_current_steps[1]["started_at"],
+        },
+        None,
+    ]
     assert promoted == ["nba"]
     status = json.loads((log_dir / "status.json").read_text(encoding="utf-8"))
     assert status["state"] == "failed"
+    assert status["completed_steps"] == 3
+    assert status["total_steps"] == 3
+    assert status["current_step"] is None
     assert status["steps"][1]["state"] == "skipped"
     assert status["promotions"]["afl"]["state"] == "retained_live"
     assert status["promotions"]["nba"]["state"] == "promoted"
+
+
+def test_running_state_is_visible_before_large_database_snapshots(
+        tmp_path, monkeypatch):
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(updates, "LOG_DIR", log_dir)
+    monkeypatch.setattr(updates, "STATUS_PATH", log_dir / "status.json")
+    monkeypatch.setattr(updates, "LOCK_PATH", log_dir / "update.lock")
+    monkeypatch.setattr(
+        updates.data_paths, "default_db", lambda sport: str(tmp_path / "afl.db"))
+
+    def snapshot(_sport):
+        visible = updates.read_status()
+        assert visible["state"] == "running"
+        assert visible["current_step"]["label"] == "Inspecting live databases"
+        raise RuntimeError("stop after observing status")
+
+    monkeypatch.setattr(updates, "_database_snapshot", snapshot)
+    with pytest.raises(RuntimeError, match="stop after observing status"):
+        updates.run_job("regular", ["afl"], trigger="test")
+
+
+def test_failed_nested_builder_reports_the_real_diagnostic_database(tmp_path):
+    staging = tmp_path / "nba.db.update-building"
+    working = tmp_path / "nba.db.update-building.building"
+    working.touch()
+    Path(str(staging) + ".build-report.json").write_text(json.dumps({
+        "status": "failed", "working_db": str(working),
+    }), encoding="utf-8")
+
+    assert updates._retained_staging_path(staging) == working
 
 
 def test_scheduled_annual_command_exits_when_not_due(monkeypatch):

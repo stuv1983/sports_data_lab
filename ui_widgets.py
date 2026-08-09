@@ -1,3 +1,4 @@
+import difflib
 import re
 import streamlit as st
 
@@ -70,6 +71,38 @@ def _player_label(name, debut, final, games, clubs):
     return f"{name} ({', '.join(parts)})" if parts else str(name)
 
 
+#: Below this similarity (difflib's ratio: 2*matches / total length) a
+#: fuzzy suggestion is more likely to confuse than help.
+FUZZY_CUTOFF = 0.72
+
+
+def _fuzzy_player_matches(q_words, options):
+    """Typo-tolerant suggestions for a query none of the substring tiers hit.
+
+    Every stricter tier requires an unbroken run of the typed letters
+    somewhere in the name, so one wrong letter -- "Lebron Jaims" -- returns
+    nothing from them even though the intended player is obvious to a
+    person. Each typed word is matched against its closest word in the
+    name, and a name's score is its *worst* word, the same AND-not-OR rule
+    tier 3 above applies to substrings: "Lebron Jaims" must be close to both
+    "Lebron" and "James", so it does not also drag in "Lebron Watson" on
+    the strength of the first word alone.
+    """
+    scored = []
+    for pid, name, label, search_key in options:
+        words = search_key.split()
+        if not words:
+            continue
+        score = min(
+            max((difflib.SequenceMatcher(None, token, word).ratio()
+                 for word in words), default=0.0)
+            for token in q_words
+        )
+        if score >= FUZZY_CUTOFF:
+            scored.append((5, -score, name.casefold(), pid, name, label))
+    return scored
+
+
 def player_matches(query, sport, db_revision, limit=PLAYER_MATCH_LIMIT):
     """Return a small, relevance-ranked list instead of every player."""
     q = _player_search_key(query)
@@ -77,9 +110,9 @@ def player_matches(query, sport, db_revision, limit=PLAYER_MATCH_LIMIT):
         return []
 
     q_words = q.split()
+    options = player_options(sport.key, sport.db, db_revision)
     ranked = []
-    for pid, name, label, search_key in player_options(
-            sport.key, sport.db, db_revision):
+    for pid, name, label, search_key in options:
         words = search_key.split()
         if search_key == q:
             rank = 0
@@ -94,6 +127,12 @@ def player_matches(query, sport, db_revision, limit=PLAYER_MATCH_LIMIT):
         else:
             continue
         ranked.append((rank, len(name), name.casefold(), pid, name, label))
+
+    # Only when nothing -- not even a loose substring -- matched anywhere.
+    # Scanning for close spellings is pointless extra work otherwise, and
+    # would rank a typo'd guess above a real, exact-prefix result.
+    if not ranked and len(q) >= 3:
+        ranked = _fuzzy_player_matches(q_words, options)
 
     ranked.sort()
     return [(pid, name, label)
@@ -117,6 +156,10 @@ def player_picker(key, sport, db_revision, label="Player name", default_name="")
     if not matches:
         st.warning(f"No player matches ‘{query.strip()}’.")
         return None
+
+    q = _player_search_key(query)
+    if q and not any(q in _player_search_key(name) for _, name, _ in matches):
+        st.caption("No exact match — showing the closest spellings.")
 
     options = [pid for pid, _, _ in matches]
     details = {pid: (name, player_label)

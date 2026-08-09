@@ -108,6 +108,81 @@ def _change_rows(before, after):
     return rows
 
 
+def _elapsed_time(started_at, finished_at=None):
+    """Format an update runtime without exposing timestamp arithmetic in UI."""
+    if not started_at:
+        return "Unknown"
+    try:
+        import datetime as dt
+
+        started = dt.datetime.fromisoformat(str(started_at))
+        finished = (dt.datetime.fromisoformat(str(finished_at))
+                    if finished_at else dt.datetime.now().astimezone())
+        if started.tzinfo is None:
+            started = started.astimezone()
+        if finished.tzinfo is None:
+            finished = finished.astimezone()
+        seconds = max(0, int((finished - started).total_seconds()))
+    except (TypeError, ValueError):
+        return "Unknown"
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def _sport_progress_rows(status):
+    """One operational summary row per sport in the current/last job."""
+    sports = status.get("sports") or []
+    try:
+        planned = database_updates.plan(status.get("event", "full"), sports)
+    except (TypeError, ValueError):
+        planned = []
+    totals = {sport: 0 for sport in sports}
+    for sport, _step in planned:
+        totals[sport] = totals.get(sport, 0) + 1
+    completed = {sport: [] for sport in sports}
+    for step in status.get("steps", []):
+        completed.setdefault(step.get("sport"), []).append(step)
+    current = status.get("current_step") or {}
+    promotions = status.get("promotions") or {}
+    rows = []
+    for sport in sports:
+        steps = completed.get(sport, [])
+        done = len(steps)
+        required_failed = any(
+            step.get("state") == "failed" and not step.get("optional")
+            for step in steps
+        )
+        promotion = promotions.get(sport, {}).get("state")
+        if promotion == "promoted":
+            state = "Updated"
+        elif promotion == "retained_live":
+            state = "Live database retained"
+        elif promotion == "failed" or required_failed:
+            state = "Failed"
+        elif current.get("sport") == sport:
+            state = "Running"
+        elif status.get("state") in {"starting", "running"}:
+            state = "Waiting"
+        else:
+            state = "Finished"
+        detail = (current.get("label") if current.get("sport") == sport else
+                  steps[-1].get("label") if steps else "Not started")
+        total = totals.get(sport, 0)
+        rows.append({
+            "Sport": sport.upper(),
+            "Status": state,
+            "Progress": min(done / total, 1.0) if total else 0.0,
+            "Steps": f"{done} / {total}" if total else str(done),
+            "Current or last step": detail,
+        })
+    return rows
+
+
 def _render_database_check(check):
     if not check:
         return
@@ -301,11 +376,11 @@ def admin_page(user):
                     st.success("Access updated.")
                     st.rerun()
 
-    st.markdown("### Database updates")
+    st.markdown("### Database operations")
     st.caption(
-        "Runs the existing fetchers and builders for AFL, NBA, MLB and NFL, "
-        "then repairs, optimises and checks each database. The update runs in "
-        "the background and the live app keeps serving the last validated files."
+        "Refresh, validate and inspect AFL, NBA, MLB and NFL data. Updates run "
+        "in the background against staging files, so the app keeps serving the "
+        "last validated database until each replacement is ready."
     )
 
     notice = st.session_state.pop("database_update_notice", None)
@@ -328,6 +403,33 @@ def admin_page(user):
         and database_updates.update_is_active()
     )
     if status:
+        completed_steps = status.get(
+            "completed_steps", len(status.get("steps", [])))
+        total_steps = status.get("total_steps")
+        if total_steps is None:
+            try:
+                total_steps = len(database_updates.plan(
+                    status.get("event", "full"),
+                    status.get("sports", database_updates.SPORT_KEYS),
+                ))
+            except (TypeError, ValueError):
+                total_steps = 0
+        state_label = {
+            "starting": "Starting", "running": "Running",
+            "complete": "Complete", "complete_with_warnings": "Warnings",
+            "failed": "Failed",
+        }.get(state, str(state).replace("_", " ").title())
+        summary = st.columns(4, vertical_alignment="center")
+        summary[0].metric("Job status", state_label, border=True)
+        summary[1].metric(
+            "Scope", f"{len(status.get('sports', []))} sport(s)", border=True)
+        summary[2].metric(
+            "Progress", f"{completed_steps} / {total_steps or '?'} steps",
+            border=True)
+        summary[3].metric(
+            "Elapsed",
+            _elapsed_time(status.get("started_at"), status.get("finished_at")),
+            border=True)
         message = {
             "starting": "A database update is starting.",
             "running": "A database update is running.",
@@ -355,24 +457,42 @@ def admin_page(user):
             timing += f" - Finished: {finished}"
         st.caption(timing)
         if active:
-            try:
-                expected_steps = len(database_updates.plan(
-                    status.get("event", "full"),
-                    status.get("sports", database_updates.SPORT_KEYS),
-                ))
-            except (TypeError, ValueError):
-                expected_steps = 0
-            finished_steps = len(status.get("steps", []))
-            if expected_steps:
+            if total_steps:
+                current = status.get("current_step") or {}
+                progress_text = f"{completed_steps} of {total_steps} steps finished"
+                if current:
+                    sport_prefix = (
+                        f"{current.get('sport').upper()}: "
+                        if current.get("sport") else "")
+                    progress_text += (
+                        f" - {sport_prefix}{current.get('label', 'Working')}")
                 st.progress(
-                    min(finished_steps / expected_steps, 1.0),
-                    text=(f"{finished_steps} of {expected_steps} update steps "
-                          "finished. Refresh for the latest result."),
+                    min(completed_steps / total_steps, 1.0),
+                    text=progress_text,
+                )
+                st.caption(
+                    "The status file updates before and after every step. "
+                    "Use **Refresh status** below to see the latest result."
                 )
         if status.get("error"):
             st.error(status["error"])
+        sport_rows = _sport_progress_rows(status)
+        if sport_rows:
+            st.dataframe(
+                sport_rows,
+                column_config={
+                    "Progress": st.column_config.ProgressColumn(
+                        "Progress", min_value=0.0, max_value=1.0,
+                        format="percent",
+                    ),
+                },
+                width="stretch", hide_index=True,
+            )
         if status.get("steps"):
-            with st.expander("Update steps", expanded=state == "failed"):
+            with st.expander(
+                "Step history", icon=":material/list_alt:",
+                expanded=state == "failed",
+            ):
                 for step in status["steps"]:
                     if step.get("state") == "skipped":
                         result = "skipped after required failure"
@@ -423,31 +543,40 @@ def admin_page(user):
         width="stretch", hide_index=True,
     )
 
-    with st.form("admin_database_update_form"):
+    with st.container(border=True):
+        st.markdown("#### Start a database update")
         st.caption(
-            "Scores and statistics refreshes every selected sport from its "
-            "own source. Everything including awards adds the AFL award "
-            "layers, which is much slower and only worth running after "
+            "Scores and statistics is the routine update. The awards option "
+            "adds slower AFL award imports and is normally only needed after "
             "Brownlow night or the Grand Final."
         )
-        scope = st.columns(2)
-        event = scope[0].selectbox(
-            "What to refresh", _UPDATE_EVENTS,
-            format_func=lambda key: _UPDATE_EVENTS[key],
-        )
-        sports = scope[1].multiselect(
-            "Sports", database_updates.SPORT_KEYS,
-            default=list(database_updates.SPORT_KEYS),
-            format_func=str.upper,
-        )
-        password = st.text_input(
-            "Confirm your admin password", type="password",
-            help="A fresh password check is required before starting a database write."
-        )
-        submitted = st.form_submit_button(
-            "Start update", type="primary", icon=":material/sync:",
-            disabled=active,
-        )
+        with st.form("admin_database_update_form", border=False):
+            event = st.segmented_control(
+                "Update type", list(_UPDATE_EVENTS), default="regular",
+                format_func=lambda key: _UPDATE_EVENTS[key],
+                selection_mode="single", width="stretch",
+            )
+            sports = st.pills(
+                "Sports to update", database_updates.SPORT_KEYS,
+                default=list(database_updates.SPORT_KEYS),
+                selection_mode="multi", format_func=str.upper,
+            )
+            planned_steps = len(database_updates.plan(
+                event, sports)) if event and sports else 0
+            st.caption(
+                f"Selected scope: {len(sports or [])} sport(s), "
+                f"{planned_steps} validation and update steps. Each sport is "
+                "promoted independently only after its required checks pass."
+            )
+            password = st.text_input(
+                "Confirm your admin password", type="password",
+                help=("A fresh password check is required before starting a "
+                      "database write."),
+            )
+            submitted = st.form_submit_button(
+                "Update selected databases", type="primary",
+                icon=":material/sync:", disabled=active,
+            )
     if submitted:
         try:
             confirmed = accounts.authenticate(user.email, password)
@@ -494,7 +623,7 @@ def admin_page(user):
                     progress.update(
                         label="One or more database checks failed", state="error"
                     )
-    if controls.button("Refresh update status", icon=":material/refresh:"):
+    if controls.button("Refresh status", icon=":material/refresh:"):
         st.rerun()
     if controls.button(
         "Reload updated databases", icon=":material/restart_alt:",
