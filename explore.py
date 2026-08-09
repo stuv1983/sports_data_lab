@@ -26,6 +26,7 @@ import streamlit as st
 
 import core
 import labels
+import ui_widgets
 
 SCOPES = {
     "Single game": "game",
@@ -1384,8 +1385,7 @@ def _game_guess_player(sport, con, player_picker):
     if st.button("New mystery player", key=sport.k("new_game_player")):
         st.session_state[target_key] = _new_game_target(sport, con)
         st.session_state[state_key] = {"guesses": 0, "history": [], "game_over": False, "won": False}
-        for key in ("game_guess_query", "game_guess_choice"):
-            st.session_state.pop(sport.k(key), None)
+        ui_widgets.clear_player_picker(sport.k("game_guess"))
 
     pid = st.session_state[target_key]
     target = con.execute(f"""
@@ -1465,8 +1465,7 @@ def _game_career_path(sport, con, player_picker):
         # somebody else's answer before a guess had been made.
         st.session_state.pop(sport.k("career_solved"), None)
         st.session_state[sport.k("career_wrong")] = []
-        st.session_state.pop(sport.k("career_guess_query"), None)
-        st.session_state.pop(sport.k("career_guess_choice"), None)
+        ui_widgets.clear_player_picker(sport.k("career_guess"))
 
 
     pid = st.session_state[target_key]
@@ -1593,7 +1592,6 @@ def _game_stat_threshold(sport, con):
     st.write(f"Name players with at least **{target:,} {V.games}**.")
     st.caption(f"Found {len(found)} of {total:,}.")
 
-    import ui_widgets
     query = st.text_input("Enter player name:", key=sport.k("st_input"))
     if query:
         matches = ui_widgets.player_matches(

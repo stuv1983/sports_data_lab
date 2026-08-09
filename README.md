@@ -77,6 +77,37 @@ The Streamlit application includes the following pages:
 
 The interface supports Dark, Light and Custom themes through `theme.py`.
 
+### Finding a player
+
+Every page that asks for a player uses the one picker in `ui_widgets.py`, and
+it does two things worth knowing about:
+
+- **Matches appear as you type.** The picker holds the sport's most-played
+  players in the browser and filters them keystroke by keystroke, with no
+  round trip. `QUICK_PLAYER_LIMIT` sets how many; raise it for a shorter tail
+  at the cost of a larger page.
+- **A name that means one player is not asked about twice.** Type a full name
+  and it resolves outright — no second dropdown. Only a genuinely ambiguous
+  query ("acuna", with two Acuñas) asks you to choose, and two players who
+  really do share a name always will.
+
+Typing a name the browser was not given — a four-game career, an accented
+spelling, a typo — searches every player in the database instead, with the
+accent-folding and similarity rules described in `player_matches`. So the cap
+above changes how fast a name appears, never whether it can be found.
+
+### Application icons
+
+Drop PNGs into `static/icons/` to set the browser tab icon and the icon iOS
+uses when the app is saved to a home screen. Per sport (`nba.png`,
+`nba-180.png`) or for all of them (`default.png`, `default-180.png`); see
+[`static/icons/README.md`](static/icons/README.md). With the folder empty each
+sport keeps the emoji from its registry entry, so nothing needs to be added.
+
+`branding.py` handles this. The tab icon goes through Streamlit; the
+home-screen icon does not, because Streamlit renders the `<head>` itself and
+offers no way in, so the tags are written from the browser instead.
+
 ## Grid Solver
 
 The Grid Solver intersects one row criterion with one column criterion for each square.
@@ -961,6 +992,7 @@ object rather than an `if`.
 | `afl/parse_criteria.py` | Text parser for grid criteria (e.g., "50+ GAMES TWO DIFF CLUBS") |
 | `afl/club_explorer.py` | Club metadata and records page |
 | `ui_widgets.py` | Search widgets, player options, axis builders, label rendering |
+| `branding.py` | Tab icon and iOS home-screen icon, read from `static/icons/` |
 | `accounts_ui.py` | Account/session management UI |
 | `tests/` | Regression tests, integration tests, live smoke tests |
 | `ACKNOWLEDGEMENTS.md` | Data-source credits and reuse terms |

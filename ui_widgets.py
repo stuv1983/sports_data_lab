@@ -59,6 +59,44 @@ def _player_search_key(value):
     return re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
 
 
+#: Both pickers below skip nameless rows. The NFL's `players` table has one:
+#: id "0", 42 games, twenty clubs -- the bucket its source drops a play into
+#: when it cannot attribute it to anyone. It has no career to open, and in a
+#: list the reader picks from it is a blank line.
+_HAS_NAME = "{player} IS NOT NULL AND TRIM({player}) <> ''"
+
+
+#: How many players the browser holds so it can filter them as the user
+#: types. The whole table is 24,218 names in the MLB and 25,050 in the NFL,
+#: and shipping every one costs about 1.7 MB on each rerun -- paid again for
+#: every picker on the page, of which Play Grids has nine. Ordered by career
+#: games, 4,000 names is around 300-400 KB and covers 99% of NBA games played
+#: and 69-80% elsewhere; anyone outside it is still reachable, because typing
+#: a name the list does not hold falls through to `player_matches`, which
+#: reads all of them. Raise it for a shorter tail at a larger download.
+QUICK_PLAYER_LIMIT = 4000
+
+
+@st.cache_data(show_spinner=False)
+def quick_player_options(sport_key, db, revision, limit=QUICK_PLAYER_LIMIT):
+    """The most-played players, for the browser to filter through live.
+
+    Streamlit's text input only reports a value on Enter or blur, so a
+    search box cannot show matches while the user is still typing. A
+    selectbox can: it filters options already in the browser, with no
+    round trip. That only works for options the browser has, hence the cap.
+    """
+    s = sports.get(sport_key).schema
+    rows = db_pool.get_con(db, revision).execute(
+        f"SELECT {s.player_id}, {s.player}, {s.debut_season}, "
+        f"{s.final_season}, {s.career_games}, {s.clubs_hist} "
+        f"FROM {s.players} WHERE {_HAS_NAME.format(player=s.player)} "
+        f"ORDER BY COALESCE({s.career_games}, 0) DESC, {s.player} "
+        f"LIMIT ?", (limit,)).fetchall()
+    return [(pid, nm, _player_label(nm, d, f, g, cl))
+            for pid, nm, d, f, g, cl in rows]
+
+
 @st.cache_data(show_spinner=False)
 def player_options(sport_key, db, revision):
     """Every player, with an unambiguous label and a search-only name key."""
@@ -66,7 +104,8 @@ def player_options(sport_key, db, revision):
     rows = db_pool.get_con(db, revision).execute(
         f"SELECT {s.player_id}, {s.player}, {s.debut_season}, "
         f"{s.final_season}, {s.career_games}, {s.clubs_hist} "
-        f"FROM {s.players} ORDER BY {s.player}").fetchall()
+        f"FROM {s.players} WHERE {_HAS_NAME.format(player=s.player)} "
+        f"ORDER BY {s.player}").fetchall()
     return [(pid, nm, _player_label(nm, d, f, g, cl),
              _player_search_key(nm))
             for pid, nm, d, f, g, cl in rows]
@@ -153,23 +192,88 @@ def player_matches(query, sport, db_revision, limit=PLAYER_MATCH_LIMIT):
             for _, _, _, pid, name, label in ranked[:limit]]
 
 
-def player_picker(key, sport, db_revision, label="Player name", default_name=""):
-    """Text-first player picker with at most 30 matching choices."""
-    query_key = f"{key}_query"
-    choice_key = f"{key}_choice"
-    if query_key not in st.session_state:
-        st.session_state[query_key] = default_name
+def resolve_typed_player(query, matches):
+    """The one player a typed name unambiguously means, or None.
 
-    query = st.text_input(
-        label, key=query_key, placeholder="Start typing a player name…")
-    if not query.strip():
+    Sparing the reader a second widget when there is nothing to choose
+    between. Two cases qualify: a search that found exactly one player, and
+    a search whose text *is* one player's name -- "Ronald Acuna" among the
+    Acuñas, where a substring search rightly also offers Luisangel but the
+    typed name names only one of them.
+
+    An exactly-typed name shared by two players ("Bobby Jones") stays
+    ambiguous and returns None, because it genuinely is.
+    """
+    if len(matches) == 1:
+        pid, name, _ = matches[0]
+        return pid, name
+    typed = _player_search_key(query)
+    exact = [(pid, name) for pid, name, _ in matches
+             if _player_search_key(name) == typed]
+    return exact[0] if len(exact) == 1 else None
+
+
+def clear_player_picker(key):
+    """Empty a picker, so the next round of a game starts with a blank box.
+
+    The Game Lab modes each named this widget's session keys themselves to
+    do that. Renaming one therefore left the last answer sitting in the box
+    looking like a fresh question, which is exactly the bug this exists to
+    make impossible: the widget owns its own keys and clears them here.
+    """
+    for suffix in ("_pick", "_narrow"):
+        st.session_state.pop(f"{key}{suffix}", None)
+
+
+def player_picker(key, sport, db_revision, label="Player name", default_name=""):
+    """Live-filtering player picker that resolves an unambiguous name itself.
+
+    One control does both jobs. Typing filters the most-played players in
+    the browser, so matches appear keystroke by keystroke with no round
+    trip; typing a name that list does not hold -- an accented spelling the
+    browser's own filter cannot fold, a career of four games, a typo --
+    commits the raw text and hands it to `player_matches`, which searches
+    every player with the accent and similarity rules the browser has no
+    idea about. Either way a single match is returned outright, and only a
+    genuinely ambiguous one asks the reader to choose.
+    """
+    pick_key = f"{key}_pick"
+    narrow_key = f"{key}_narrow"
+    if pick_key not in st.session_state and default_name:
+        # Seeded as text rather than an id: a restored grid names a player,
+        # and the free-text path below resolves the name to an id already.
+        st.session_state[pick_key] = default_name
+
+    quick = quick_player_options(sport.key, sport.db, db_revision)
+    known = {pid: (name, player_label) for pid, name, player_label in quick}
+
+    chosen = st.selectbox(
+        label, list(known), index=None, key=pick_key,
+        # Defensive on purpose: Streamlit formats whatever the widget holds,
+        # and what it holds after free text -- or after `default_name` seeds
+        # it -- is a typed name, not one of these ids.
+        format_func=lambda pid: known.get(pid, ("", str(pid)))[1],
+        accept_new_options=True,
+        placeholder="Start typing a player name…")
+
+    if chosen is None:
         st.caption("Type part of a first name or surname.")
         return None
+    if chosen in known:
+        return chosen, known[chosen][0]
 
+    # Free text: not one of the names the browser was given. Search them all.
+    query = str(chosen)
     matches = player_matches(query, sport, db_revision)
     if not matches:
         st.warning(f"No player matches ‘{query.strip()}’.")
         return None
+
+    resolved = resolve_typed_player(query, matches)
+    if resolved is not None:
+        pid, name = resolved
+        st.caption(f"Showing **{name}**.")
+        return pid, name
 
     q = _player_search_key(query)
     if q and not any(q in _player_search_key(name) for _, name, _ in matches):
@@ -179,12 +283,12 @@ def player_picker(key, sport, db_revision, label="Player name", default_name="")
     details = {pid: (name, player_label)
                for pid, name, player_label in matches}
 
-    if (choice_key in st.session_state
-            and st.session_state[choice_key] not in options):
-        del st.session_state[choice_key]
+    if (narrow_key in st.session_state
+            and st.session_state[narrow_key] not in options):
+        del st.session_state[narrow_key]
 
     pid = st.selectbox(
-        "Matching players", options, index=0, key=choice_key,
+        "Matching players", options, index=0, key=narrow_key,
         format_func=lambda player_id: details[player_id][1],
         label_visibility="collapsed")
 

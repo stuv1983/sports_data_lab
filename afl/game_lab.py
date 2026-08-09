@@ -25,6 +25,8 @@ delegates here for the AFL sport.
 
 import streamlit as st
 
+import ui_widgets
+
 from . import constraints as C
 from . import historic_grids as HG
 from . import parse_criteria as P
@@ -304,8 +306,7 @@ def _reset(con, pool):
     st.session_state.gl_revealed = 1
     st.session_state.gl_guesses = []
     st.session_state.gl_solved = False
-    for key in ("gl_guess_query", "gl_guess_choice"):
-        st.session_state.pop(key, None)
+    ui_widgets.clear_player_picker("gl_guess")
 
 
 CLUE_STYLES = ("Database profile", "Gridley criteria")

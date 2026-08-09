@@ -168,3 +168,95 @@ def test_diacritics_of_every_shape_normalise_to_their_ascii_letter():
     }
     for name, expected in cases.items():
         assert W._player_search_key(name) == expected
+
+
+# --------------------------------------- resolving a typed name to a player
+
+def _matches(names):
+    return [(i, name, name) for i, name in enumerate(names)]
+
+
+def test_a_search_with_one_result_needs_no_second_widget():
+    """The dropdown existed to choose between matches. With one match there
+    is nothing to choose, so the reader should never see it."""
+    assert W.resolve_typed_player(
+        "acuna", _matches(["Ronald Acuña"])) == (0, "Ronald Acuña")
+
+
+def test_a_fully_typed_name_wins_over_the_others_it_is_inside():
+    """"Ronald Acuna" is a substring search that rightly also finds
+    Luisangel Acuña -- but the text typed *is* one player's whole name, and
+    that player is the one meant."""
+    resolved = W.resolve_typed_player(
+        "Ronald Acuna", _matches(["Ronald Acuña", "Luisangel Acuña"]))
+    assert resolved == (0, "Ronald Acuña")
+
+
+def test_a_partial_name_with_several_matches_still_asks():
+    """"acuna" alone names neither of them, so guessing would be wrong."""
+    assert W.resolve_typed_player(
+        "acuna", _matches(["Ronald Acuña", "Luisangel Acuña"])) is None
+
+
+def test_a_name_two_players_share_is_never_resolved_silently():
+    """Exactly-typed is not the same as unambiguous. Picking the first of
+    two Bobby Joneses would quietly answer about the wrong career."""
+    assert W.resolve_typed_player(
+        "Bobby Jones", _matches(["Bobby Jones", "Bobby Jones"])) is None
+
+
+def test_no_match_resolves_to_nothing():
+    assert W.resolve_typed_player("nobody", []) is None
+
+
+def test_starting_a_new_round_leaves_the_guess_box_empty(monkeypatch):
+    """Every Game Lab mode resets its picker between rounds. They used to do
+    it by naming this widget's session keys themselves, so renaming one left
+    the last answer sitting in the box looking like a fresh question."""
+    state = {}
+    monkeypatch.setattr(W.st, "session_state", state)
+
+    state["gl_guess_pick"] = "Lebron James"
+    state["gl_guess_narrow"] = 7
+    state["gl_target"] = 12
+
+    W.clear_player_picker("gl_guess")
+
+    assert "gl_guess_pick" not in state
+    assert "gl_guess_narrow" not in state
+    assert state["gl_target"] == 12, "cleared more than its own keys"
+
+
+def test_every_reset_in_the_app_clears_a_picker_through_the_widget():
+    """The three reset paths must go through `clear_player_picker`. Reading
+    the source is the only way to catch a fourth one written by hand."""
+    import pathlib
+
+    root = pathlib.Path(W.__file__).resolve().parent
+    offenders = []
+    for path in (root / "explore.py", root / "afl" / "game_lab.py"):
+        for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), 1):
+            if "_guess_query" in line or "_guess_choice" in line:
+                offenders.append(f"{path.name}:{number}")
+    assert not offenders, (
+        f"reset by hand-named picker keys: {offenders}")
+
+
+def test_the_typeahead_list_is_capped_and_led_by_the_most_played(monkeypatch):
+    """The browser filters this list as the user types, so it is shipped on
+    every rerun -- the cap is what keeps that affordable, and the ordering
+    is what keeps the cap from mattering."""
+    import sports
+
+    for sport in (sports.AFL, sports.NBA, sports.MLB, sports.NFL):
+        if not sport.exists():
+            continue
+        quick = W.quick_player_options.__wrapped__(
+            sport.key, sport.db, 0)
+        assert 0 < len(quick) <= W.QUICK_PLAYER_LIMIT
+        assert len({pid for pid, _, _ in quick}) == len(quick)
+        # A nameless row would be a blank line in the dropdown. The NFL has
+        # one, holding the plays its source could not attribute to anybody.
+        assert all(name and str(name).strip() and player_label
+                   for _, name, player_label in quick)

@@ -4,13 +4,14 @@ import streamlit as st
 
 import accounts
 import accounts_ui
+import branding
 import db_pool
 import sports
 import theme
 
 _key = st.session_state.get("sport", sports.DEFAULT)
 _pre = sports.get(_key)
-st.set_page_config(page_title=f"Sports Data Lab — {_pre.label.replace(' Data Lab', '')}", page_icon=_pre.icon, layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title=f"Sports Data Lab — {_pre.label.replace(' Data Lab', '')}", page_icon=branding.page_icon(_pre), layout="wide", initial_sidebar_state="expanded")
 
 if "verify" in st.query_params:
     token = st.query_params["verify"]
@@ -70,6 +71,11 @@ with st.sidebar.expander("Database status", expanded=False):
 
 PALETTE = theme.controls(st, SPORT.key)
 st.markdown(theme.css(PALETTE), unsafe_allow_html=True)
+
+# The favicon is set above by set_page_config; this adds what it cannot --
+# the iOS home-screen icon and the web-app meta tags, tinted to the palette
+# the reader actually chose.
+branding.apply(st, SPORT, theme_color=PALETTE.get("board", ""))
 
 accounts.ensure_schema()
 AUTH_USER = accounts.get_user(st.session_state.get("auth_user_id"))

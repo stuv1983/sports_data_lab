@@ -14,3 +14,9 @@ textColor = "#F7F9FC"             # chalk
 
 [browser]
 gatherUsageStats = false
+
+[server]
+# Publishes ./static at /app/static. branding.py needs it to give iOS a URL
+# for the home-screen icon: `apple-touch-icon` has never reliably accepted a
+# `data:` URI, and Streamlit offers no other way to put a file in the head.
+enableStaticServing = true
