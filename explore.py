@@ -521,8 +521,15 @@ def _format_weight(value, unit):
 
 
 def _career_blurb(V, debut, final, games, n_clubs, draft_year=None,
-                  career_score=0, titles=None, honours=()):
+                  career_score=0, titles=None, honours=(), name=None):
     """One flavour-text sentence, in the voice of a trading card back.
+
+    `name` is the subject when the caller has it. The card already knows who
+    it is -- the name is in the banner directly above -- so the older
+    "Across 195 games ..., this player recorded 232 goals" read as though
+    the sentence had been written for somebody anonymous and then pasted
+    onto a card that names them. Falls back to "This player" so a caller
+    without a name still gets a grammatical sentence.
 
     `position` is deliberately not woven into the sentence: the data holds
     codes ("RB", "G"), not nouns, and "this rb played..." reads as a typo
@@ -537,8 +544,9 @@ def _career_blurb(V, debut, final, games, n_clubs, draft_year=None,
         return ""
     club_clause = f"one {V.club}" if n_clubs == 1 else f"{n_clubs} {V.clubs}"
     prefix = f"Drafted in {int(draft_year)}. " if draft_year else ""
-    sentence = (f"Across {games:,} {V.games} for {club_clause} from "
-                f"{debut} to {final}, this player")
+    subject = str(name).strip() if name and str(name).strip() else "This player"
+    sentence = (f"{subject} played {games:,} {V.games} for {club_clause} "
+                f"from {debut} to {final}")
     achievements = []
     if career_score:
         achievements.append(f"recorded {int(career_score):,} {V.score}")
@@ -550,13 +558,13 @@ def _career_blurb(V, debut, final, games, n_clubs, draft_year=None,
             f"earned {int(honour['Times'])}x {honour['Honour']}"
         )
     if achievements:
+        # The clauses hang off the opening one, so each is introduced by a
+        # comma rather than the bare space the anonymous phrasing needed.
         if len(achievements) == 1:
-            sentence += " " + achievements[0]
+            sentence += ", " + achievements[0]
         else:
-            sentence += " " + ", ".join(achievements[:-1])
+            sentence += ", " + ", ".join(achievements[:-1])
             sentence += ", and " + achievements[-1]
-    else:
-        sentence += " built the career shown here"
     return prefix + sentence + "."
 
 
@@ -720,7 +728,7 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
             blurb = _career_blurb(
                 V, debut, final, career_games, n_clubs,
                 bio.get("draft_year"), p[4] or 0, titles,
-                enrichment["honours"],
+                enrichment["honours"], name=p[0],
             )
             if blurb:
                 st.caption(blurb)
@@ -1290,6 +1298,43 @@ def _new_game_target(sport, con):
     return row[0] if row else None
 
 
+def _new_game_pair(sport, con):
+    """Two *different* players for a head-to-head round.
+
+    Drawing twice from _new_game_target can return the same player twice,
+    which made "who played more games?" unanswerable -- and, because the
+    comparison is `>=`, scored both buttons as correct. One query with
+    LIMIT 2 cannot repeat a row.
+    """
+    sc = sport.schema
+    rows = con.execute(f"""
+        SELECT {sc.player_id} FROM {sc.players}
+        WHERE {sc.career_games} >= 100
+        ORDER BY RANDOM() LIMIT 2""").fetchall()
+    if len(rows) < 2:
+        return None, None
+    return rows[0][0], rows[1][0]
+
+
+def _threshold_target(sport, con, keep=50, step=50):
+    """A round career-games mark with roughly `keep` players above it.
+
+    The mark was hard-coded at 300 games, which is a reasonable AFL career
+    and a nonsensical target in three of the four sports -- an NFL career
+    that long is nearly unheard of, so the challenge had no answers at all.
+    Measuring the sport's own distribution keeps every league playable.
+    """
+    sc = sport.schema
+    row = con.execute(
+        f"SELECT {sc.career_games} FROM {sc.players} "
+        f"WHERE {sc.career_games} IS NOT NULL "
+        f"ORDER BY {sc.career_games} DESC LIMIT 1 OFFSET ?",
+        (max(keep - 1, 0),)).fetchone()
+    if not row or not row[0]:
+        return None
+    return max(int(row[0]) // step * step, step)
+
+
 def game_lab_page(sport, con, player_picker):
     """
     Game Lab entry point, called by app.py.
@@ -1413,98 +1458,169 @@ def _game_career_path(sport, con, player_picker):
     target_key = sport.k("career_target")
     if target_key not in st.session_state:
         st.session_state[target_key] = _new_game_target(sport, con)
-        
-    if st.button("New Mystery Career", key=sport.k("new_career_target")):
+
+    if st.button("New mystery career", key=sport.k("new_career_target")):
         st.session_state[target_key] = _new_game_target(sport, con)
-        
+        # Without this the next player arrived already "solved", showing
+        # somebody else's answer before a guess had been made.
+        st.session_state.pop(sport.k("career_solved"), None)
+        st.session_state[sport.k("career_wrong")] = []
+        st.session_state.pop(sport.k("career_guess_query"), None)
+        st.session_state.pop(sport.k("career_guess_choice"), None)
+
+
     pid = st.session_state[target_key]
-    # Fetch career path
     rows = con.execute(f"""
-        SELECT {sc.season}, {sc.club_hist} 
-        FROM {sc.games} 
-        WHERE {sc.player_id} = ? 
+        SELECT {sc.season}, {sc.club_hist}
+        FROM {sc.games}
+        WHERE {sc.player_id} = ?
         GROUP BY {sc.season}, {sc.club_hist}
         ORDER BY {sc.season}
     """, (pid,)).fetchall()
-    
+
     st.write("Can you guess the player from their career path?")
     import pandas as pd
-    st.dataframe(pd.DataFrame(rows, columns=["Season", "Club"]), hide_index=True)
-    
-    guess = player_picker(sport.k("career_guess"), label="Who is this?")
-    if guess is not None and st.button("Submit Guess", key=sport.k("submit_career_guess")):
-        if guess[0] == pid:
-            st.success("Correct!")
-            st.balloons()
-        else:
-            st.error("Incorrect, keep trying!")
+    st.dataframe(pd.DataFrame(rows, columns=["Season", "Club"]),
+                 hide_index=True)
+
+    name = con.execute(
+        f"SELECT {sc.player} FROM {sc.players} WHERE {sc.player_id} = ?",
+        (pid,)).fetchone()
+    name = name[0] if name else "unknown"
+
+    # Held in state rather than shown inline: a Streamlit button is only
+    # True on the run it was clicked, so the old verdict disappeared as
+    # soon as anything else on the page caused a rerun.
+    wrong = st.session_state.setdefault(sport.k("career_wrong"), [])
+    solved = st.session_state.get(sport.k("career_solved"))
+
+    if solved is True:
+        st.success(f"Correct — it was **{name}**.")
+    elif solved is False:
+        st.info(f"It was **{name}**.")
+    else:
+        guess = player_picker(sport.k("career_guess"), label="Who is this?")
+        if guess is not None and st.button(
+                "Submit guess", key=sport.k("submit_career_guess"),
+                type="primary"):
+            if guess[0] == pid:
+                st.session_state[sport.k("career_solved")] = True
+            else:
+                wrong.append(guess[1])
+            st.rerun()
+        if wrong:
+            st.caption("Already tried: " + ", ".join(wrong))
+        if st.button("Reveal answer", key=sport.k("career_reveal")):
+            st.session_state[sport.k("career_solved")] = False
+            st.rerun()
             
 def _game_higher_lower(sport, con):
     V, sc = sport.vocab, sport.schema
-    
+    pair_key, score_key, verdict_key = (
+        sport.k("hl_pair"), sport.k("hl_score"), sport.k("hl_verdict"))
+
+    if pair_key not in st.session_state:
+        st.session_state[pair_key] = _new_game_pair(sport, con)
+        st.session_state[score_key] = [0, 0]
+        st.session_state[verdict_key] = None
+
     st.write(f"Which player has more career {V.games}?")
-    
-    keys = (sport.k("hl_p1"), sport.k("hl_p2"))
-    if keys[0] not in st.session_state:
-        st.session_state[keys[0]] = _new_game_target(sport, con)
-        st.session_state[keys[1]] = _new_game_target(sport, con)
-        
-    if st.button("Next Matchup", key=sport.k("new_hl")):
-        st.session_state[keys[0]] = _new_game_target(sport, con)
-        st.session_state[keys[1]] = _new_game_target(sport, con)
-        
-    p1_id, p2_id = st.session_state[keys[0]], st.session_state[keys[1]]
-    
-    def get_info(pid):
-        return con.execute(f"SELECT {sc.player}, {sc.career_games} FROM {sc.players} WHERE {sc.player_id} = ?", (pid,)).fetchone()
-        
-    p1 = get_info(p1_id)
-    p2 = get_info(p2_id)
-    
+    right, played = st.session_state[score_key]
+    if played:
+        st.caption(f"Score: {right} of {played}.")
+
+    p1_id, p2_id = st.session_state[pair_key]
+    if p1_id is None:
+        st.info("Not enough players to build a matchup.")
+        return
+
+    def info(pid):
+        return con.execute(
+            f"SELECT {sc.player}, {sc.career_games} FROM {sc.players} "
+            f"WHERE {sc.player_id} = ?", (pid,)).fetchone()
+
+    p1, p2 = info(p1_id), info(p2_id)
     if not p1 or not p2:
         return
-        
+
+    verdict = st.session_state[verdict_key]
     c1, c2 = st.columns(2)
     c1.markdown(f"### {p1[0]}")
     c2.markdown(f"### {p2[0]}")
-    
-    if c1.button("Higher", key=sport.k("hl_b1"), use_container_width=True):
-        if (p1[1] or 0) >= (p2[1] or 0):
-            st.success(f"Correct! {p1[0]} ({p1[1]}) >= {p2[0]} ({p2[1]})")
-        else:
-            st.error(f"Wrong! {p1[0]} ({p1[1]}) < {p2[0]} ({p2[1]})")
-            
-    if c2.button("Higher", key=sport.k("hl_b2"), use_container_width=True):
-        if (p2[1] or 0) >= (p1[1] or 0):
-            st.success(f"Correct! {p2[0]} ({p2[1]}) >= {p1[0]} ({p1[1]})")
-        else:
-            st.error(f"Wrong! {p2[0]} ({p2[1]}) < {p1[0]} ({p1[1]})")
+
+    def answer(picked, other):
+        # Recorded before the rerun that displays it, so the verdict
+        # survives -- previously it vanished the moment anything else on
+        # the page was touched.
+        correct = (picked[1] or 0) >= (other[1] or 0)
+        st.session_state[score_key] = [right + int(correct), played + 1]
+        st.session_state[verdict_key] = (
+            correct,
+            f"{p1[0]} played {p1[1] or 0:,} {V.games}; "
+            f"{p2[0]} played {p2[1] or 0:,} {V.games}.")
+        st.rerun()
+
+    if verdict is None:
+        if c1.button("Higher", key=sport.k("hl_b1"), use_container_width=True):
+            answer(p1, p2)
+        if c2.button("Higher", key=sport.k("hl_b2"), use_container_width=True):
+            answer(p2, p1)
+    else:
+        correct, detail = verdict
+        (st.success if correct else st.error)(
+            ("Correct. " if correct else "Not this time. ") + detail)
+        if st.button("Next matchup", key=sport.k("new_hl"), type="primary"):
+            st.session_state[pair_key] = _new_game_pair(sport, con)
+            st.session_state[verdict_key] = None
+            st.rerun()
             
 def _game_stat_threshold(sport, con):
     V, sc = sport.vocab, sport.schema
-    st.write(f"Name players with at least **300 {V.games}**!")
-    
-    if sport.k("st_correct") not in st.session_state:
-        st.session_state[sport.k("st_correct")] = []
-        
+    target = _threshold_target(sport, con)
+    if not target:
+        st.info(f"This sport has no recorded career {V.games} to set a "
+                "target from.")
+        return
+
+    found_key = sport.k("st_correct")
+    if found_key not in st.session_state:
+        st.session_state[found_key] = []
+    found = st.session_state[found_key]
+
+    total = con.execute(
+        f"SELECT COUNT(*) FROM {sc.players} WHERE {sc.career_games} >= ?",
+        (target,)).fetchone()[0]
+    st.write(f"Name players with at least **{target:,} {V.games}**.")
+    st.caption(f"Found {len(found)} of {total:,}.")
+
     import ui_widgets
     query = st.text_input("Enter player name:", key=sport.k("st_input"))
     if query:
-        matches = ui_widgets.player_matches(query, sport, _db_revision(sport.db), limit=5)
-        if matches:
-            for pid, label, _, _ in matches:
-                if st.button(label, key=sport.k(f"st_btn_{pid}")):
-                    row = con.execute(f"SELECT {sc.player}, {sc.career_games} FROM {sc.players} WHERE {sc.player_id} = ?", (pid,)).fetchone()
-                    if row and (row[1] or 0) >= 300:
-                        if row[0] not in st.session_state[sport.k("st_correct")]:
-                            st.session_state[sport.k("st_correct")].append(row[0])
-                            st.success(f"Correct! {row[0]} has {row[1]} {V.games}!")
-                        else:
-                            st.warning("You already guessed that player.")
-                    else:
-                        st.error(f"Incorrect. {row[0]} only has {row[1] or 0} {V.games}.")
-                        
-    if st.session_state[sport.k("st_correct")]:
-        st.write("### Found so far:")
-        for name in st.session_state[sport.k("st_correct")]:
+        matches = ui_widgets.player_matches(
+            query, sport, _db_revision(sport.db), limit=5)
+        if not matches:
+            st.caption("No player of that name.")
+        # (pid, name, label) -- unpacking a fourth value raised ValueError
+        # here, so this mode crashed on the first character typed.
+        for pid, name, label in matches:
+            if not st.button(label, key=sport.k(f"st_btn_{pid}")):
+                continue
+            row = con.execute(
+                f"SELECT {sc.career_games} FROM {sc.players} "
+                f"WHERE {sc.player_id} = ?", (pid,)).fetchone()
+            played = int(row[0] or 0) if row else 0
+            if played < target:
+                st.error(f"Not quite. {name} played {played:,} {V.games}.")
+            elif name in found:
+                st.warning(f"{name} is already on your list.")
+            else:
+                found.append(name)
+                st.success(f"Correct — {name} played {played:,} {V.games}.")
+
+    if found:
+        st.write("### Found so far")
+        for name in found:
             st.write(f"✅ {name}")
+        if st.button("Start again", key=sport.k("st_reset")):
+            st.session_state[found_key] = []
+            st.rerun()

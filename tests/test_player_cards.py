@@ -48,12 +48,43 @@ def test_card_blurb_uses_loaded_scores_titles_and_honours():
         sports.AFL.vocab, 2010, 2024, 302, 1, 2009,
         career_score=338, titles=3,
         honours=[{"Honour": "All-Australian", "Times": 4}],
+        name="Dustin Martin",
     )
 
-    assert text.startswith("Drafted in 2009. Across 302 games")
+    assert text.startswith("Drafted in 2009. Dustin Martin played 302 games")
     assert "338 goals" in text
     assert "3 premierships" in text
     assert "4x All-Australian" in text
+
+
+def test_card_blurb_names_the_player_it_is_describing():
+    """The card banner names them directly above, so an anonymous "this
+    player" read as boilerplate pasted onto somebody else's card."""
+    text = explore._career_blurb(
+        sports.AFL.vocab, 1995, 2004, 195, 2,
+        career_score=232, titles=3, name="Craig McRae")
+
+    assert text == ("Craig McRae played 195 games for 2 clubs from 1995 to "
+                    "2004, recorded 232 goals, and won 3 premierships.")
+
+
+def test_card_blurb_without_a_name_still_reads_as_a_sentence():
+    text = explore._career_blurb(
+        sports.AFL.vocab, 1995, 2004, 195, 2, career_score=232)
+
+    assert text == ("This player played 195 games for 2 clubs from 1995 to "
+                    "2004, recorded 232 goals.")
+
+
+def test_card_blurb_with_no_achievements_still_ends_cleanly():
+    """The old phrasing needed a "built the career shown here" tail to
+    finish the clause. Naming the subject makes the opening a whole
+    sentence, so the filler goes."""
+    text = explore._career_blurb(sports.AFL.vocab, 1995, 2004, 195, 2,
+                                 name="Craig McRae")
+
+    assert text == ("Craig McRae played 195 games for 2 clubs "
+                    "from 1995 to 2004.")
 
 
 @pytest.mark.parametrize("sport", [sports.AFL, sports.NBA, sports.MLB, sports.NFL])
