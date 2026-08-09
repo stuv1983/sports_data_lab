@@ -217,6 +217,40 @@ def _builder_label(kind, vocab):
     return label
 
 
+def _placeholder_number(value):
+    """195 -> '195'; 50000 -> '50,000'; 1.5 -> '1.5'."""
+    if isinstance(value, float) and value != int(value):
+        return f"{value:g}"
+    return f"{int(value):,}"
+
+
+def _fill_placeholders(template, args, vocab):
+    """Substitute a builder key's X/Y placeholders with the chosen values.
+
+    BUILDERS keys are templates -- "X+ cm tall", "Played before a crowd of
+    X+". Any kind without an explicit rule in axis_widget fell through to
+    the key itself, so the board drew a literal "X+ CM TALL" heading over a
+    square that was, correctly, solving for 195. Fifteen keys did this.
+
+    Placeholders are filled from the *numeric* arguments in order rather
+    than by position, so a key whose first argument is not the number --
+    "Won an award X+ times", whose args are (award, times) -- still lands
+    on the right one.
+    """
+    numbers = iter([a for a in args
+                    if isinstance(a, (int, float)) and not isinstance(a, bool)])
+
+    def take(match):
+        # Consumed left to right rather than keyed on the letter: one key
+        # ("Top X Brownlow finish X+ times") spends X twice and has no Y.
+        try:
+            return _placeholder_number(next(numbers))
+        except StopIteration:
+            return match.group(0)
+
+    return re.sub(r"\b[XY]\b", take, _builder_label(template, vocab))
+
+
 def axis_widget(key, default_type, defaults, sport, db_revision, available_builders):
     """One axis of the grid. Returns (label, constraint) or (label, None)."""
     defaults = defaults or {}
@@ -519,6 +553,12 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
         label = f"top-{args[0]} Brownlow\n{args[1]}+ times"
     elif kind == "X+ Brownlow votes in a season":
         label = f"{args[0]}+ Brownlow votes\nin a season"
+
+    # Safety net for every key the chain above has no rule for: a template
+    # placeholder must never reach the board. Cheap, and it means a new
+    # BUILDERS entry reads correctly before anyone writes it a rule.
+    if re.search(r"\b[XY]\b", label):
+        label = _fill_placeholders(label, args, V)
 
     if kind in ("Teammate of…", "Played with…") and (
             not args or args[0] is None):

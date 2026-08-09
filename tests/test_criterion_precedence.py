@@ -145,3 +145,28 @@ def run():
 
 if __name__ == "__main__":
     run()
+
+
+# ------------------------------------------- wording seen on real boards
+
+def test_gridley_1119_wording_parses_as_the_board_states_it():
+    """Boards past the captured library have to be typed in. These are the
+    six axes of #1119 exactly as Gridley words them."""
+    assert label("195cm OR TALLER") == "195+ cm tall"
+    assert label("50+ GAMES TWO DIFF CLUBS") == "50+ games at 2 clubs"
+    assert label("LUKE JACKSON TEAMMATE") == "Luke Jackson teammate"
+    assert label("GRAND FINAL PLAYER") == "played a grand final"
+
+
+def test_gridley_1118_wording_parses_as_the_board_states_it():
+    """"3+ GRAND FINALS" must read 3, not 4 -- an off-by-one here silently
+    answers a harder square than the board asked."""
+    assert label("3+ GRAND FINALS") == "played in 3+ grand finals"
+    assert label("TOP 10 BROWNLOW FINISH") == "top-10 Brownlow finish"
+    assert label("HAWTHORN FIRST CAREER GAME") == "Hawthorn first career game"
+    assert label("ALL-AUSTRALIAN SQUAD") == "All-Australian squad"
+
+
+def test_a_grand_final_count_keeps_the_number_it_was_given():
+    for n in (1, 2, 3, 4, 5):
+        assert label(f"{n}+ GRAND FINALS") == f"played in {n}+ grand finals"

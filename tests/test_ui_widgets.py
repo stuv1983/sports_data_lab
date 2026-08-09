@@ -74,3 +74,53 @@ def test_a_short_query_never_triggers_the_fuzzy_scan(monkeypatch):
     matches = W.player_matches("zz", sport=type(
         "S", (), {"key": "nba", "db": ":memory:"})(), db_revision=0)
     assert matches == []
+
+
+# ----------------------------------------------- axis labels on the board
+
+def test_a_builder_template_placeholder_never_reaches_the_board():
+    """axis_widget falls back to the BUILDERS key when it has no explicit
+    rule for a kind, and fifteen of those keys are templates. The Grid
+    Solver drew a literal "X+ CM TALL" heading over a square that was,
+    correctly, solving for 195."""
+    import sports
+
+    assert W._fill_placeholders(
+        "X+ cm tall", [195], sports.AFL.vocab) == "195+ cm tall"
+    assert W._fill_placeholders(
+        "X cm or shorter", [180], sports.AFL.vocab) == "180 cm or shorter"
+
+
+def test_the_placeholder_takes_the_number_not_the_first_argument():
+    """"Won an award X+ times" is built from (award, times), so filling
+    positionally would print the award slug where the count belongs."""
+    import sports
+
+    assert W._fill_placeholders(
+        "Won an award X+ times", ["all-australian", 3],
+        sports.AFL.vocab) == "Won an award 3+ times"
+
+
+def test_a_crowd_size_is_grouped_so_it_can_be_read_at_a_glance():
+    import sports
+
+    assert W._fill_placeholders(
+        "Played before a crowd of X+", [50000],
+        sports.AFL.vocab) == "Played before a crowd of 50,000+"
+
+
+def test_no_builder_key_in_any_sport_can_leave_a_placeholder_behind():
+    """The guarantee, stated over the real registries rather than a list
+    of the keys that happened to be templates when this was written."""
+    import re
+
+    import sports
+
+    for sport in (sports.AFL, sports.NBA, sports.MLB, sports.NFL):
+        for kind, (_fn, argnames) in sport.C.BUILDERS.items():
+            if not re.search(r"\b[XY]\b", kind):
+                continue
+            # two numbers is the most any template asks for
+            filled = W._fill_placeholders(kind, [7, 9], sport.vocab)
+            assert not re.search(r"\b[XY]\b", filled), (
+                f"{sport.key}: {kind!r} still reads {filled!r}")
