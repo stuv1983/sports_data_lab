@@ -172,7 +172,10 @@ def _build_steps(sport: str, db: str | None = None) -> list[Step]:
             # calls against undocumented endpoints for results settled
             # decades ago. The full history is still built either way.
             argv.extend(("--refresh-seasons", _nba_open_seasons()))
-        return [Step(f"Fetch and rebuild NBA ({source})", tuple(argv))]
+        return [
+            Step(f"Fetch and rebuild NBA ({source})", tuple(argv)),
+            _load_arenas_step("nba", db),
+        ]
     if sport == "mlb":
         # The Lahman CSVs built this database once and are not read again.
         # Lahman publishes a season only after it ends, so the rebuild
@@ -185,10 +188,11 @@ def _build_steps(sport: str, db: str | None = None) -> list[Step]:
         # in a staged update it would write to the live database instead
         # of the copy, and its game-log URL is pinned to gl1871_2025.zip
         # in any case -- it cannot yield a 2026 game to add.
-        return [Step(
-            "Load the current MLB season from the Stats API",
-            _python("-m", "utils.mlb.load_statsapi", "--db", db),
-        )]
+        return [
+            Step("Load the current MLB season from the Stats API",
+                 _python("-m", "utils.mlb.load_statsapi", "--db", db)),
+            _load_arenas_step("mlb", db),
+        ]
     if sport == "nfl":
         return [
             Step("Fetch and rebuild NFL", _python(
@@ -203,8 +207,24 @@ def _build_steps(sport: str, db: str | None = None) -> list[Step]:
             Step("Project NFL club history", _python(
                 "-m", "utils.nfl.load_club_history", "--db", db),
                 optional=True),
+            _load_arenas_step("nfl", db),
         ]
     raise ValueError(f"unknown sport: {sport}")
+
+
+def _load_arenas_step(sport: str, db: str) -> Step:
+    """Reload the Wikipedia arena/stadium reference tables.
+
+    `mlb.build_mlb_db`, `nba.build_nba_db` and `nfl.build_db` know nothing
+    of `arenas`/`arena_teams` -- a database they write (or the copy MLB's
+    incremental step runs against) simply lacks them, silently dropping
+    the table on the next promotion. Reading `data/arena/**/master_*.csv`
+    back in takes under a second and needs no network, the same shape as
+    the AFL Hall of Fame/teams-of-century loaders below.
+    """
+    return Step("Load arena reference data", _python(
+        "-m", "utils.shared.load_arenas", "--sport", sport, "--db", db),
+        optional=True)
 
 
 def _award_steps(db: str | None = None,

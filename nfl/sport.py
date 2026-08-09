@@ -119,6 +119,8 @@ SPORT = Sport(
     has_club_explorer=True,
     has_awards_page=True,
     awards_page_module="utils.shared.wiki_awards_page",
+    has_ground_explorer=True,
+    ground_explorer_module="nfl.ground_explorer",
     has_past_games=True,
     past_games_hint=("Run `python -m utils.nfl.load_club_history` to project the "
                      "schedule already in the database into club-history "

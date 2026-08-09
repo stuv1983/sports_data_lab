@@ -83,6 +83,8 @@ SPORT = Sport(
     title_round="WS",
     has_awards_page=True,
     awards_page_module="mlb.awards_page",
+    has_ground_explorer=True,
+    ground_explorer_module="mlb.ground_explorer",
     optional_layers={"Awards data": "awards_available",
                      "Hall of Fame": "hall_of_fame_available",
                      "WAR (Baseball-Reference)": "war_available"},
