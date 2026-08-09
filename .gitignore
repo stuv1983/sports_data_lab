@@ -72,3 +72,4 @@ logs/database_updates/
 tmp/
 temp/
 *.tmp
+deploy.ps1

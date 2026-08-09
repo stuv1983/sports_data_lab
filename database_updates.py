@@ -27,7 +27,6 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-import config
 import data_paths
 
 ROOT = Path(__file__).resolve().parent
@@ -107,20 +106,6 @@ def _configured_command(name: str) -> tuple[str, ...] | None:
     return tuple(shlex.split(value, posix=os.name != "nt"))
 
 
-def _nba_open_seasons(today: dt.date | None = None) -> str:
-    """The NBA seasons a rebuild still has to ask NBA.com about.
-
-    A season starting in year N is played into N+1, so through the first
-    half of a calendar year the season in progress started last year. Both
-    are named: the previous one can still gain late playoff games, and
-    naming one season too many costs a handful of requests where naming
-    one too few silently misses games.
-    """
-    today = today or dt.datetime.now().astimezone().date()
-    started = today.year if today.month >= 9 else today.year - 1
-    return f"{started - 1}-{started}"
-
-
 def _build_steps(sport: str, db: str | None = None) -> list[Step]:
     db = db or data_paths.default_db(sport)
     if sport == "afl":
@@ -152,35 +137,26 @@ def _build_steps(sport: str, db: str | None = None) -> list[Step]:
                 "--db", db), optional=True),
         ]
     if sport == "nba":
-        # config.secret reads the environment first and
-        # .streamlit/secrets.toml second. The environment alone was not
-        # enough: the Windows scheduled task runs with a bare environment,
-        # so a source configured only by `setx` was invisible to exactly
-        # the job that most needs it.
-        source = config.secret("SPORTS_DATA_NBA_SOURCE", "csv").strip().lower()
-        if source not in {"csv", "live", "bbr", "nba_api"}:
-            raise ValueError(
-                "SPORTS_DATA_NBA_SOURCE must be csv, live, bbr, or nba_api")
-        argv = list(_python(
-            "-m", "nba.build_nba_db", "--db", db, "--source", source,
-            # This step runs against a staging file that sits beside the
-            # live database. build_nba_db's own reference write would land
-            # on data/nba/reference/nba_reference.json regardless of whether
-            # this staging build is ever promoted -- see _refresh_reference,
-            # which redoes it against the live path only after promotion
-            # actually succeeds.
-            "--no-reference"))
-        source_root = config.secret("SPORTS_DATA_NBA_SOURCE_ROOT", "").strip()
-        if source_root:
-            argv.extend(("--source-root", source_root))
-        if source in {"live", "nba_api"}:
-            # Only the seasons that can still gain games. Blanket
-            # --refresh re-requested all eighty every run, a few hundred
-            # calls against undocumented endpoints for results settled
-            # decades ago. The full history is still built either way.
-            argv.extend(("--refresh-seasons", _nba_open_seasons()))
+        # nba.build_nba_db --source live can build a full history, but
+        # NBA.com's own game log reports the same numeric team_id for a
+        # franchise across its entire history -- it has no notion that the
+        # Thunder were the SuperSonics in 1985. A full rebuild from
+        # --source live therefore cannot produce an historically-accurate
+        # club_hist for any relocated or renamed franchise: every game,
+        # however old, gets stamped with the modern name. See
+        # utils/nba/load_current_season.py's module docstring for the
+        # incident this caused.
+        #
+        # So NBA gets MLB's treatment: the full history comes from
+        # --source csv (or a real scrape), built once, by hand -- see
+        # _rebuild_sports, which excludes nba the same way it already
+        # excludes mlb. This step only ever appends the season(s) still in
+        # progress, from NBA.com's live game log, and never touches an
+        # already-loaded season -- so it never has the live source's
+        # historical-identity problem to begin with.
         return [
-            Step(f"Fetch and rebuild NBA ({source})", tuple(argv)),
+            Step("Load the current NBA season(s)", _python(
+                "-m", "utils.nba.load_current_season", "--db", db)),
             _load_arenas_step("nba", db),
         ]
     if sport == "mlb":
@@ -205,8 +181,14 @@ def _build_steps(sport: str, db: str | None = None) -> list[Step]:
             Step("Fetch and rebuild NFL", _python(
                 "-m", "nfl.build_db", "--db", db,
                 "--all-history", "--replace")),
+            # --no-reference: this step runs against a staging file beside
+            # the live database -- see _refresh_reference, which redoes the
+            # reference write against the live path once promotion (not
+            # this step) actually succeeds. Same reasoning as NBA's
+            # --no-reference above.
             Step("Patch NFL application tables", _python(
-                "-m", "utils.nfl.patch_nfl_db", "--db", db)),
+                "-m", "utils.nfl.patch_nfl_db", "--db", db,
+                "--no-reference")),
             # Without this the club pages read "Past games are not
             # loaded". `nfl.build_db --replace` writes the schedule but
             # not the club-history rows projected from it, so a rebuild
@@ -545,7 +527,11 @@ def _retained_staging_path(staging: Path) -> Path:
 def _rebuild_sports(event: str, sports: Iterable[str]) -> set[str]:
     chosen = set(sports)
     if event in {"regular", "full"}:
-        return chosen - {"mlb"}
+        # Neither ever rebuilds from scratch through this pipeline: each
+        # has a static historical base (MLB's Lahman import, NBA's --source
+        # csv/bbr) built once by hand, and every automated run only appends
+        # the current season to whatever staging starts as a copy of.
+        return chosen - {"mlb", "nba"}
     if event == "grand-final-awards" and "afl" in chosen:
         return {"afl"}
     return set()
@@ -650,6 +636,7 @@ def _carry_forward(sport: str, staging: Path, live: Path) -> dict[str, int]:
 #: without touching the database itself.
 _REFERENCE_REFRESH: dict[str, tuple[str, ...]] = {
     "nba": ("-m", "nba.build_nba_db", "--reference-only"),
+    "nfl": ("-m", "utils.nfl.patch_nfl_db", "--reference-only"),
 }
 
 

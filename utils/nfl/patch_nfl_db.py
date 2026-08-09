@@ -278,7 +278,22 @@ def _patch_team_history(con, say):
 
 # -------------------------------------------------------------- reference
 
-def write_reference(con, say):
+def _reference_path(db) -> Path:
+    """Beside its own database, not at nfl_reference.PATH directly.
+
+    database_updates.py patches a staging file that sits next to the live
+    database (same directory, ``nfl.db.update-building`` beside
+    ``nfl.db``) and is not promoted until later checks pass. A fixed write
+    target could not tell a staging patch from the real one and would
+    leave the live nfl_reference.json reflecting a build the outer job may
+    yet reject -- nba/build_nba_db.py's load_reference has the same rule
+    for the same reason. For the live database itself this resolves to the
+    exact same file as nfl_reference.PATH.
+    """
+    return Path(db).resolve().parent / "reference" / "nfl_reference.json"
+
+
+def write_reference(con, say, path):
     """Measured statistics and their eras, for sports.NFL_SCHEMA."""
     present = columns(con, "games")
     stats = [s for s in nfl_reference.FALLBACK_STATS if s in present]
@@ -310,7 +325,6 @@ def write_reference(con, say):
         "club_lineage": nfl_reference.FALLBACK_LINEAGE,
         "seasons": [lo, hi],
     }
-    path = nfl_reference.PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     say(f"  wrote {path} ({len(stats)} statistics, {len(teams)} teams, "
@@ -333,7 +347,7 @@ def add_indexes(con, say):
 
 # ------------------------------------------------------------------- main
 
-def patch(db, dry_run=False, verbose=True):
+def patch(db, dry_run=False, verbose=True, write_reference_file=True):
     say = (lambda text: print(text)) if verbose else (lambda text: None)
     con = sqlite3.connect(db)
     try:
@@ -353,7 +367,8 @@ def patch(db, dry_run=False, verbose=True):
             con.rollback()
             say("\n--dry-run: nothing written, reference file not rewritten.")
             return
-        write_reference(con, say)
+        if write_reference_file:
+            write_reference(con, say, _reference_path(db))
         con.commit()
     finally:
         con.close()
@@ -370,6 +385,13 @@ def main(argv=None):
     ap.add_argument("--db", default=data_paths.default_db("nfl"))
     ap.add_argument("--dry-run", action="store_true",
                     help="report what would change without writing")
+    ap.add_argument("--reference-only", action="store_true",
+                    help="only rewrite the reference file, from an already-"
+                         "patched database")
+    ap.add_argument("--no-reference", action="store_true",
+                    help="patch the database but do not write the reference "
+                         "file; for a staging file a caller will promote and "
+                         "refresh the reference itself with --reference-only")
     ap.add_argument("--quiet", dest="verbose", action="store_false")
     args = ap.parse_args(argv)
 
@@ -380,7 +402,19 @@ def main(argv=None):
             raise SystemExit(f"{building} is still being built -- wait for "
                              f"it to be renamed to {db.name}.")
         raise SystemExit(f"No database at {db}.")
-    patch(str(db), dry_run=args.dry_run, verbose=args.verbose)
+
+    if args.reference_only:
+        say = (lambda text: print(text)) if args.verbose else (lambda t: None)
+        con = sqlite3.connect(str(db))
+        try:
+            write_reference(con, say, _reference_path(db))
+            con.commit()
+        finally:
+            con.close()
+        return 0
+
+    patch(str(db), dry_run=args.dry_run, verbose=args.verbose,
+         write_reference_file=not args.no_reference)
     return 0
 
 

@@ -70,6 +70,12 @@ class LiveNbaSource:
     def player_games(self, season, phase):
         return self.live.player_games(season, phase)
 
+    @property
+    def fetch_phases(self):
+        """See NbaApiSource.fetch_phases -- games come from NBA.com here, so
+        the play-in fetch is this source's too."""
+        return self.live.fetch_phases
+
     def discovered_players(self, player_ids=None):
         return self.live.discovered_players(player_ids)
 

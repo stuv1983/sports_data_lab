@@ -54,8 +54,21 @@ from .nba_source import (MATCH_COLUMNS, PLAYER_COLUMNS, PLAYER_GAME_COLUMNS,
 #: the full history is thousands of calls; this is politeness, not tuning.
 THROTTLE = 0.7
 
-#: nba_api's own labels for the two halves of a season.
-SEASON_TYPE = {"regular": "Regular Season", "playoff": "Playoffs"}
+#: nba_api's own labels for the parts of a season it will serve.
+SEASON_TYPE = {"regular": "Regular Season", "playoff": "Playoffs",
+               "playin": "PlayIn"}
+
+#: What to fetch, and the schema `phase` each fetch is stored as.
+#:
+#: NBA.com splits the play-in tournament out as its own season type, so a
+#: "Playoffs" fetch silently omits it -- six games and around 170 player
+#: rows a year, every year since 2020. The CSV export the history was built
+#: from has no such split: it files play-in games under the playoff phase,
+#: which is also how they are keyed (a '5'-prefixed game id). So the extra
+#: request is made and folded back into `playoff`, leaving PHASES -- the
+#: vocabulary the schema and the other two sources share -- unchanged.
+FETCH_PHASES = {"regular": "regular", "playoff": "playoff",
+                "playin": "playoff"}
 
 #: The first NBA season, as a start year. 1946 means 1946-47.
 FIRST_SEASON = 1946
@@ -258,7 +271,19 @@ class NbaApiSource:
                      self.cache / "static" / "teams.json", now(), len(current))
 
         rows, seen = [], set()
-        lineage = nba_reference.club_lineage()
+        # FALLBACK_LINEAGE specifically, not club_lineage(): club_lineage()
+        # prefers whatever this same build last *measured*, and this call
+        # is exactly what produces that measurement -- nba/build_nba_db.py's
+        # load_reference() derives club_lineage from which historical team
+        # rows this method emits and which of them actually appear in
+        # games.club_hist. Reading club_lineage() here would make a
+        # once-thin measurement permanent: each build synthesises only the
+        # identities the last build happened to report, so a database that
+        # ever loses "Seattle SuperSonics" (a partial fetch, a build that
+        # was never promoted) can never regain it from this source again.
+        # FALLBACK_LINEAGE is the hardcoded, stable judgement call the
+        # docstring above already promises this uses.
+        lineage = nba_reference.FALLBACK_LINEAGE
         for team in current:
             name = team["full_name"]
             rows.append({
@@ -349,6 +374,11 @@ class NbaApiSource:
         } for p in found])
         return validate(frame, PLAYER_COLUMNS, "players")
 
+    #: See FETCH_PHASES. Read by callers that drive the fetch themselves
+    #: rather than going through matches(), so they make the same set of
+    #: requests this source does.
+    fetch_phases = FETCH_PHASES
+
     def _game_log(self, season, phase):
         """One leaguegamelog call: two rows per game, one per team."""
         self._require_nba_api()
@@ -399,8 +429,8 @@ class NbaApiSource:
 
         rows = {}
         sides = {}
-        for phase in PHASES:
-            log = self._game_log(season, phase)
+        for fetch_phase, phase in FETCH_PHASES.items():
+            log = self._game_log(season, fetch_phase)
             if log.empty:
                 continue
             for _, r in log.iterrows():
@@ -447,7 +477,9 @@ class NbaApiSource:
     def player_games(self, season, phase):
         import pandas as pd
 
-        if phase not in PHASES:
+        # SEASON_TYPE, not PHASES: this adapter also serves "playin", which
+        # is a fetch this source makes but not a phase the schema stores.
+        if phase not in SEASON_TYPE:
             raise SourceError(f"unknown phase {phase!r}")
         self._require_nba_api()
         from nba_api.stats.endpoints import playergamelogs

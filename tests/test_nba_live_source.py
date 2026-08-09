@@ -29,6 +29,7 @@ import pandas as pd
 import pytest
 
 from nba import nba_source
+from nba.nba_source import SourceError
 from nba.nba_source_api import NbaApiSource
 
 
@@ -44,13 +45,15 @@ def _log(rows):
 class _FoldOnly(NbaApiSource):
     """Exercises matches() against a canned log, with no network."""
 
-    def __init__(self, regular, playoff=None):
+    def __init__(self, regular, playoff=None, playin=None):
         super().__init__(cache="/nonexistent", verbose=False)
-        self._logs = {"regular": regular,
-                      "playoff": playoff if playoff is not None else _log([])}
+        self._logs = {"regular": regular, "playoff": playoff, "playin": playin}
 
     def _game_log(self, season, phase):
-        return self._logs[phase]
+        """An empty frame for any phase this case did not can, which is what
+        a season with no such games returns."""
+        return self._logs.get(phase) if self._logs.get(phase) is not None \
+            else _log([])
 
 
 def test_a_normal_game_keeps_the_orientation_matchup_gives_it():
@@ -203,6 +206,37 @@ def test_live_is_a_registered_source():
         nba_source.get_source("nonsense")
 
 
+def test_historical_identities_come_from_the_fallback_not_the_last_measurement(
+        monkeypatch):
+    """teams() widens the static list with FALLBACK_LINEAGE, never
+    club_lineage(): club_lineage() prefers whatever nba/build_nba_db.py's
+    load_reference() last *measured*, which is this same method's own
+    previous output. Reading it here would make a once-thin measurement
+    permanent -- a database that ever lost "Seattle SuperSonics" (a partial
+    fetch, a build that was never promoted) could never regain it, because
+    every later build would widen the static list from the thin result
+    instead of the hardcoded judgement call the docstring promises."""
+    from nba import nba_reference
+
+    source = NbaApiSource(cache="/nonexistent", verbose=False)
+    monkeypatch.setattr(source, "_require_nba_api", lambda: None)
+    monkeypatch.setattr(source, "seasons", lambda: [])
+    fake = type(_sys)("nba_api.stats.static.teams")
+    fake.get_teams = lambda: [{
+        "id": 1610612760, "full_name": "Oklahoma City Thunder",
+        "city": "Oklahoma City", "nickname": "Thunder",
+        "abbreviation": "OKC", "year_founded": 1967,
+    }]
+    monkeypatch.setitem(_sys.modules, "nba_api.stats.static.teams", fake)
+    # A previous build's measurement, thin the way today's incident left it.
+    monkeypatch.setattr(nba_reference, "club_lineage", lambda: {})
+
+    names = set(source.teams()["name"])
+
+    assert "Oklahoma City Thunder" in names
+    assert "Seattle SuperSonics" in names
+
+
 def _csv_root(tmp_path):
     """A minimal CSV export carrying biography and nothing else."""
     pd.DataFrame([
@@ -339,3 +373,31 @@ def test_an_exact_repeat_is_collapsed_before_anything_else():
 
     assert unresolved == []
     assert len(out) == 1
+
+
+def test_the_play_in_tournament_is_fetched_and_filed_under_playoff():
+    """NBA.com serves the play-in as its own season type, so a Playoffs
+    fetch omits it -- six games a year since 2020. The CSV export the
+    history was built from files them under the playoff phase, and that is
+    the convention the schema and the stored '5'-prefixed ids follow."""
+    source = _FoldOnly(
+        _log([("0022500001", 1610612760, "OKC", "OKC vs. HOU", 125,
+               "2025-10-21"),
+              ("0022500001", 1610612745, "HOU", "HOU @ OKC", 124,
+               "2025-10-21")]),
+        playin=_log([("0052400101", 1610612753, "ORL", "ORL vs. ATL", 120,
+                      "2025-04-15"),
+                     ("0052400101", 1610612737, "ATL", "ATL @ ORL", 95,
+                      "2025-04-15")]))
+
+    frame = source.matches(2024)
+    phases = dict(zip(frame["match_id"], frame["phase"]))
+    assert phases["0052400101"] == "playoff", \
+        "the play-in game was not filed the way the history files it"
+    assert phases["0022500001"] == "regular"
+
+
+def test_a_phase_the_source_cannot_serve_is_still_rejected():
+    source = _FoldOnly(_log([]))
+    with pytest.raises(SourceError):
+        source.player_games(2024, "preseason")
