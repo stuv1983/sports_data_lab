@@ -1,5 +1,6 @@
 import difflib
 import re
+import unicodedata
 import streamlit as st
 
 import db_pool
@@ -41,8 +42,21 @@ PLAYER_MATCH_LIMIT = 30
 
 
 def _player_search_key(value):
-    """Search-friendly name key: punctuation and spacing are interchangeable."""
-    return re.sub(r"[^a-z0-9]+", " ", str(value).casefold()).strip()
+    """Search-friendly name key: punctuation, spacing and accents are
+    interchangeable.
+
+    Diacritics are stripped, not just left for the [^a-z0-9] regex to treat
+    as arbitrary word breaks: that regex used to turn "Acuña" into the two
+    tokens "acu" and "a", and a single-letter token substring-matches
+    almost anything -- searching "Acuña" surfaced "Dakota Bacus" ("acu" is
+    inside "bAcUs", "a" is inside "dAkota"). NFKD decomposition covers every
+    accented name actually in these databases (218 in MLB alone); a letter
+    with no ASCII equivalent (an "ø" or "đ") still falls back to a space,
+    same as before.
+    """
+    text = unicodedata.normalize("NFKD", str(value))
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
 
 
 @st.cache_data(show_spinner=False)

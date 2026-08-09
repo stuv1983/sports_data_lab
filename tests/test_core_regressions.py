@@ -74,3 +74,63 @@ def run():
 
 if __name__ == "__main__":
     run()
+
+
+# ------------------------------------------------- the team+stat row rule
+#
+# core.ROW_MARKER exists to fix a specific false positive: intersecting
+# "played for Cleveland" and "100+ RBI in a season" as two independent
+# player_id subqueries accepts anyone who ever did each, in any season --
+# Bobby Bonds drove in 102 for the Giants in 1971 and played for Cleveland
+# in 1979, and an unmerged intersection wrongly took him. No test exercised
+# this engine at all before now.
+
+def _bonds_db():
+    con = sqlite3.connect(":memory:")
+    con.execute("""
+        CREATE TABLE players (player_id TEXT, player TEXT, obscurity REAL)
+    """)
+    con.execute("""
+        CREATE TABLE games (player_id TEXT, club_now TEXT, season INTEGER,
+                            rbis INTEGER)
+    """)
+    con.executemany("INSERT INTO players VALUES (?, ?, ?)", [
+        ("bonds", "Bobby Bonds", 50.0),
+        ("onecard", "Same Season Slugger", 50.0),
+    ])
+    con.executemany(
+        "INSERT INTO games (player_id, club_now, season, rbis) VALUES "
+        "(?, ?, ?, ?)", [
+        # Bobby Bonds: 102 RBI for the Giants in 1971, Cleveland in 1979 --
+        # the team and the RBI total are never true in the same row.
+        ("bonds", "Giants", 1971, 102),
+        ("bonds", "Cleveland", 1979, 85),
+        # A player for whom both really did happen in the same season/row.
+        ("onecard", "Cleveland", 1971, 102),
+    ])
+    schema = core.Schema(required_games_cols=(), required_player_cols=())
+    return con, schema
+
+
+def test_team_and_season_stat_axes_require_the_same_row():
+    con, schema = _bonds_db()
+    cleveland = (f"{core.ROW_MARKER}team@club_now = ?", ["Cleveland"])
+    rbi_100 = (f"{core.ROW_MARKER}stat@rbis >= ?", [100])
+
+    assert not core.matches_player(con, "bonds", [cleveland, rbi_100], schema), (
+        "Cleveland and the 100-RBI season happened four years apart for "
+        "Bobby Bonds -- merging them independently readmits the bug "
+        "ROW_MARKER exists to fix")
+    assert core.matches_player(con, "onecard", [cleveland, rbi_100], schema), (
+        "a player whose 100-RBI season really was with Cleveland must "
+        "still match")
+
+
+def test_two_team_axes_are_never_merged_into_one_row():
+    """"Played for both" is two different rows; forcing them into one
+    row_exists would make every such square empty by construction."""
+    con, schema = _bonds_db()
+    giants = (f"{core.ROW_MARKER}team@club_now = ?", ["Giants"])
+    cleveland = (f"{core.ROW_MARKER}team@club_now = ?", ["Cleveland"])
+
+    assert core.matches_player(con, "bonds", [giants, cleveland], schema)

@@ -124,3 +124,47 @@ def test_no_builder_key_in_any_sport_can_leave_a_placeholder_behind():
             filled = W._fill_placeholders(kind, [7, 9], sport.vocab)
             assert not re.search(r"\b[XY]\b", filled), (
                 f"{sport.key}: {kind!r} still reads {filled!r}")
+
+
+# ----------------------------------------------- accented names in search
+
+def test_an_accented_query_finds_the_player_it_names(monkeypatch):
+    """"acuna", typed with or without the accent, both have to reach
+    "Ronald Acuña" -- 218 MLB player names carry a diacritic."""
+    monkeypatch.setattr(
+        W, "player_options",
+        lambda *a, **k: _options(["Ronald Acuña", "Dakota Bacus"]))
+    sport = type("S", (), {"key": "mlb", "db": ":memory:"})()
+
+    for query in ("acuna", "acuña"):
+        matches = W.player_matches(query, sport=sport, db_revision=0)
+        assert [name for _, name, _ in matches] == ["Ronald Acuña"]
+
+
+def test_an_accent_stripped_to_a_bare_letter_cannot_admit_a_stranger():
+    """Before diacritics were folded into their base letter, the [^a-z0-9]
+    regex alone turned "acuña" into two tokens, "acu" and "a" -- and a
+    bare single-letter token substring-matches almost any name. That
+    admitted "Dakota Bacus" under the AND-substring rule: "acu" is inside
+    "bAcUs", and "a" is inside "dAkota"."""
+    options = _options(["Ronald Acuña", "Dakota Bacus"])
+    q_words = W._player_search_key("acuña").split()
+    assert q_words == ["acuna"], "accent should fold, not split the query"
+
+    admitted = [
+        name for _, name, _, search_key in options
+        if all(any(token in word for word in search_key.split())
+              for token in q_words)
+    ]
+    assert admitted == ["Ronald Acuña"]
+
+
+def test_diacritics_of_every_shape_normalise_to_their_ascii_letter():
+    cases = {
+        "José": "jose",
+        "Björn": "bjorn",
+        "Džems": "dzems",       # caron
+        "Dončić": "doncic",    # caron mid-name, NBA-style
+    }
+    for name, expected in cases.items():
+        assert W._player_search_key(name) == expected
