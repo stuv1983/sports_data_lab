@@ -29,7 +29,6 @@ import json
 import os
 import queue
 import re
-import sys
 import tempfile
 import threading
 import time

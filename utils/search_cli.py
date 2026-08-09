@@ -8,7 +8,6 @@ import csv
 import json
 import sqlite3
 import sys
-from pathlib import Path
 
 import query_filters_family as Q
 

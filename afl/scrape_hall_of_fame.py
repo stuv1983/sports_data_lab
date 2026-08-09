@@ -41,7 +41,6 @@ import re
 import sys
 import urllib.parse
 import urllib.request
-from pathlib import Path
 
 from data_paths import cache_dir, raw_dir
 

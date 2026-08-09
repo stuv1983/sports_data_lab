@@ -53,7 +53,7 @@ import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 BUILDER_VERSION = "1.0.3"
 DEFAULT_DB = Path("data/nfl/nfl.db")

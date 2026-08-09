@@ -1308,7 +1308,6 @@ def game_lab_page(sport, con, player_picker):
         module.game_lab_page(sport, con, player_picker)
         return
 
-    V, sc = sport.vocab, sport.schema
     st.markdown("# Game Lab")
     st.caption("A workspace for turning the database into playable "
                "challenges. This first prototype is a clue-based player "
@@ -1410,7 +1409,7 @@ def _game_guess_player(sport, con, player_picker):
             "Name the teammate · Daily mystery player · Draft and award trivia")
 
 def _game_career_path(sport, con, player_picker):
-    V, sc = sport.vocab, sport.schema
+    sc = sport.schema
     target_key = sport.k("career_target")
     if target_key not in st.session_state:
         st.session_state[target_key] = _new_game_target(sport, con)
@@ -1442,7 +1441,6 @@ def _game_career_path(sport, con, player_picker):
             
 def _game_higher_lower(sport, con):
     V, sc = sport.vocab, sport.schema
-    import random
     
     st.write(f"Which player has more career {V.games}?")
     

@@ -44,7 +44,6 @@ from pathlib import Path
 
 import config
 import data_paths
-from . import nba_source
 from .nba_source import (MATCH_COLUMNS, PLAYER_COLUMNS, PLAYER_GAME_COLUMNS,
                         PHASES, STAT_COLUMNS, TEAM_COLUMNS, Fetch, SourceError,
                         canonical_params, digest_bytes, now, numeric,

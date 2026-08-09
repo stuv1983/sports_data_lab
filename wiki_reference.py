@@ -59,7 +59,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 #: The scrape's own default output root.

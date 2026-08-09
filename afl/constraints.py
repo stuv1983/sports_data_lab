@@ -447,7 +447,15 @@ STAR_DISCLAIMER = core.STAR_DISCLAIMER
 
 # Optional club-captain layer. The persistent table is created by
 # afl/load_captains.py; a TEMP placeholder keeps parsing and old databases safe.
-from .captains import (  # noqa: E402
+#
+# F401 is suppressed on this and the re-export blocks below on purpose. Most
+# of these names are never referenced *in this file* -- they are the public
+# surface the module docstring promises, reached from elsewhere as
+# `C.club_captain()` or, in afl/historic_grids.py, as
+# `getattr(C, "captain_available")`. No static analysis can see either, so
+# "unused import" here means "imported for somebody else", not "dead".
+# Deleting them on a linter's say-so breaks the app at runtime.
+from .captains import (  # noqa: E402, F401
     CAPTAIN_BUILDERS,
     captain_available,
     captain_count,
@@ -488,7 +496,7 @@ AWARD_BUILDER_NAMES = set(AWARD_BUILDERS)
 # Optional full Brownlow voting results from AFL Tables. This is deliberately
 # separate from Draftguru's winners-only award layer: a top-five finish is a
 # season result, not another kind of award.
-from .brownlow import (  # noqa: E402
+from .brownlow import (  # noqa: E402, F401
     BROWNLOW_BUILDERS,
     brownlow_available,
     brownlow_count,
@@ -559,7 +567,7 @@ def extra_status(con) -> list[tuple[str, str]]:
 
 # Optional FootyWire Rising Star nomination layer.  The network fetcher is
 # permission-gated; afl/load_rising_star.py links local CSV rows to players.
-from .rising_star import (  # noqa: E402
+from .rising_star import (  # noqa: E402, F401
     RISING_STAR_BUILDERS,
     ensure_rising_star_table,
     rising_star_available,
@@ -577,7 +585,7 @@ RISING_STAR_BUILDER_NAMES = set(RISING_STAR_BUILDERS)
 
 # Optional broad Wikipedia family layer. This is separate from the narrower
 # father-son/father-daughter draft dataset in afl/family_draft.py.
-from .family_relationships import (  # noqa: E402
+from .family_relationships import (  # noqa: E402, F401
     FAMILY_RELATIONSHIP_BUILDERS,
     ensure_family_relationship_tables,
     family_relationships_available,
@@ -600,7 +608,7 @@ FAMILY_RELATIONSHIP_BUILDER_NAMES = set(FAMILY_RELATIONSHIP_BUILDERS)
 # Match-context constraints: margin, team score and crowd. The margin and
 # result builders read `games` and always work; only the crowd builders
 # need the optional all-games layer.
-from .match_constraints import (  # noqa: E402
+from .match_constraints import (  # noqa: E402, F401
     MATCH_BUILDERS,
     CROWD_BUILDER_NAMES,
     MARQUEE_BUILDER_NAMES,

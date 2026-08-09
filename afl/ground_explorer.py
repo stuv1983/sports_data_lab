@@ -8,7 +8,6 @@ import pandas as pd
 import streamlit as st
 
 import components
-import labels
 
 
 ANY = "Any"

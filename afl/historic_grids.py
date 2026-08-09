@@ -417,7 +417,7 @@ def analyse_all(con=None, sport=None, check_squares=True):
                     note=row[6]
                 )
                 grids.append(grid)
-        except Exception as e:
+        except Exception:
             grids = GRIDS
     else:
         grids = GRIDS

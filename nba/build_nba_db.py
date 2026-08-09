@@ -300,7 +300,6 @@ def build(db_path, source, seasons=None, strict=True, write_reference=True,
     """Build `db_path` from `source`. Returns a summary dict."""
     import pandas as pd
 
-    from utils.shared import dedupe_games
 
     db_path = str(db_path)
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1342,7 +1341,6 @@ def load_reference(db_path, out_path=None, verbose=True):
     finally:
         con.close()
 
-    from . import nba_reference
     payload = {
         "generated_at": nba_source.now(),
         "db": str(db_path),

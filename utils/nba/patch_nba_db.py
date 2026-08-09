@@ -6,7 +6,6 @@ to satisfy the core application's schema validation.
 """
 
 import sqlite3
-from pathlib import Path
 
 import data_paths
 

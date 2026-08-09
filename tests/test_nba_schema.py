@@ -35,7 +35,6 @@ import json
 
 import pytest
 
-import core
 import data_paths
 from nba import nba_reference
 import sports

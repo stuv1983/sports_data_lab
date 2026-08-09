@@ -29,7 +29,6 @@ import sqlite3
 import pytest
 
 import core
-import obscurity
 import sports
 from mlb.obscurity_model import MODEL as MLB_MODEL
 from mlb import build_mlb_db, constraints_mlb

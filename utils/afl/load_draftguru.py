@@ -37,7 +37,6 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 import argparse
 import glob
-import json
 import os
 import re
 import sqlite3
@@ -354,7 +353,6 @@ def build_people(frames):
 
 
 def attach_person(df, people):
-    import pandas as pd
     if not len(df):
         df["dg_person_id"] = None
         return df
@@ -374,7 +372,9 @@ def main():
     a = ap.parse_args()
 
     try:
-        import pandas as pd
+        # Imported to fail here, with a usable message, rather than deep in
+        # the first function that needs it -- so not "unused".
+        import pandas as pd  # noqa: F401
     except ImportError:
         sys.exit("Run: pip install pandas")
 

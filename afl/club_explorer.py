@@ -1,7 +1,6 @@
 """Streamlit Club Explorer for the optional 18-club data layer."""
 from __future__ import annotations
 
-import json
 import pathlib
 import sqlite3
 

@@ -6,8 +6,6 @@ import ui_widgets
 import components
 import sports
 import random
-import datetime
-import db_pool
 
 SPORT = st.session_state.SPORT
 con = st.session_state.con

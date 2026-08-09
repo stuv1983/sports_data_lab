@@ -176,7 +176,6 @@ def build_matches(df, oriented):
 
 def assign_ids(con, m):
     """Reuse existing ids for known keys; append new ones above the max."""
-    import pandas as pd
 
     existing = {}
     next_id = 1

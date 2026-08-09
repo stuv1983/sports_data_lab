@@ -25,11 +25,9 @@ _os.chdir(_ROOT)
 
 import argparse
 import os
-import shutil
 import sqlite3
 import subprocess
 import sys
-import tempfile
 
 DB = "test_gridley.db"
 
@@ -277,8 +275,7 @@ def test_no_unresolved_in_results(con):
 def test_grid_fixtures(con):
     """Every captured Gridley criterion parses or is declined."""
     from afl import parse_criteria as P
-    from afl.grid_fixtures import GRIDS, LOOSE_CRITERIA, KNOWN_GOOD_ANSWERS
-    from afl import constraints as C
+    from afl.grid_fixtures import GRIDS, LOOSE_CRITERIA
 
     span = f"#{min(_numbers())}-#{max(_numbers())}"
     print(f"\n11. Real grid fixtures ({span})")
@@ -528,7 +525,6 @@ def test_rebuild_idempotent():
     if not os.path.exists(DB):
         check("database present to rebuild over", False)
         return
-    before = os.path.getsize(DB)
     r = subprocess.run([sys.executable, "afl/build_db.py", "--db", DB],
                        capture_output=True, text=True)
     ok = r.returncode == 0
@@ -559,9 +555,14 @@ def test_rebuild_idempotent():
     code = "\n".join(l.split("#")[0] for l in ddl.splitlines())
     bare = [l.strip() for l in code.splitlines()
             if "CREATE TABLE" in l and "IF NOT EXISTS" not in l
-            and "DROP TABLE IF EXISTS" not in code[:code.index(l)] ]
+            and "DROP TABLE IF EXISTS" not in code[:code.index(l)]]
+    # `bare` was computed and then thrown away, leaving this check asserting
+    # only that one DROP string appears somewhere in the file -- which stays
+    # true however many unguarded CREATE TABLEs are added. It now asserts
+    # what its name claims.
     check("no unguarded CREATE TABLE remains",
-          "DROP TABLE IF EXISTS meta" in code)
+          not bare and "DROP TABLE IF EXISTS meta" in code,
+          "; ".join(bare))
 
 
 

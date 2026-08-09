@@ -393,7 +393,6 @@ def test_the_real_sample_loads():
                     reason="no scrape sample checked out")
 def test_the_real_box_scores_parse():
     """Every stat column in a real 2016-17 box score, straight off disk."""
-    source = nba_source_bbr.BbrNbaSource(SAMPLE, verbose=False)
     path = next((SAMPLE / "sample_regular_games").glob("*.json"))
     payload = json.loads(path.read_text(encoding="utf-8"))
 
