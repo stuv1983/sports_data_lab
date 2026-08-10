@@ -212,6 +212,23 @@ class Schema:
 
 # ------------------------------------------------------ generic builders
 
+def _code(value):
+    """A round or result code, normalised the way the databases store it.
+
+    These used to be compared as `UPPER(TRIM(round)) = UPPER(?)`, which is
+    correct but unindexable: SQLite cannot use `games(round, player_id)` on
+    a wrapped column, so every grand-final criterion scanned all 700k games
+    and took 1.6 seconds a square. Normalising the parameter instead leaves
+    the column bare and the index usable, which is the same 1.6 seconds
+    down to nothing.
+
+    That trades a defensive query for an invariant, so the invariant is
+    tested rather than assumed -- see the round/result hygiene test, which
+    fails if any sport's build ever stores a code needing normalisation.
+    """
+    return value if value is None else str(value).strip().upper()
+
+
 class Generic:
     """
     Constraint builders that are identical across sports once the schema
@@ -478,20 +495,19 @@ class Generic:
         """Appeared in a named title round in at least N seasons."""
         s = self.s
         return (f"""SELECT {s.player_id} FROM {s.games}
-                    WHERE UPPER(TRIM({s.round})) = UPPER(?)
+                    WHERE {s.round} = ?
                     GROUP BY {s.player_id}
                     HAVING COUNT(DISTINCT {s.season}) >= ?""",
-                [round_code, appearances])
+                [_code(round_code), appearances])
 
     def round_outcome_min(self, round_code, result, appearances=1):
         """Recorded an outcome in a named title round in at least N seasons."""
         s = self.s
         return (f"""SELECT {s.player_id} FROM {s.games}
-                    WHERE UPPER(TRIM({s.round})) = UPPER(?)
-                      AND UPPER(TRIM({s.result})) = UPPER(?)
+                    WHERE {s.round} = ? AND {s.result} = ?
                     GROUP BY {s.player_id}
                     HAVING COUNT(DISTINCT {s.season}) >= ?""",
-                [round_code, result, appearances])
+                [_code(round_code), _code(result), appearances])
 
     def debuted_between(self, lo, hi):
         s = self.s
@@ -528,16 +544,30 @@ class Generic:
         surname. Matches the full name first and falls back to a surname
         match, which unions the actual matches of every namesake -- a
         superset, never a missed answer. Prefer teammate_of_id().
+
+        The name is resolved against `players`, not `games`. Both tables
+        carry the name, and reading it from the small one is the whole cost
+        of this query: `LOWER(player) LIKE '% wood'` cannot use an index,
+        so matching it in `games` swept 694k AFL player-games per teammate
+        square -- about two and a half seconds each, on a page that asks
+        for six criteria and nine intersections at once. Resolving the name
+        over 13k players and joining on the id lands the same set from the
+        same rows in a few milliseconds.
         """
         s = self.s
         return (f"""SELECT DISTINCT g.{s.player_id} FROM {s.games} g
-                    JOIN (SELECT DISTINCT {s.club_hist}, {s.season},
-                                          {s.date}, {s.opponent}, {s.player}
-                          FROM {s.games}
-                          WHERE LOWER({s.player}) = LOWER(?)
-                             OR (LOWER({s.player}) LIKE ? AND NOT EXISTS (
-                                   SELECT 1 FROM {s.players}
-                                   WHERE LOWER({s.player}) = LOWER(?)))) w
+                    JOIN (SELECT DISTINCT t.{s.club_hist}, t.{s.season},
+                                          t.{s.date}, t.{s.opponent},
+                                          t.{s.player}
+                          FROM {s.games} t
+                          WHERE t.{s.player_id} IN (
+                                SELECT {s.player_id} FROM {s.players}
+                                WHERE LOWER({s.player}) = LOWER(?)
+                                   OR (LOWER({s.player}) LIKE ?
+                                       AND NOT EXISTS (
+                                           SELECT 1 FROM {s.players}
+                                           WHERE LOWER({s.player})
+                                                 = LOWER(?))))) w
                       ON g.{s.club_hist} = w.{s.club_hist}
                      AND g.{s.season} = w.{s.season}
                      AND g.{s.date} = w.{s.date}

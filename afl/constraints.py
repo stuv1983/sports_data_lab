@@ -211,11 +211,62 @@ def leading_goalkicker():
 
 
 def wooden_spoon_player():
-    """Played for a club in a season it finished last."""
+    """Played for a club in a season it finished last.
+
+    Phrased as a row-value IN for the same reason as the minor premiership
+    below: identical players, 0.01s against the JOIN's 1.7s.
+    """
     return ("""SELECT DISTINCT g.player_id FROM games g
-               JOIN team_seasons t
-                 ON t.season = g.season AND t.club_now = g.club_now
-               WHERE t.wooden_spoon = 1""", [])
+               WHERE (g.season, g.club_now) IN
+                 (SELECT season, club_now FROM team_seasons
+                  WHERE wooden_spoon = 1)""", [])
+
+
+# The minor premiership is finishing top of the home-and-away ladder, which
+# is a different thing from the premiership and frequently a different club:
+# the two have gone to the same side in only 66 of 127 seasons.
+# `team_seasons.ladder_rank` is built from home-and-away games alone and
+# agrees with the real ladder rule -- points, then percentage -- in all 130
+# seasons, so rank 1 is the minor premier with no new column needed.
+#
+# Written as a row-value IN rather than the JOIN the wooden spoon above
+# uses. The two return the same players, but a JOIN makes SQLite scan all
+# 700k games and probe the ladder once per row (1.7s); the IN lets it drive
+# from the 130 ladder-leading seasons straight into the covering index on
+# (season, club_now, player_id), which is 0.01s. Grid Solver runs these
+# live against every square, so the difference is the page loading or not.
+_MINOR_PREMIER_SEASON = """(g.season, g.club_now) IN
+    (SELECT season, club_now FROM team_seasons WHERE ladder_rank = 1)"""
+
+
+def minor_premiership_player():
+    """Played for a club in a season it finished top of the ladder."""
+    return (f"""SELECT DISTINCT g.player_id FROM games g
+                WHERE {_MINOR_PREMIER_SEASON}""", [])
+
+
+def no_minor_premierships():
+    """Never played a game for a club in a season it topped the ladder.
+
+    Asked of every player, not only of those who played home-and-away
+    football: a career of four finals appearances has still never included a
+    minor premiership, and answering otherwise would quietly exclude it.
+    """
+    return (f"""SELECT player_id FROM players WHERE player_id NOT IN
+                (SELECT g.player_id FROM games g
+                 WHERE {_MINOR_PREMIER_SEASON})""", [])
+
+
+def minor_premierships_min(times):
+    """Played in at least `times` seasons that ended in a minor premiership.
+
+    Counted by season rather than by game, so a player who appeared once for
+    a ladder-leading club has one, not one per appearance.
+    """
+    return (f"""SELECT g.player_id FROM games g
+                WHERE {_MINOR_PREMIER_SEASON}
+                GROUP BY g.player_id
+                HAVING COUNT(DISTINCT g.season) >= ?""", [times])
 
 
 # ----------------------------------------------------- player physicals
@@ -362,6 +413,9 @@ BUILDERS = {
     "Goal average in finals":     (goal_average_in_finals, ["avg"]),
     "Club leading goalkicker":    (leading_goalkicker, []),
     "Wooden spoon season":        (wooden_spoon_player, []),
+    "Minor premiership":          (minor_premiership_player, []),
+    "No minor premierships":      (no_minor_premierships, []),
+    "X+ minor premierships":      (minor_premierships_min, ["times"]),
     "Draft pick between":         (draft_pick_between, ["from", "to"]),
     "Draft type (National/Rookie…)": (draft_of_type, ["kind"]),
     "Drafted by club":            (drafted_by, ["club"]),

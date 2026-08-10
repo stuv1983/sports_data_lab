@@ -52,7 +52,8 @@ def _has_module(sport):
 IMPLEMENTED = [s for s in sports.SPORTS.values() if _has_module(s)]
 IMPLEMENTED_IDS = [s.key for s in IMPLEMENTED]
 
-CAPABILITIES = ("criterion_parser", "grid_library", "game_lab_module",
+CAPABILITIES = ("criterion_parser", "grid_library", "daily_grid_feed",
+                "daily_grid_site", "game_lab_module",
                 "has_club_explorer", "has_awards_page", "has_past_games",
                 "has_ground_explorer",
                 "loader_hints", "club_data_tables", "club_data_hint",
@@ -269,6 +270,27 @@ def test_afl_club_data_tables_are_the_six_app_py_used_to_hardcode():
 def test_afl_has_a_hint_for_every_layer_it_declares():
     assert set(sports.AFL.loader_hints) == set(
         sports.AFL.optional_layers.values())
+
+
+def test_afl_declares_the_gridley_feed_the_grid_solver_opens_boards_from():
+    assert sports.AFL.daily_grid_feed == "utils.fetch_grids:fetch_gridley"
+    assert sports.AFL.daily_grid_site == "https://gridleygame.com"
+
+
+@pytest.mark.parametrize("sport", list(sports.SPORTS.values()),
+                         ids=list(sports.SPORTS))
+def test_a_declared_daily_grid_feed_resolves_to_a_callable(sport):
+    """A feed named but not importable fails on the page, not in a test.
+
+    A sport with no feed must resolve to None rather than raising: the Grid
+    Solver asks every sport whether it has one before offering the source.
+    """
+    fetcher = sport.daily_grid_fetcher()
+    if sport.daily_grid_feed:
+        assert callable(fetcher), sport.key
+        assert sport.daily_grid_site, f"{sport.key} names no feed site"
+    else:
+        assert fetcher is None, sport.key
 
 
 def test_afl_criterion_parser_and_game_lab_modules_import():

@@ -2,6 +2,7 @@ import datetime as dt
 import json
 import sqlite3
 
+from afl import historic_grids as HG
 from afl import parse_criteria
 from utils import fetch_grids
 
@@ -88,6 +89,57 @@ def test_save_grid_keeps_gridleys_real_board_number(tmp_path):
         assert con.execute(
             "SELECT grid_num, date FROM historic_grids"
         ).fetchall() == [(1119, "2026-08-08")]
+
+
+def test_a_fetched_board_becomes_a_grid_the_solver_can_analyse():
+    """Grid Solver's "Today's Gridley" source opens the feed's own payload.
+
+    The same dict scan_gridley saves has to survive the trip to a
+    HistoricGrid unaltered: the criteria are Gridley's exact wording, which
+    is what afl/parse_criteria.py reads.
+    """
+    board = {
+        "grid_num": 1121,
+        "rows": ["200+ GAMES PLAYED", "DANE RAMPE TEAMMATE",
+                 "LOST 2+ GRAND FINALS"],
+        "cols": ["Sydney Swans", "MINOR PREMIERSHIP WINNER",
+                 "PLAYED IN 2010s"],
+    }
+
+    grid = HG.from_feed(board, "2026-08-10", "Gridley")
+
+    assert grid.complete
+    assert grid.number == 1121
+    assert grid.source == "Gridley"
+    assert grid.key == "#1121 (2026-08-10)"
+    assert grid.rows == tuple(board["rows"])
+    assert grid.cols == tuple(board["cols"])
+
+    report = HG.analyse(grid, con=None, sport=None)
+    assert not report.unsupported, [c.text for c in report.unsupported]
+
+
+def test_an_unpublished_day_is_no_grid_rather_than_an_empty_one():
+    assert HG.from_feed(None, "2999-01-01", "Gridley") is None
+    assert HG.from_feed({}, "2999-01-01", "Gridley") is None
+
+
+def test_a_short_feed_payload_is_kept_as_a_partial_capture():
+    """A board is never padded to nine solvable squares it does not have."""
+    grid = HG.from_feed(
+        {"grid_num": 1122, "rows": ["150+ GAMES PLAYED"],
+         "cols": ["Sydney Swans", "PLAYED IN 2010s"]},
+        "2026-08-11", "Gridley")
+
+    assert not grid.complete
+    assert grid.rows == () and grid.cols == ()
+    assert grid.partial_criteria == ("150+ GAMES PLAYED", "Sydney Swans",
+                                     "PLAYED IN 2010s")
+    assert "3 of six" in grid.note
+
+    report = HG.analyse(grid, con=None, sport=None)
+    assert len(report.loose) == 3
+    assert report.status == "Partial capture — not playable"
 
 
 def test_scan_gridley_starts_after_latest_saved_date(tmp_path):

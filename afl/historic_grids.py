@@ -163,6 +163,33 @@ BY_NUMBER = {g.number: g for g in GRIDS}
 BY_DATE = {g.date: g for g in GRIDS}
 
 
+def from_feed(board, date, source):
+    """A HistoricGrid from one payload of a sport's daily-grid feed.
+
+    `utils.fetch_grids.fetch_gridley` returns
+    {'grid_num', 'rows', 'cols'} for a published day and None for a day
+    that has not been set yet, so a falsy payload is a missing board rather
+    than an empty one and gets no grid at all. A short payload is kept as
+    the partial capture it is: `complete` stays False and the board is
+    reported rather than drawn, which is the same treatment a half-legible
+    screenshot gets.
+    """
+    if not board:
+        return None
+    number = int(board.get("grid_num") or 0)
+    rows = tuple(board.get("rows") or ())
+    cols = tuple(board.get("cols") or ())
+    if len(rows) == 3 and len(cols) == 3:
+        return HistoricGrid(number=number, date=date, source=source,
+                            rows=rows, cols=cols)
+    return HistoricGrid(
+        number=number, date=date, source=source,
+        partial_criteria=rows + cols,
+        note=f"The {source} feed returned {len(rows) + len(cols)} of six "
+             "criteria for this day, so the nine intersections cannot be "
+             "checked. The criteria it did return are reported below.")
+
+
 def get(number=None, date=None):
     """Look a grid up by Gridley number or by date."""
     if number is not None:
@@ -333,7 +360,7 @@ def _era_warnings(sport, sql):
     return out
 
 
-def _report_one(axis, text, con, sport):
+def _report_one(axis, text, con, sport, count_eligible=True):
     con_sql, label = P.parse(text)
     if con_sql is None:
         return CriterionReport(axis=axis, text=text, reason=label)
@@ -352,7 +379,7 @@ def _report_one(axis, text, con, sport):
     # 40+ DISPOSALS is still countable, it just cannot be satisfied by a
     # pre-1965 player. Only a genuine execution failure -- usually an
     # optional table that has not been imported -- costs the count.
-    if con is not None:
+    if con is not None and count_eligible:
         try:
             rep.eligible = C.count(con, [con_sql])
         except Exception as e:
@@ -360,23 +387,34 @@ def _report_one(axis, text, con, sport):
     return rep
 
 
-def analyse(grid, con=None, sport=None, check_squares=True):
+def analyse(grid, con=None, sport=None, check_squares=True,
+            count_eligible=True):
     """
     Run every axis of a grid through the parser before it is loaded.
 
     With a connection, also count eligible players per criterion and
     execute all nine intersections, so a grid that parses but breaks on
     contact with the database is caught here rather than on the board.
+
+    Those two are what cost time -- a count sweeps every player-game the
+    criterion can touch, and there are six criteria and nine intersections
+    per board. `count_eligible=False` with `check_squares=False` keeps the
+    part that decides whether a grid is *offerable* (does every criterion
+    parse, and is the data it needs loaded) and skips the part that only
+    fills in numbers, which is what a picker listing every captured board
+    wants: still connection-accurate about support, and fast enough to run
+    over the whole library on every page load.
     """
     report = GridReport(grid=grid)
 
     if grid.complete:
-        report.rows = [_report_one(f"row {i}", t, con, sport)
+        report.rows = [_report_one(f"row {i}", t, con, sport, count_eligible)
                        for i, t in enumerate(grid.rows, 1)]
-        report.cols = [_report_one(f"column {i}", t, con, sport)
+        report.cols = [_report_one(f"column {i}", t, con, sport, count_eligible)
                        for i, t in enumerate(grid.cols, 1)]
     else:
-        report.loose = [_report_one(f"criterion {i}", t, con, sport)
+        report.loose = [_report_one(f"criterion {i}", t, con, sport,
+                                    count_eligible)
                         for i, t in enumerate(grid.partial_criteria, 1)]
         if grid.note:
             report.warnings.append(grid.note)
@@ -400,8 +438,14 @@ def analyse(grid, con=None, sport=None, check_squares=True):
     return report
 
 
-def analyse_all(con=None, sport=None, check_squares=True):
-    """Every known grid, analysed. Cheap enough to run at startup."""
+def analyse_all(con=None, sport=None, check_squares=True,
+                count_eligible=True):
+    """Every known grid, analysed.
+
+    Counting and square-checking the whole library is minutes of work on
+    the AFL database, so a caller that only needs the picker's verdict per
+    board should pass check_squares=False, count_eligible=False.
+    """
     grids = []
     if con is not None:
         try:
@@ -421,7 +465,8 @@ def analyse_all(con=None, sport=None, check_squares=True):
             grids = GRIDS
     else:
         grids = GRIDS
-    return [analyse(g, con, sport, check_squares) for g in grids]
+    return [analyse(g, con, sport, check_squares, count_eligible)
+            for g in grids]
 
 
 def supported_grids(reports):
@@ -453,6 +498,8 @@ REPLACEMENT_POOL = (
     "LESS THAN 20 GOALS — CAREER",
     "LEADING GOALKICKER TEAM",
     "WOODEN SPOON WINNER",
+    "MINOR PREMIERSHIP WINNER",
+    "LOST 2+ GRAND FINALS",
     "ALL AUSTRALIAN",
     "4+ GOALS GAME",
     "30+ DISPOSALS IN A GAME",

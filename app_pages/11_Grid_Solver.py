@@ -1,3 +1,5 @@
+import datetime
+
 import streamlit as st
 import pandas as pd
 import accounts
@@ -60,11 +62,48 @@ st.sidebar.markdown("---")
 
 @st.cache_data(show_spinner=False)
 def grid_library(sport_key, db, revision):
-    """Every captured grid, analysed once at startup."""
+    """Every captured grid, parsed and checked for support -- not counted.
+
+    This runs on every load of the page, whichever source is selected, so
+    it may only do work that is free. Counting each criterion and executing
+    all nine intersections for all fifteen captured boards is over two
+    minutes against the AFL database, and it was being spent before the
+    board was drawn even when the chosen source never touched the library.
+
+    What survives here is what the picker actually reads: whether every
+    criterion parses, and whether the data it needs is loaded. The counts
+    and the square check belong to the one grid a solver opens, and
+    grid_report() does them there.
+    """
     from afl import historic_grids as HG
 
     sport = sports.get(sport_key)
-    return HG.analyse_all(get_con(db, revision), sport)
+    return HG.analyse_all(get_con(db, revision), sport,
+                          check_squares=False, count_eligible=False)
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def grid_report(sport_key, db, revision, number):
+    """One captured board, counted and with all nine squares executed."""
+    from afl import historic_grids as HG
+
+    sport = sports.get(sport_key)
+    catalogue = grid_library(sport_key, db, revision)
+    grid = next((r.grid for r in catalogue if r.grid.number == number), None)
+    if grid is None:
+        return None
+    return HG.analyse(grid, get_con(db, revision), sport)
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def feed_report(sport_key, db, revision, date, source, board):
+    """The same, for a board read from the feed rather than the library."""
+    from afl import historic_grids as HG
+
+    grid = HG.from_feed(board, date, source)
+    if grid is None:
+        return None
+    return HG.analyse(grid, get_con(db, revision), sports.get(sport_key))
 
 
 def _axes_from(reports):
@@ -78,6 +117,44 @@ def _axes_from(reports):
 LIBRARY = grid_library(
     SPORT.key, SPORT.db, DB_REVISION) if SPORT.grid_library else []
 LIB_BY_NUMBER = {r.grid.number: r for r in LIBRARY}
+# Newest capture wins a duplicated date: LIBRARY arrives grid_num DESC, so
+# the first report seen for a date is the one to keep.
+LIB_BY_DATE = {}
+for _report in LIBRARY:
+    LIB_BY_DATE.setdefault(_report.grid.date, _report)
+
+
+def lib_label(report):
+    """'#1120 · 2026-08-09 · Gridley — 6/6 criteria supported · Ready'.
+
+    GridReport.line() names the number and the verdict. The day the board
+    was set and who captured it are the other two things a solver picking
+    from a mixed library wants, and the number alone says neither.
+    """
+    grid = report.grid
+    name = f"#{grid.number}" if grid.number else grid.key
+    return (f"{name} · {grid.date} · {grid.source.replace('_', ' ')} — "
+            f"{report.supported_count}/{report.total} criteria supported · "
+            f"{report.status}")
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _fetch_daily_board(sport_key, date):
+    """One dated board straight from the sport's own feed, or None.
+
+    Cached — including the misses — so a rerun does not re-request the site
+    on every widget change. A board that has not been published yet is a
+    None worth remembering for a few minutes; "Check again" clears it.
+    """
+    fetcher = sports.get(sport_key).daily_grid_fetcher()
+    if fetcher is None:
+        return None
+    try:
+        return fetcher(date)
+    except Exception:
+        # fetch_gridley already swallows network errors and returns None;
+        # this covers a feed that does not.
+        return None
 
 
 def _auto_grid():
@@ -176,13 +253,20 @@ def show_report(picked, mode):
 
 
 st.sidebar.markdown("### Grid source")
+# Only offered where the sport declares a feed AND a parser: a fetched board
+# arrives as six lines of the site's own wording, and reading those is what
+# afl/parse_criteria.py does -- for the AFL only.
+DAILY = f"Today's {V.grid_source}"
+CAN_FETCH_DAILY = bool(SPORT.daily_grid_feed and SPORT.criterion_parser)
 SOURCES = ["Build my own", "Saved grid", "Auto-made grid", "Paste criteria",
            "Past grid", "Random supported grid"]
+if CAN_FETCH_DAILY:
+    SOURCES.insert(1, DAILY)
 source = st.sidebar.radio("Source", SOURCES, key=SPORT.k("gridsource"),
                           label_visibility="collapsed")
 
 if source in ("Paste criteria", "Past grid",
-              "Random supported grid"):
+              "Random supported grid", DAILY):
     mode = st.sidebar.radio(
         "Mode", ["Authentic", "Practice"], horizontal=True,
         key=SPORT.k("gridmode"),
@@ -193,7 +277,59 @@ if source in ("Paste criteria", "Past grid",
 else:
     mode = "Authentic"
 
-if source == "Saved grid":
+if source == DAILY and CAN_FETCH_DAILY:
+    # The board the site is running today, opened in the solver rather than
+    # retyped criterion by criterion into "Paste criteria". The saved
+    # library is tried first -- the scheduled scan writes each day's board
+    # into `historic_grids`, and a captured board has already been analysed
+    # above. Only a day the scan has not reached yet costs an HTTP request,
+    # which keeps the common case free while still making today's board
+    # playable before the scan next runs.
+    st.sidebar.caption(
+        f"Opens the {V.grid_source} board for a given day. Saved boards "
+        "come from the database; anything newer is read straight from "
+        f"[{SPORT.daily_grid_site.split('//')[-1]}]"
+        f"({SPORT.daily_grid_site}).")
+    day = st.sidebar.date_input("Board date", value=datetime.date.today(),
+                                key=SPORT.k("dailydate"),
+                                format="YYYY-MM-DD")
+    day_iso = day.isoformat()
+
+    picked = None
+    saved = LIB_BY_DATE.get(day_iso)
+    if saved is not None:
+        st.sidebar.caption(
+            f"From the saved library — captured by "
+            f"{saved.grid.source.replace('_', ' ')}.")
+        with st.spinner("Checking every square against the database…"):
+            picked = grid_report(SPORT.key, SPORT.db, DB_REVISION,
+                                 saved.grid.number)
+    else:
+        with st.spinner(f"Asking {V.grid_source} for {day_iso}…"):
+            board = _fetch_daily_board(SPORT.key, day_iso)
+        if board:
+            with st.spinner("Checking every square against the database…"):
+                picked = feed_report(SPORT.key, SPORT.db, DB_REVISION,
+                                     day_iso, V.grid_source, board)
+        if picked is None:
+            st.sidebar.warning(
+                f"No {V.grid_source} board came back for {day_iso}. Each "
+                "board is published on its own day, an older one may have "
+                "dropped off the feed, and the site may simply be "
+                "unreachable — the feed answers all three the same way.")
+            st.session_state.pop("loaded", None)
+        else:
+            st.sidebar.caption(
+                "Fetched live — not yet in the saved library. The "
+                "scheduled scan will store it.")
+        if st.sidebar.button("Check again", key=SPORT.k("daily_refetch")):
+            _fetch_daily_board.clear()
+            st.rerun()
+
+    if picked is not None:
+        show_report(picked, mode)
+
+elif source == "Saved grid":
     saved = accounts.list_saved_grids(AUTH_USER.id, SPORT.key)
     if not saved:
         st.sidebar.info("You have no saved grids for this sport yet.")
@@ -249,27 +385,36 @@ elif source in ("Past grid", "Random supported grid") and LIBRARY:
             import random
             st.session_state[SPORT.k("randgrid")] = (
                 random.choice(pool).grid.number if pool else None)
-        picked = LIB_BY_NUMBER.get(st.session_state.get(SPORT.k("randgrid")))
-        if picked is None:
+        chosen = st.session_state.get(SPORT.k("randgrid"))
+        picked = None
+        if chosen is None or chosen not in LIB_BY_NUMBER:
             st.sidebar.warning("No grid in the library is fully supported.")
+        else:
+            with st.spinner("Checking every square against the database…"):
+                picked = grid_report(SPORT.key, SPORT.db, DB_REVISION, chosen)
     else:
-        by = st.sidebar.radio("Select by", ["Gridley number", "Date"],
+        by = st.sidebar.radio("Select by",
+                              [f"{V.grid_source} number", "Date"],
                               horizontal=True, key=SPORT.k("gridby"))
         # Every grid stays selectable, including the ones that cannot be
         # played. Hiding them would hide the reason they cannot be played,
         # which is the more useful half of the information.
-        if by == "Gridley number":
+        if by == f"{V.grid_source} number":
             numbers = [r.grid.number for r in LIBRARY]
             n = st.sidebar.selectbox(
                 "Grid", numbers, key=SPORT.k("gridnum"),
-                format_func=lambda x: LIB_BY_NUMBER[x].line())
+                format_func=lambda x: lib_label(LIB_BY_NUMBER[x]))
         else:
             dates = {r.grid.date: r.grid.number for r in LIBRARY}
             dsel = st.sidebar.selectbox(
                 "Date", list(dates), key=SPORT.k("griddatesel"),
                 format_func=lambda x: f"{x} — {LIB_BY_NUMBER[dates[x]].line()}")
             n = dates[dsel]
-        picked = LIB_BY_NUMBER[n]
+        # The listing above is parse-only. The board a solver actually
+        # picks is the one worth counting, so the eligible numbers and the
+        # nine-intersection check are done here, for that grid alone.
+        with st.spinner("Checking every square against the database…"):
+            picked = grid_report(SPORT.key, SPORT.db, DB_REVISION, n)
 
     if picked is not None:
         show_report(picked, mode)

@@ -122,6 +122,13 @@ Each populated square shows:
 
 The star rating is a local obscurity proxy based on career footprint and era. It is **not** Gridley's live crowd rarity percentage.
 
+Boards can be built by hand, generated, pasted in criterion by criterion,
+loaded from a saved or captured grid, or — for the AFL — opened straight from
+[gridleygame.com](https://gridleygame.com) with **Today's Gridley**. That
+source reads a day's board from the captured library when the scheduled scan
+has already stored it, and asks the site directly for any day it has not
+reached yet, so the current board is playable before the next scan runs.
+
 Historical grids may be loaded in two modes:
 
 - **Authentic** — only runs grids whose six original criteria are supported.

@@ -170,3 +170,87 @@ def test_gridley_1118_wording_parses_as_the_board_states_it():
 def test_a_grand_final_count_keeps_the_number_it_was_given():
     for n in (1, 2, 3, 4, 5):
         assert label(f"{n}+ GRAND FINALS") == f"played in {n}+ grand finals"
+
+
+# ------------------------------ the minor premiership is not the premiership
+
+def test_a_minor_premiership_is_never_answered_with_the_flag():
+    """Finishing top of the home-and-away ladder and winning the grand final
+    are different achievements, and in half of all seasons different clubs:
+    they have coincided in 66 of 127. The bare "premiership" rule matched
+    "MINOR PREMIERSHIP WINNER" first and answered every square about the
+    ladder with the flag instead."""
+    assert label("MINOR PREMIERSHIP WINNER") == "minor premiership"
+    assert label("MINOR PREMIERSHIP") == "minor premiership"
+    assert label("TOP OF THE LADDER") == "minor premiership"
+
+
+def test_never_winning_a_minor_premiership_is_not_its_own_opposite():
+    """This read as "premiership player" -- the precise inverse of the
+    square, admitting only the players it was meant to exclude."""
+    assert label("NEVER WON A MINOR PREMIERSHIP") == "no minor premierships"
+    assert label("NO MINOR PREMIERSHIPS") == "no minor premierships"
+
+
+def test_a_minor_premiership_count_is_counted():
+    assert label("3+ MINOR PREMIERSHIPS") == "3+ minor premierships"
+
+
+def test_the_flag_still_wins_a_plain_premiership_square():
+    """The guard above must not swallow the criterion it was inserted in
+    front of."""
+    assert label("PREMIERSHIP PLAYER") == "premiership player"
+    assert label("PREMIERSHIP WINNER") == "premiership player"
+
+
+# ------------------------------------- winning and losing a grand final
+
+def test_losing_grand_finals_is_not_playing_in_them():
+    """"LOST 2+ GRAND FINALS" was answered by the count of grand finals
+    *played*, which admits every dual premiership player -- the exact
+    players the square is asking to keep out."""
+    assert label("LOST 2+ GRAND FINALS") == "lost 2+ grand finals"
+    assert label("LOST 3+ GRAND FINALS") == "lost 3+ grand finals"
+
+
+def test_winning_grand_finals_is_not_playing_in_them_either():
+    assert label("WON 2+ GRAND FINALS") == "won 2+ premierships"
+
+
+def test_an_uncounted_grand_final_square_still_counts_appearances():
+    """The wording with no verb keeps its old meaning."""
+    assert label("3+ GRAND FINALS") == "played in 3+ grand finals"
+
+
+def test_a_premiership_count_written_without_grand_finals_is_counted():
+    """"2+ PREMIERSHIPS" fell through to the bare rule and answered with
+    every player who had won one."""
+    assert label("2+ PREMIERSHIPS") == "won 2+ premierships"
+    assert label("4+ FLAGS") == "won 4+ premierships"
+
+
+# --------------------------------------------- the club best-and-fairest
+
+@pytest.mark.parametrize("text", ["BEST & FAIREST", "BEST AND FAIREST",
+                                  "B&F", "B & F", "BEST 'N' FAIREST"])
+def test_every_spelling_of_the_club_award_reaches_the_award_rule(text):
+    """Gridley writes it with the ampersand, which nothing matched.
+
+    The rule read "best and fairest" and "b&f" only, so the one spelling
+    the site actually publishes fell past every rule in the chain and was
+    declined as uninterpretable -- on a board whose other five criteria
+    parsed, which is what made the whole grid unplayable in Authentic mode.
+    """
+    assert label(text) == "club best and fairest"
+
+
+def test_a_repeat_winners_square_says_how_many_it_asked_for():
+    """The count reached the builder but never the axis label."""
+    assert label("2X BEST & FAIREST") == "2x club best and fairest"
+
+
+def test_the_ampersand_spelling_still_yields_to_the_narrower_rules():
+    """Broadening the wording must not cost the club and multi-club forms."""
+    assert label("CARLTON BEST & FAIREST") == "Carlton best and fairest"
+    assert label("BEST & FAIREST 2+ CLUBS") == "B&F at 2+ clubs"
+    assert label("B&F AT 2 DIFFERENT CLUBS") == "B&F at 2+ clubs"

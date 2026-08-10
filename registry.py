@@ -102,6 +102,14 @@ class Sport:
     # -- capabilities --------------------------------------------------
     criterion_parser: str = ""
     grid_library: bool = False
+    #: "module:function" that returns one dated board straight from the
+    #: sport's own daily puzzle, or None when that day has not been
+    #: published. Declared per sport rather than inferred from the key:
+    #: utils.fetch_grids.fetch_gridley reads gridleygame.com's AFL feed and
+    #: would answer an NBA request with an AFL board.
+    daily_grid_feed: str = ""
+    #: Where that feed comes from, for the credit line the picker shows.
+    daily_grid_site: str = ""
     game_lab_module: str = ""
     #: Which module renders the Awards page. The AFL's is built for the
     #: Draftguru shape and the MLB's for Lahman's, and the two have no
@@ -160,6 +168,17 @@ class Sport:
     def C(self):
         """The sport's constraints module, imported on first use."""
         return importlib.import_module(self.module)
+
+    def daily_grid_fetcher(self):
+        """The callable behind `daily_grid_feed`, or None when unset.
+
+        Imported on use, not at module scope: a sport without a live feed
+        should not drag its scraper's dependencies into every page.
+        """
+        if not self.daily_grid_feed:
+            return None
+        module_name, _, func = self.daily_grid_feed.partition(":")
+        return getattr(importlib.import_module(module_name), func)
 
     # -- namespacing --------------------------------------------------
     def k(self, *parts):

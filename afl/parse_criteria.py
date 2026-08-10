@@ -289,7 +289,12 @@ def _parse_exact(text):
     if re.search(r"state[- ]league medallist", t):
         return A.state_league_medallist(), "state-league medallist"
 
-    if re.search(r"best and fairest|b&f", t):
+    # Gridley writes the club award as "BEST & FAIREST", with the ampersand
+    # its own word. Only "best and fairest" and "b&f" were matched here, so
+    # the one spelling the site actually uses fell through every rule below
+    # and was declined as uninterpretable -- on a board whose other five
+    # criteria parsed, which made the whole grid unplayable.
+    if re.search(r"best\s*(?:and|&|'?n'?)\s*fairest|\bb\s*&\s*f\b", t):
         m = re.search(r"(\d+)\+?\s*(?:different\s+)?clubs?", t)
         if m:
             n = int(m.group(1))
@@ -298,7 +303,12 @@ def _parse_exact(text):
             if re.search(rf"\b{re.escape(alias)}\b", t):
                 return A.best_and_fairest_at(club), f"{club} best and fairest"
         n = _num(t)
-        return A.best_and_fairest(n or 1), "club best and fairest"
+        if n and n > 1:
+            # "2X BEST & FAIREST" already asked for two, and the axis has to
+            # say so: the label is the only place the board states which
+            # question was answered.
+            return A.best_and_fairest(n), f"{n}x club best and fairest"
+        return A.best_and_fairest(1), "club best and fairest"
 
     if re.search(r"(number|pick) ?(one|1)\b.*(draft|pick)|#1 (draft )?pick", t):
         return A.number_one_draft_pick(), "number one draft pick"
@@ -396,14 +406,43 @@ def _parse_exact(text):
             if re.search(rf"\b{re.escape(alias)}\b", t):
                 return C.debut_club(club), f"{club} first career game"
 
+    # 3c9. The minor premiership: finishing top of the home-and-away ladder.
+    # It is not the premiership and usually not even the same club, so it
+    # has to be settled before every rule below that matches a bare
+    # "premiership" -- one of which answered "MINOR PREMIERSHIP WINNER" with
+    # the flag, and "NEVER WON A MINOR PREMIERSHIP" with its exact opposite.
+    if re.search(r"minor premiership|minor flag|top of the ladder|"
+                 r"ladder leader", t):
+        if re.search(r"\bno\b|\bnever\b|\bwithout\b|\bzero\b", t):
+            return C.no_minor_premierships(), "no minor premierships"
+        m = re.search(r"(\d+)\+?\s*minor premierships?", t)
+        if m and int(m.group(1)) > 1:
+            count = int(m.group(1))
+            return (C.minor_premierships_min(count),
+                    f"{count}+ minor premierships")
+        return C.minor_premiership_player(), "minor premiership"
+
     # 3d. Finals counts and averages.
     m = re.search(r"(\d+)\+?\s*finals? games?", t)
     if m:
         return C.finals_games_min(int(m.group(1))), f"{m.group(1)}+ finals games"
     m = re.search(r"(\d+)\+?\s*grand finals?", t)
     if m:
-        return (C.grand_finals_played_min(int(m.group(1))),
-                f"played in {m.group(1)}+ grand finals")
+        # "LOST 2+ GRAND FINALS" and "WON 2+ GRAND FINALS" both count grand
+        # finals, and answering either with the bare "played in" count is
+        # wrong in opposite directions -- it let every dual premiership
+        # player through a square asking who had lost two.
+        count = int(m.group(1))
+        if re.search(r"\blost\b|\blose\b|\blosing\b|\bloss(es)?\b|"
+                     r"\brunners?[- ]up\b|\bdefeated in\b", t):
+            return (C.grand_finals_lost_min(count),
+                    f"lost {count}+ grand finals")
+        if re.search(r"\bwon\b|\bwin\b|\bwinning\b|\bwinner\b|"
+                     r"\bpremierships?\b|\bflags?\b", t):
+            return (C.premierships_won_min(count),
+                    f"won {count}+ premierships")
+        return (C.grand_finals_played_min(count),
+                f"played in {count}+ grand finals")
     m = re.search(r"([\d.]+)\+?\s*goals?\s*(avg|average)", t)
     if m and "final" in t:
         return (C.goal_average_in_finals(float(m.group(1))),
@@ -620,6 +659,13 @@ def _parse_exact(text):
         return C.never_won_a_final(), "never won a final"
     if re.search(r"no finals|never played finals", t):
         return C.never_played_finals(), "never played finals"
+    # A count reaches here when it was not written as "grand finals" -- the
+    # rule in 3d only counts those. Without this, "2+ PREMIERSHIPS" was
+    # answered with every single premiership player.
+    m = re.search(r"(\d+)\+?\s*(?:premierships?|flags?)", t)
+    if m and int(m.group(1)) > 1:
+        count = int(m.group(1))
+        return C.premierships_won_min(count), f"won {count}+ premierships"
     if re.search(r"premiership|flag|grand final win", t):
         return C.premiership_player(), "premiership player"
 
