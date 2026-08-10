@@ -269,6 +269,64 @@ Match derivation can then be run separately:
 python -m afl.derive_matches --db my_afl.db
 ```
 
+### Enter a round the source dataset has not published yet
+
+The AFL build reads the cached fitzRoy dataset rather than scraping AFL Tables,
+because [afltables.com](#afl-tables)' robots.txt disallows automated clients on
+the stats paths. That dataset lags the live season, so a round can be played
+and still be missing. `utils/afl/load_round_csv.py` closes the gap from the one
+source that needs no crawler: the AFL Tables match pages, copy-pasted into
+CSVs.
+
+Put one folder per round together, holding the season page's rows for that
+round (two lines per match) and one file per match holding that match page's
+four tables — both sides' *Match Statistics*, then both sides' *Player
+Details*. Then:
+
+```bash
+python -m utils.afl.load_round_csv --dir ./rd23 --season 2026 --round 23 --dry-run
+python -m utils.afl.load_round_csv --dir ./rd23 --season 2026 --round 23
+python -m utils.shared.recompute_obscurity --sport afl   # if anyone debuted
+```
+
+Always dry-run first. It reads and checks everything, resolves every name and
+writes nothing, so the report is the review step.
+
+Game files are paired to fixtures by the club names in their *Match Statistics*
+headings, never by filename — a hand-assembled folder collects misnamed and
+duplicated copies, and pairing on names means a stale rename cannot load a
+match twice or attach stats to the wrong fixture. Anything else in the folder
+is ignored and named in the report. Where more than one file could be the round
+summary, pass `--summary Rd23.csv`.
+
+Two checks have to pass before anything is written. Each side's player goals
+must add up to the quarter scores the summary states, and every name must
+resolve to exactly one player. Names are not unique — 460 names in
+`afltables_player_index` belong to more than one player — so a name matching
+several people is settled first by era (a 2026 match was not played by someone
+who last played in 1937, which is what separates the two Archie Robertses) and
+then by club (which separates the two Bailey Williamses playing right now, one
+at the Western Bulldogs and one at West Coast). A name that survives both is
+reported as ambiguous and stops the load rather than being guessed.
+
+A debutant gets a new `player_id` and a `players` row whose date of birth is
+exact, being the match date less the age the Player Details table states.
+Obscurity is left unscored for `recompute_obscurity`, which is the only thing
+that should write it.
+
+**Surviving a rebuild.** `afl/build_db.py` replaces `games` and `players`
+wholesale, which would drop a hand-entered round. The parsed rows are therefore
+kept in `manual_round_games`, and the fixtures in `club_match_sources` beside
+the [All Games](#club-all-games-match-sources) observations. `afl/build_db.py`
+re-applies them itself at the end of every rebuild, so a scheduled refresh
+cannot quietly lose a round. Rounds the rebuild has now produced upstream are
+skipped, so this stops mattering by itself once the dataset catches up:
+
+```bash
+python -m utils.afl.load_round_csv --apply-only     # after a manual rebuild
+python -m utils.afl.load_round_csv --forget 2026 23 # once fitzRoy carries it
+```
+
 ## Automated database updates
 
 The `database_updates.py` script runs on a schedule and keeps the AFL, NBA, and MLB databases current without rebuilding them from scratch. A **"regular"** update runs frequently (every ~7 days for AFL, ~5 months for NBA, etc.) and appends/refreshes only the most recent season's games. A **"full"** rebuild is manual and rare (after a source format change or a deliberate reset):
@@ -1016,6 +1074,7 @@ object rather than an `if`.
 | `utils/afl/load_family_draft.py` | Family-draft relationship loader |
 | `utils/afl/load_club_sources.py` | Club metadata and all-time records loader |
 | `utils/afl/fetch_club_sources.py` | Cache club source pages |
+| `utils/afl/load_round_csv.py` | Load a hand-entered AFL Tables round the source dataset has not published yet |
 | `utils/shared/load_wiki_reference.py` | Wikipedia reference import (NBA/NFL/MLB) |
 | `utils/shared/clean_project.py` | Identify and remove generated artefacts |
 | `utils/shared/optimise_database.py` | Index optimization suggestions |

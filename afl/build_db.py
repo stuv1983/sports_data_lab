@@ -435,6 +435,25 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
         else:
             derive_matches.run(db_path)
 
+    # A rebuild also drops any round entered by hand from the AFL Tables match
+    # pages, which is how a round the cached dataset has not published yet gets
+    # into the database at all. The rows survive in manual_round_games, so
+    # re-apply them here rather than leaving a scheduled refresh to silently
+    # lose a round. Rounds the rebuild has now produced upstream are skipped,
+    # so this stops mattering by itself once the dataset catches up.
+    print()
+    try:
+        from utils.afl import load_round_csv
+    except ImportError:
+        print("utils/afl/load_round_csv.py not found -- hand-entered rounds "
+              "not re-applied.")
+    else:
+        try:
+            load_round_csv.apply_only(Path(db_path))
+        except Exception as error:                              # noqa: BLE001
+            print(f"warning: hand-entered rounds not re-applied ({error})",
+                  file=sys.stderr)
+
     # to_sql(if_exists="replace") takes games.match_event with it too, and the
     # marquee squares vanish with it. The tags are derived from cached
     # Wikipedia pages, so a retag is offline and idempotent -- it re-applies
