@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import sqlite3
 
 import pytest
@@ -129,6 +130,80 @@ def test_saved_grids_are_private_and_round_trip_constraints(tmp_path):
     accounts.save_grid(owner.id, "afl", "Friday", rows[::-1], cols, path)
     assert len(accounts.list_saved_grids(owner.id, "afl", path)) == 1
     assert accounts.load_grid(owner.id, saved[0]["id"], path)["rows"] == rows[::-1]
+
+
+def _axes():
+    rows = [(f"row {i}", ("SELECT player_id FROM games WHERE season >= ?", [2000 + i]))
+            for i in range(3)]
+    cols = [(f"club {i}", ("SELECT player_id FROM games WHERE club_now = ?", [f"C{i}"]))
+            for i in range(3)]
+    return rows, cols
+
+
+def test_play_grids_offers_admin_boards_and_never_another_members_grid(tmp_path):
+    path = _accounts(tmp_path)
+    admin, _ = accounts.register("Admin User", "admin@example.com", "password-123", path)
+    member, _ = accounts.register("Member One", "one@example.com", "password-123", path)
+    other, _ = accounts.register("Member Two", "two@example.com", "password-123", path)
+    with sqlite3.connect(path) as con:
+        con.execute("UPDATE users SET email_verified=1")
+        con.commit()
+
+    rows, cols = _axes()
+    accounts.save_grid(admin.id, "afl", "Curated", rows, cols, path)
+    accounts.save_grid(member.id, "afl", "Private", rows, cols, path)
+    curated = next(g for g in accounts.list_playable_grids("afl", admin.id, path)
+                   if g["name"] == "Curated")
+    private = accounts.list_saved_grids(member.id, "afl", path)[0]
+
+    # An anonymous visitor -- Play Grids is a public page -- sees the curated
+    # board only, and cannot reach a member's grid by guessing its id.
+    assert [g["name"] for g in accounts.list_playable_grids("afl", None, path)] == ["Curated"]
+    assert accounts.load_playable_grid(curated["id"], None, path) == {"rows": rows, "cols": cols}
+    with pytest.raises(accounts.AccountError, match="not found"):
+        accounts.load_playable_grid(private["id"], None, path)
+
+    # Nor can another signed-in member.
+    assert [g["name"] for g in accounts.list_playable_grids("afl", other.id, path)] == ["Curated"]
+    with pytest.raises(accounts.AccountError, match="not found"):
+        accounts.load_playable_grid(private["id"], other.id, path)
+
+    # The owner still gets their own alongside the curated board.
+    assert sorted(g["name"] for g in accounts.list_playable_grids("afl", member.id, path)) == [
+        "Curated", "Private"]
+    assert accounts.load_playable_grid(private["id"], member.id, path) == {
+        "rows": rows, "cols": cols}
+
+
+def test_expired_verification_can_be_reissued(tmp_path, sent_emails):
+    path = _accounts(tmp_path)
+    accounts.register("Late Joiner", "late@example.com", "password-123", path)
+    stale = sent_emails[-1][1]
+
+    with sqlite3.connect(path) as con:
+        con.execute(
+            "UPDATE users SET verification_sent_at=?",
+            ((datetime.now(timezone.utc) - timedelta(days=3)).isoformat(timespec="seconds"),))
+        con.commit()
+
+    assert accounts.verify_email(stale, path) is False
+    with pytest.raises(accounts.AccountError, match="verify"):
+        accounts.authenticate("late@example.com", "password-123", path)
+    with pytest.raises(accounts.AccountError, match="already exists"):
+        accounts.register("Late Joiner", "late@example.com", "password-123", path)
+
+    accounts.resend_verification("late@example.com", path)
+    fresh = sent_emails[-1][1]
+    assert fresh != stale
+    assert accounts.verify_email(fresh, path) is True
+    assert accounts.authenticate("late@example.com", "password-123", path) is not None
+
+    # An unknown or already-verified address is a silent no-op, so the form
+    # cannot be used to find out who has an account here.
+    before = len(sent_emails)
+    accounts.resend_verification("nobody@example.com", path)
+    accounts.resend_verification("late@example.com", path)
+    assert len(sent_emails) == before
 
 
 def test_legacy_accounts_are_verified_and_policy_schema_is_migrated(tmp_path):

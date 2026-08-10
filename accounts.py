@@ -310,6 +310,46 @@ def verify_email(token, path=DB_PATH):
         con.close()
 
 
+def resend_verification(email, path=DB_PATH):
+    """Issue a fresh verification link for an account that never verified.
+
+    Without this a link that outlived VERIFICATION_TTL strands the account
+    for good: `authenticate` refuses to log it in, and `register` refuses to
+    reuse the address, so the only way back was editing the database by hand.
+
+    Returns None whichever way it goes -- the caller must not be able to use
+    it to learn whether an address has an account here.
+    """
+    try:
+        email = _normalise_email(email)
+    except AccountError:
+        return
+    ensure_schema(path)
+    con = _connect(path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT id FROM users WHERE email=? AND email_verified=0 AND active=1",
+            (email,),
+        ).fetchone()
+        if row is None:
+            con.rollback()
+            return
+        token = secrets.token_urlsafe(32)
+        con.execute(
+            "UPDATE users SET verification_token=?, verification_sent_at=? "
+            "WHERE id=?",
+            (_verification_digest(token), _now(), row["id"]),
+        )
+        send_validation_email(email, token)
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
 def register(display_name, email, password, path=DB_PATH):
     """Create an account. The very first account safely bootstraps admin."""
     display_name = " ".join(str(display_name).split())
@@ -519,6 +559,15 @@ def list_saved_grids(user_id, sport_key, path=DB_PATH):
             (user_id, sport_key))]
 
 
+def _grid_definition(definition_json):
+    data = json.loads(definition_json)
+    return {
+        side: [(axis["label"], (axis["sql"], axis["params"]))
+               for axis in data[side]]
+        for side in ("rows", "cols")
+    }
+
+
 def load_grid(user_id, grid_id, path=DB_PATH):
     if get_user(user_id, path) is None:
         raise PermissionError("Sign in to open grids.")
@@ -528,33 +577,44 @@ def load_grid(user_id, grid_id, path=DB_PATH):
             (grid_id, user_id)).fetchone()
     if row is None:
         raise AccountError("Saved grid not found.")
-    data = json.loads(row[0])
-    return {
-        side: [(axis["label"], (axis["sql"], axis["params"]))
-               for axis in data[side]]
-        for side in ("rows", "cols")
-    }
+    return _grid_definition(row[0])
 
-def list_all_grids(sport_key, path=DB_PATH):
+
+#: A saved grid is private to the account that saved it, with one deliberate
+#: exception: Play Grids is a public page whose whole purpose is a shared
+#: library, and administrators are the curators of that library. So an
+#: administrator's grids are playable by anyone, and nobody else's are.
+#: Selecting on sport_key and id alone -- which Play Grids used to do --
+#: handed every anonymous visitor every member's saved board.
+_PLAYABLE_GRID = (
+    "FROM saved_grids g JOIN users u ON u.id = g.user_id "
+    "WHERE ((u.role='admin' AND u.active=1) OR g.user_id=?)"
+)
+
+
+def list_playable_grids(sport_key, user_id=None, path=DB_PATH):
+    """Published grids for a sport, plus the viewer's own if signed in."""
+    ensure_schema(path)
+    viewer = get_user(user_id, path)
     with _connect(path) as con:
         return [dict(row) for row in con.execute(
-            "SELECT id, name, created_at, updated_at FROM saved_grids "
-            "WHERE sport_key=? ORDER BY updated_at DESC, name",
-            (sport_key,))]
+            "SELECT g.id, g.name, g.created_at, g.updated_at "
+            + _PLAYABLE_GRID + " AND g.sport_key=? "
+            "ORDER BY g.updated_at DESC, g.name",
+            (viewer.id if viewer else None, str(sport_key)))]
 
-def load_any_grid(grid_id, path=DB_PATH):
+
+def load_playable_grid(grid_id, user_id=None, path=DB_PATH):
+    """Open a grid the viewer is allowed to play. See :data:`_PLAYABLE_GRID`."""
+    ensure_schema(path)
+    viewer = get_user(user_id, path)
     with _connect(path) as con:
         row = con.execute(
-            "SELECT definition_json FROM saved_grids WHERE id=?",
-            (grid_id,)).fetchone()
+            "SELECT g.definition_json " + _PLAYABLE_GRID + " AND g.id=?",
+            (viewer.id if viewer else None, grid_id)).fetchone()
     if row is None:
         raise AccountError("Saved grid not found.")
-    data = json.loads(row[0])
-    return {
-        side: [(axis["label"], (axis["sql"], axis["params"]))
-               for axis in data[side]]
-        for side in ("rows", "cols")
-    }
+    return _grid_definition(row[0])
 
 
 def delete_grid(user_id, grid_id, path=DB_PATH):

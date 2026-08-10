@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 import streamlit as st
 
@@ -32,7 +33,8 @@ def render_grid_selection():
         source = default_source
     
     if source == "Saved Grids":
-        saved = accounts.list_all_grids(SPORT.key)
+        viewer_id = st.session_state.get("auth_user_id")
+        saved = accounts.list_playable_grids(SPORT.key, viewer_id)
         if not saved:
             st.info("No saved grids found. Go to Grid Solver to create and save some grids.")
             return
@@ -43,7 +45,7 @@ def render_grid_selection():
         
         if st.button("Load Grid", key=SPORT.k("play_load_grid"), type="primary", width="stretch"):
             try:
-                grid_data = accounts.load_any_grid(chosen_id)
+                grid_data = accounts.load_playable_grid(chosen_id, viewer_id)
                 st.session_state[SPORT.k("play_loaded_grid")] = grid_data
                 st.session_state[SPORT.k("play_state")] = {
                     "guesses": 0, "undo_used": False, "answers": {}, "history": [], "cell": None
@@ -128,8 +130,11 @@ def _get_newest_grid_cached(sport_key, db_revision):
         import db_pool
         import sports
         from afl import historic_grids as HG
-        local_con = db_pool.get_con("afl.db", db_revision)
         local_sport = sports.get(sport_key)
+        # The sport's own resolved path, never a bare "afl.db": the database
+        # lives at data/afl/afl.db, so the literal name opened an empty file
+        # in the working directory and auto-loading silently found nothing.
+        local_con = db_pool.get_con(local_sport.db, db_revision)
         # Analysing one board costs seconds, so only the newest few are
         # tried before handing the choice back to the player.
         cur = local_con.execute(
@@ -155,7 +160,10 @@ def _get_newest_grid_cached(sport_key, db_revision):
                 return {"rows": rows, "cols": cols,
                         "grid_num": picked["grid_num"],
                         "source": picked["source"]}
-    except Exception:
+    except (ImportError, OSError, sqlite3.Error):
+        # A sport with no captured-board table is an ordinary state, and the
+        # picker still offers Saved Grids, so these stay quiet. Anything else
+        # is a bug and now reaches the page instead of becoming a blank one.
         pass
     return None
 

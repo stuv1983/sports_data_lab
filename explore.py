@@ -1560,9 +1560,9 @@ def _game_higher_lower(sport, con):
         st.rerun()
 
     if verdict is None:
-        if c1.button("Higher", key=sport.k("hl_b1"), use_container_width=True):
+        if c1.button("Higher", key=sport.k("hl_b1"), width="stretch"):
             answer(p1, p2)
-        if c2.button("Higher", key=sport.k("hl_b2"), use_container_width=True):
+        if c2.button("Higher", key=sport.k("hl_b2"), width="stretch"):
             answer(p2, p1)
     else:
         correct, detail = verdict

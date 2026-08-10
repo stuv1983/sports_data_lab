@@ -270,6 +270,7 @@ def _login_form(prefix="sidebar"):
         password = st.text_input(
             "Password", type="password", key=f"{prefix}_login_password")
         submitted = st.form_submit_button("Log in", type="primary")
+    pending_key = f"{prefix}_resend_email"
     if submitted:
         try:
             user = accounts.authenticate(email, password)
@@ -280,6 +281,16 @@ def _login_form(prefix="sidebar"):
                 st.rerun()
         except accounts.AccountError as exc:
             st.error(str(exc))
+            # Verification links expire after a day. Offer a new one here, or
+            # an account whose link went stale can neither log in nor register
+            # again with the same address.
+            st.session_state[pending_key] = email
+
+    if st.session_state.get(pending_key):
+        if st.button("Resend verification email", key=f"{prefix}_resend"):
+            accounts.resend_verification(st.session_state.pop(pending_key))
+            st.success("If that address needs verifying, a fresh link is on "
+                       "its way. Check your email (or logs/emails.txt).")
 
 
 def _join_form(prefix="sidebar"):

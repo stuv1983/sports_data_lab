@@ -13,12 +13,21 @@ _key = st.session_state.get("sport", sports.DEFAULT)
 _pre = sports.get(_key)
 st.set_page_config(page_title=f"Sports Data Lab — {_pre.label.replace(' Data Lab', '')}", page_icon=branding.page_icon(_pre), layout="wide", initial_sidebar_state="expanded")
 
+# Consume the token, then drop it from the URL. Left in place it is checked
+# again on every later rerun, and the second check always fails -- successful
+# verification clears the token -- so the first click a reader made anywhere
+# on the page turned "verified!" into "invalid or expired link".
 if "verify" in st.query_params:
-    token = st.query_params["verify"]
-    if accounts.verify_email(token):
-        st.success("Your email has been verified! You can now log in.")
-    else:
-        st.error("Invalid or expired verification link.")
+    st.session_state["verify_result"] = accounts.verify_email(
+        st.query_params["verify"])
+    del st.query_params["verify"]
+
+_verified = st.session_state.pop("verify_result", None)
+if _verified is True:
+    st.success("Your email has been verified! You can now log in.")
+elif _verified is False:
+    st.error("Invalid or expired verification link. Use **Resend verification "
+             "email** on the log in form to get a fresh one.")
 
 
 SPORT = sports.picker(st)

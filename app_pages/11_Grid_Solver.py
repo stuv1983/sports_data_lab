@@ -473,7 +473,7 @@ with st.sidebar.expander("Save this grid", expanded=False):
     save_name = st.text_input("Grid name", key=SPORT.k("save_grid_name"),
                               placeholder="Friday challenge")
     if st.button("Save grid", key=SPORT.k("save_grid_button"),
-                 type="primary", use_container_width=True):
+                 type="primary", width="stretch"):
         try:
             accounts.save_grid(
                 AUTH_USER.id, SPORT.key, save_name, rows_def, cols_def)
