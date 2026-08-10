@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import re
 import sqlite3
 import sys
@@ -76,6 +77,14 @@ from utils.afl import load_club_all_games              # noqa: E402
 from utils.afl.club_sources import ALL_GAMES_BY_ID     # noqa: E402
 
 DEFAULT_DB = Path(default_db("afl"))
+
+#: Where the last folder loaded from is remembered. The CSVs are written by
+#: hand and live wherever suits -- a OneDrive desktop folder, a memory stick --
+#: so the location is a setting rather than a fixed path under data/. Both the
+#: CLI (`--dir` omitted) and the browse window read it, so choosing a folder in
+#: one carries to the other. Under data/, which is gitignored: it is one
+#: person's local path, not a fact about the project.
+SETTINGS = PROJECT_ROOT / "data" / "app" / "round_loader.json"
 
 #: AFL Tables' numeric club codes, which form the game key {low}{high}{date}.
 #: Only the clubs that can appear in a current-season round are listed; a
@@ -143,6 +152,44 @@ def utc_now() -> str:
 
 class LoadError(RuntimeError):
     """A problem in the source files that must be fixed before loading."""
+
+
+# --------------------------------------------------------------------------
+# remembering where the CSVs live
+
+
+def remembered_dir() -> Path | None:
+    """The folder last loaded from, if it is still there."""
+    try:
+        with SETTINGS.open(encoding="utf-8") as handle:
+            stored = json.load(handle).get("dir")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not stored:
+        return None
+    folder = Path(stored)
+    return folder if folder.is_dir() else None
+
+
+def remember_dir(folder: Path) -> None:
+    """Record a folder as the default for next time. Never fatal."""
+    try:
+        SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        with SETTINGS.open("w", encoding="utf-8") as handle:
+            json.dump({"dir": str(folder)}, handle, indent=2)
+    except OSError as error:
+        print(f"warning: could not remember {folder} ({error})",
+              file=sys.stderr)
+
+
+def guess_round(*texts: str) -> str | None:
+    """Pull a round number out of a folder or summary name, e.g. "rd23"."""
+    for text in texts:
+        found = re.search(r"(?:^|[^a-z0-9])r(?:ou)?n?d?\s*0*(\d{1,2})",
+                          str(text), re.I)
+        if found:
+            return found.group(1)
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -1026,6 +1073,10 @@ def load(db_path: Path, folder: Path, season: int, round_name: str, *,
     fixtures, games, ignored = read_directory(folder, summary)
     paired, unused, duplicates = pair_games(fixtures, games)
 
+    # Remembered once the folder has proved to hold a round, including on a
+    # dry run: checking a folder is how you say "this is where they live now".
+    remember_dir(folder)
+
     print(f"{folder}")
     print(f"  {len(fixtures)} fixtures, {len(paired)} game files paired")
     for path in ignored + [game.path for game in unused]:
@@ -1147,7 +1198,8 @@ def main(argv: list[str] | None = None) -> int:
         description="Load a hand-entered AFL Tables round into the database.")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--dir", type=Path,
-                        help="folder holding the round summary and game files")
+                        help="folder holding the round summary and game files; "
+                             "defaults to the last one loaded from")
     parser.add_argument("--season", type=int)
     parser.add_argument("--round", dest="round_name",
                         help="round name as games records it, e.g. 23 or GF")
@@ -1173,12 +1225,18 @@ def main(argv: list[str] | None = None) -> int:
             return forget(args.db, int(args.forget[0]), args.forget[1])
         if args.apply_only:
             return apply_only(args.db, force=args.force)
-        if not (args.dir and args.season and args.round_name):
-            parser.error("--dir, --season and --round are required "
-                         "unless --apply-only or --forget is given")
-        if not args.dir.is_dir():
-            parser.error(f"not a directory: {args.dir}")
-        return load(args.db, args.dir, args.season, args.round_name,
+        folder = args.dir or remembered_dir()
+        if not folder:
+            parser.error("--dir is required the first time; after that it "
+                         "defaults to the last folder loaded from")
+        if not (args.season and args.round_name):
+            parser.error("--season and --round are required unless "
+                         "--apply-only or --forget is given")
+        if not folder.is_dir():
+            parser.error(f"not a directory: {folder}")
+        if not args.dir:
+            print(f"using remembered folder {folder}")
+        return load(args.db, folder, args.season, args.round_name,
                     summary=args.summary, dry_run=args.dry_run)
     except LoadError as error:
         print(f"error: {error}", file=sys.stderr)

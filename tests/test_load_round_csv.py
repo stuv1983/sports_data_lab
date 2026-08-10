@@ -442,3 +442,77 @@ def test_a_debutant_already_present_is_not_created_twice(stored):
     assert L.create_debutants(stored, 2026, "23") == []
     assert stored.execute(
         "SELECT COUNT(*) FROM players").fetchone()[0] == 2
+
+
+# --------------------------------------------------------------------------
+# remembering where the CSVs live
+
+
+@pytest.fixture
+def settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(L, "SETTINGS", tmp_path / "round_loader.json")
+    return tmp_path
+
+
+def test_a_folder_is_remembered_and_read_back(settings, tmp_path):
+    assert L.remembered_dir() is None
+    L.remember_dir(tmp_path)
+    assert L.remembered_dir() == tmp_path
+
+
+def test_a_remembered_folder_that_has_gone_is_not_offered(settings, tmp_path):
+    """The CSVs live on removable and synced drives; the path can vanish."""
+    gone = tmp_path / "on a memory stick"
+    gone.mkdir()
+    L.remember_dir(gone)
+    gone.rmdir()
+    assert L.remembered_dir() is None
+
+
+def test_unreadable_settings_are_ignored_rather_than_fatal(settings):
+    L.SETTINGS.write_text("{not json", encoding="utf-8")
+    assert L.remembered_dir() is None
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Rd23.csv", "23"),
+    ("rd22.csv", "22"),
+    ("round 7", "7"),
+    ("R5-2026", "5"),
+    ("western bulldogs vs north mel rd23-2026.csv", "23"),
+    ("2026 season notes", None),
+    ("", None),
+])
+def test_a_round_number_is_recognised_in_a_name(text, expected):
+    assert L.guess_round(text) == expected
+
+
+# --------------------------------------------------------------------------
+# what the browse window shows about a folder
+
+
+def test_a_folder_is_described_without_loading_any_of_it(folder):
+    from utils.afl import load_round_gui as G
+
+    text, summaries, season, round_name = G.describe(folder)
+    assert text.startswith("2 game file(s)")
+    assert summaries == ["Rd23.csv"]
+    assert (season, round_name) == (2026, "23")
+
+
+def test_the_summary_matching_the_folders_round_is_offered_first(folder):
+    """Last round's summary is usually still sitting in the folder."""
+    from utils.afl import load_round_gui as G
+
+    (folder / "rd22.csv").write_text(SUMMARY, encoding="utf-8")
+    named = folder.rename(folder.parent / "rd23")
+    text, summaries, season, round_name = G.describe(named)
+    assert summaries[0] == "Rd23.csv"
+    assert round_name == "23"
+
+
+def test_a_folder_with_nothing_in_it_is_reported_not_raised(tmp_path):
+    from utils.afl import load_round_gui as G
+
+    assert G.describe(tmp_path)[0] == "no .csv files in this folder"
+    assert G.describe(tmp_path / "nowhere")[0] == "that folder does not exist"

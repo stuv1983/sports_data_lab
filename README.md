@@ -281,7 +281,13 @@ CSVs.
 Put one folder per round together, holding the season page's rows for that
 round (two lines per match) and one file per match holding that match page's
 four tables — both sides' *Match Statistics*, then both sides' *Player
-Details*. Then:
+Details*. Then either browse to it:
+
+```bash
+python -m utils.afl.load_round_gui
+```
+
+or name it on the command line:
 
 ```bash
 python -m utils.afl.load_round_csv --dir ./rd23 --season 2026 --round 23 --dry-run
@@ -289,8 +295,24 @@ python -m utils.afl.load_round_csv --dir ./rd23 --season 2026 --round 23
 python -m utils.shared.recompute_obscurity --sport afl   # if anyone debuted
 ```
 
-Always dry-run first. It reads and checks everything, resolves every name and
-writes nothing, so the report is the review step.
+Always check first — `--dry-run`, or the **Check** button. It reads everything,
+resolves every name and writes nothing, so the report is the review step.
+
+**The browse window.** These CSVs are written by hand and live wherever suits
+at the time, so the folder is a setting rather than a fixed path under `data/`.
+`load_round_gui.py` is a browse window over the same loader: pick the folder,
+and it reports what it found, offers the round summary it thinks you mean, and
+fills in the season and round from the summary's dates and the folder's name.
+**Check** and **Load** run the loader on a worker thread and stream its output
+into the log pane, so a load that takes a minute does not freeze the window.
+
+The folder is remembered as soon as one has been checked, in
+`data/app/round_loader.json`, and the command line reads the same setting —
+so once it has been chosen in either place, `--dir` can be left off:
+
+```bash
+python -m utils.afl.load_round_csv --season 2026 --round 24 --dry-run
+```
 
 Game files are paired to fixtures by the club names in their *Match Statistics*
 headings, never by filename — a hand-assembled folder collects misnamed and
@@ -1075,6 +1097,7 @@ object rather than an `if`.
 | `utils/afl/load_club_sources.py` | Club metadata and all-time records loader |
 | `utils/afl/fetch_club_sources.py` | Cache club source pages |
 | `utils/afl/load_round_csv.py` | Load a hand-entered AFL Tables round the source dataset has not published yet |
+| `utils/afl/load_round_gui.py` | Browse window over that loader: pick the folder, check it, load it |
 | `utils/shared/load_wiki_reference.py` | Wikipedia reference import (NBA/NFL/MLB) |
 | `utils/shared/clean_project.py` | Identify and remove generated artefacts |
 | `utils/shared/optimise_database.py` | Index optimization suggestions |
