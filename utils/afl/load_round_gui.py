@@ -186,19 +186,28 @@ class RoundLoader:
         root.after(POLL_MS, self.drain)
 
     def _make_log(self, parent):
-        from tkinter import Text, ttk
+        from tkinter import Text, font, ttk
 
+        face = ("Consolas", 9)
         text = Text(parent, wrap="word", height=18, state="disabled",
-                    font=("Consolas", 9))
+                    font=face)
         text.grid(row=0, column=0, sticky="nsew")
         bar = ttk.Scrollbar(parent, orient="vertical", command=text.yview)
         bar.grid(row=0, column=1, sticky="ns")
         text.configure(yscrollcommand=bar.set)
+
+        # A finding is longer than the pane is wide, and a wrapped line that
+        # returns to the left margin reads as a new finding -- the player_id
+        # ends up alone at the start of a line. Hang the continuation under
+        # the text instead, past the marker column.
+        indent = font.Font(font=face).measure(" " * (L.MARKER_COLUMN + 1))
+
         # The loader marks each finding with its status, so a line can be
         # coloured by what it is without the window parsing any of the prose.
-        text.tag_configure(L.NOT_FIXED, foreground="#b42318")
-        text.tag_configure(L.FIXED, foreground="#1a7f37")
-        text.tag_configure(L.NOTE, foreground="#7a5c00")
+        for marker, colour in ((L.NOT_FIXED, "#b42318"),
+                               (L.FIXED, "#1a7f37"),
+                               (L.NOTE, "#7a5c00")):
+            text.tag_configure(marker, foreground=colour, lmargin2=indent)
         return text
 
     # ------------------------------------------------------------------

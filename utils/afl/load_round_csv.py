@@ -169,6 +169,10 @@ NOT_FIXED = "[not fixed]"
 #: Widest marker, so the text after them lines up in a fixed-width log.
 _MARKER_WIDTH = max(len(m) for m in (FIXED, NOTE, NOT_FIXED))
 
+#: Character column a finding's text starts at, after two spaces of indent,
+#: the marker and two more spaces. The window hangs wrapped lines here.
+MARKER_COLUMN = 2 + _MARKER_WIDTH + 2
+
 
 @dataclass
 class Finding:
