@@ -117,7 +117,7 @@ The source for the entire NFL build: weekly player and team statistics,
 schedules, rosters, draft picks and the team catalogue. nflverse publishes its
 releases under a Creative Commons Attribution 4.0 licence, which asks for
 attribution; the data itself originates with the NFL and its statistics
-providers. Nothing is redistributed in this repository -- `build_nfl_db.py`
+providers. Nothing is redistributed in this repository -- `nfl/build_db.py`
 downloads it, and the raw releases are gitignored. The weekly player
 statistics begin in 1999 even though the schedules and rosters reach back to
 1920, so every career total in the NFL database is a 1999-onward figure and

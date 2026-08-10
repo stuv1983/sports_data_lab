@@ -178,6 +178,8 @@ def collect_safe_paths(
         paths.extend(sorted(root.glob(pattern)))
     paths.extend(sorted(root.rglob("__pycache__")))
     paths.extend(sorted(root.rglob("*.pyc")))
+    paths.extend(sorted(root.rglob(".pytest_cache")))
+    paths.extend(sorted(root.rglob(".ruff_cache")))
 
     if delete_db_backups:
         paths.extend(root / name for name in sorted(DB_BACKUPS))

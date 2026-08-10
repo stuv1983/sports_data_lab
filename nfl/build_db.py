@@ -24,11 +24,11 @@ Install:
     python -m pip install nflreadpy
 
 Examples:
-    python build_nfl_db.py
-    python build_nfl_db.py --from-season 1999 --through-season 2025
-    python build_nfl_db.py --all-history
-    python build_nfl_db.py --extended
-    python build_nfl_db.py --db C:\\sports_data_lab\\data\\nfl\\nfl.db
+    python -m nfl.build_db
+    python -m nfl.build_db --from-season 1999 --through-season 2025
+    python -m nfl.build_db --all-history
+    python -m nfl.build_db --extended
+    python -m nfl.build_db --db C:\\sports_data_lab\\data\\nfl\\nfl.db
 """
 
 from __future__ import annotations

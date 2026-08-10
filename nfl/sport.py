@@ -10,7 +10,7 @@ from . import nfl_reference
 from .obscurity_model import MODEL
 
 #
-# The database is built by the standalone build_nfl_db.py from nflverse via
+# The database is built by nfl/build_db.py from nflverse via
 # nflreadpy, then adapted by utils/nfl/patch_nfl_db.py, which
 # derives the columns core.py needs -- club names, venue, result, is_playoff,
 # career_game_no and a touchdown total -- and measures the statistic list
@@ -27,7 +27,7 @@ STATS = nfl_reference.stats()
 CLUBS = nfl_reference.teams()
 
 SCHEMA = core.Schema(
-    #: Career columns build_nfl_db.py writes on `players`. It names the
+    #: Career columns nfl/build_db.py writes on `players`. It names the
     #: club-history columns teams_hist / n_teams rather than reusing the
     #: AFL's, so the schema maps them here rather than the build renaming
     #: them.
@@ -47,7 +47,7 @@ SCHEMA = core.Schema(
     clubs=CLUBS,
     club_lineage=nfl_reference.club_lineage(),
     venue_aliases=nfl_reference.venue_aliases(),
-    rebuild_cmd="python .\\build_nfl_db.py --all-history, then "
+    rebuild_cmd="python -m nfl.build_db --all-history, then "
                 "python -m utils.nfl.patch_nfl_db",
     solve_cols=(
         ("p.player", "Player"),
@@ -74,11 +74,11 @@ SPORT = Sport(
                 postseason_one="playoff game", title="Super Bowl",
                 grid_source="Immaculate Grid"),
     theme="nfl",
-    build_cmd="python .\\build_nfl_db.py --all-history",
+    build_cmd="python -m nfl.build_db --all-history",
     preview=True,
     missing_db_hint=("No NFL database found at "
                      f"{sport_db('nfl')}. Build it with "
-                     "`python .\\build_nfl_db.py --all-history`, then run "
+                     "`python -m nfl.build_db --all-history`, then run "
                      "`python -m utils.nfl.patch_nfl_db` to add the columns the "
                      "app reads."),
     empty_hint=("Nothing satisfies both. Note that nflverse's weekly player "
@@ -107,7 +107,7 @@ SPORT = Sport(
         "awards_available": ("Run `python -m utils.shared.load_wiki_awards "
                              "--sport nfl --root <wiki-scrape-root>`."),
         **{
-        probe: "Rebuild with `python build_nfl_db.py --all-history "
+        probe: "Rebuild with `python -m nfl.build_db --all-history "
                "--extended --replace`, then `python -m utils.nfl.patch_nfl_db`."
         for probe in ("rosters_weekly_available", "snap_counts_available",
                       "injuries_available", "depth_charts_available",

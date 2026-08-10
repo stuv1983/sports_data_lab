@@ -5,7 +5,7 @@ utils/nfl/patch_nfl_db.py -- Adapt the nflverse build to the app's schema.
     python -m utils.nfl.patch_nfl_db
     python -m utils.nfl.patch_nfl_db --dry-run
 
-build_nfl_db.py imports nflreadpy faithfully: `games` is one weekly
+nfl/build_db.py imports nflreadpy faithfully: `games` is one weekly
 player-statistics row, keyed to a game in `matches`, and it carries no
 notion of a club name, a venue, a result or a career game number. core.py
 asks every sport's `games` table for exactly those, so this script derives
@@ -356,7 +356,7 @@ def patch(db, dry_run=False, verbose=True, write_reference_file=True):
             if required not in have:
                 raise SystemExit(
                     f"{db} has no {required} table -- build it first with "
-                    f"`python .\\build_nfl_db.py --all-history`.")
+                    f"`python -m nfl.build_db --all-history`.")
 
         say(f"Patching {db}")
         patch_games(con, say)

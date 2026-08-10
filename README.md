@@ -509,17 +509,17 @@ hint instead.
 
 ## Build the NFL database
 
-The NFL build downloads [nflverse](#nflverse) data through `nflreadpy`. It is a standalone script at the repository root, not a package module, and it runs in two steps: a builder that imports nflverse faithfully, then an adapter that derives the columns the application reads.
+The NFL build downloads [nflverse](#nflverse) data through `nflreadpy`. It runs in two steps: a builder that imports nflverse faithfully, then an adapter that derives the columns the application reads.
 
 ```bash
 pip install nflreadpy
-python build_nfl_db.py --all-history --replace              # -> data/nfl/nfl.db
-python build_nfl_db.py --all-history --extended --replace   # + 8 more optional datasets
+python -m nfl.build_db --all-history --replace              # -> data/nfl/nfl.db
+python -m nfl.build_db --all-history --extended --replace   # + 8 more optional datasets
 python -m utils.nfl.patch_nfl_db                            # adapter step (required)
 python -m utils.shared.recompute_obscurity --sport nfl      # recompute career scores
 
 # Incremental updates are handled by nflreadpy's own schedule
-python build_nfl_db.py --all-history --replace --dry-run    # check for new data
+python -m nfl.build_db --all-history --replace --dry-run    # check for new data
 ```
 
 `--replace` is not optional once a database exists. Without it the builder
@@ -536,7 +536,7 @@ than silently absent.
 
 ### The adapter step
 
-`build_nfl_db.py` writes nflverse's own tables. `utils/nfl/patch_nfl_db.py` derives
+`nfl/build_db.py` writes nflverse's own tables. `utils/nfl/patch_nfl_db.py` derives
 what `core.py` asks every sport for and nflverse does not carry: `club_hist`
 and `club_now` (from the team catalogue and the code map in
 `nfl/nfl_reference.py`), `date`, `venue`, `round` and `result` (from
@@ -935,15 +935,15 @@ See [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md) for source credits, terms and r
 Each sport owns a runtime package for constraints, builds, source adapters,
 and sport-only pages. One-shot loaders and database maintenance live under
 `utils/`, grouped into `afl/`, `nba/`, `nfl/`, `mlb/`, and `shared/`. The
-repository root holds the multi-sport application framework and the standalone
-NFL builder.
+repository root holds the multi-sport application framework.
 
 ```
 app.py  core.py  sports.py  explore.py  ...   the sport-agnostic framework
 afl/    constraints, build, scrapers, Club Explorer, Game Lab
 nba/    constraints, build, source adapters, Basketball-Reference staging
 mlb/    constraints, the Lahman build, franchise reference
-data/   afl/  nba/  mlb/  -- databases, raw sources, caches, references
+nfl/    constraints, the nflverse build, franchise reference
+data/   afl/  nba/  mlb/  nfl/  -- databases, raw sources, caches, references
 utils/  afl/  nba/  nfl/  mlb/  shared/  operational tooling
 tests/  docs/
 ```
@@ -955,6 +955,7 @@ modules from the repository root:
 python -m afl.build_db
 python -m nba.build_nba_db --source csv
 python -m mlb.build_mlb_db
+python -m nfl.build_db --all-history
 ```
 
 Two rules keep the split honest, and both are enforced by
@@ -989,7 +990,7 @@ object rather than an `if`.
 | **`utils/mlb/load_statsapi.py`** | **MLB incremental loader: appends/refreshes seasons from Stats API** |
 | `mlb/mlb_reference.py` | MLB franchise list, lineage, measured stat eras |
 | `nfl/constraints_nfl.py` | NFL constraint builders |
-| `build_nfl_db.py` | NFL builder (standalone, downloads nflverse data) |
+| `nfl/build_db.py` | NFL builder (downloads nflverse data through nflreadpy) |
 | `utils/nfl/patch_nfl_db.py` | NFL adapter: derives columns the app needs from nflverse tables |
 | `afl/derive_matches.py` | Match derivation and stable match ID assignment (reusable for any sport) |
 | `data_paths.py` | Single source of truth for all database and data paths |
@@ -1018,6 +1019,17 @@ object rather than an `if`.
 | `utils/shared/load_wiki_reference.py` | Wikipedia reference import (NBA/NFL/MLB) |
 | `utils/shared/clean_project.py` | Identify and remove generated artefacts |
 | `utils/shared/optimise_database.py` | Index optimization suggestions |
+| `utils/nba/load_and_link_nba_sample.py` | NBA sample-data ingestion and identity resolution (`data/nba/sample`) |
+
+**Diagnostics** (read-only; none of these write to a database):
+
+| File | Purpose |
+|---|---|
+| `utils/search_cli.py` | Command-line front end to the Advanced Search compiler |
+| `utils/shared/diagnose_answer.py` | Explain why the solver thinks a player answers a square, and log rejections |
+| `utils/afl/audit_all_games_linkage.py` | How much of the all-games history reached the queryable tables |
+| `utils/afl/audit_club_nicknames.py` | Club identity and nickname coverage |
+| `utils/afl/validate_club_records.py` | Validate the cached AFL Tables record pages in `data/afl/raw/clubs` |
 
 Database files, caches, downloaded pages, generated SQL and third-party source datasets are excluded through `.gitignore`, as is `archive/`.
 
