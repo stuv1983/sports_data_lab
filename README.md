@@ -321,20 +321,38 @@ match twice or attach stats to the wrong fixture. Anything else in the folder
 is ignored and named in the report. Where more than one file could be the round
 summary, pass `--summary Rd23.csv`.
 
-Two checks have to pass before anything is written. Each side's player goals
-must add up to the quarter scores the summary states, and every name must
-resolve to exactly one player. Names are not unique — 460 names in
-`afltables_player_index` belong to more than one player — so a name matching
+Three checks have to pass before anything is written.
+
+Each side's player goals must add up to the quarter scores the summary states.
+
+Every name must resolve to exactly one player. Names are not unique — 460 names
+in `afltables_player_index` belong to more than one player — so a name matching
 several people is settled first by era (a 2026 match was not played by someone
 who last played in 1937, which is what separates the two Archie Robertses) and
 then by club (which separates the two Bailey Williamses playing right now, one
 at the Western Bulldogs and one at West Coast). A name that survives both is
 reported as ambiguous and stops the load rather than being guessed.
 
-A debutant gets a new `player_id` and a `players` row whose date of birth is
-exact, being the match date less the age the Player Details table states.
-Obscurity is left unscored for `recompute_obscurity`, which is the only thing
-that should write it.
+Every player's stated career games must be one more than the database holds.
+AFL Tables counts the match being read, so a player with 174 games is listed at
+175 and a debutant at 1. That makes the Player Details column an independent
+check on the identity decision — it catches a misspelled name that would
+otherwise be created as a new player and split a real career in two, and it
+catches a match to the wrong namesake from the other direction.
+
+**A player's first game.** A name that matches nobody is a debut: it gets a new
+`player_id` and a `players` row. The date of birth is exact rather than
+estimated, being the match date less the age the Player Details table states,
+so `18-Nov-2005` comes out of "20y 285d" on 9 August 2026 without needing a
+source that carries birthdays. Career totals are counted from the games rows
+themselves, and obscurity is left unscored for `recompute_obscurity`, which is
+the only thing that should write it — so run that after a round with a debut in
+it, or the new players rank as maximally obscure until you do.
+
+The career-games check is what keeps this honest. A debut is only accepted when
+AFL Tables agrees it is the player's first game; if the source says career game
+115 and the database holds none, the load stops rather than inventing a
+115-game rookie.
 
 **Surviving a rebuild.** `afl/build_db.py` replaces `games` and `players`
 wholesale, which would drop a hand-entered round. The parsed rows are therefore

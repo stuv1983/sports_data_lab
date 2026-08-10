@@ -512,6 +512,53 @@ def _same_content(first: GameFile, second: GameFile) -> bool:
     return shape(first) == shape(second)
 
 
+def check_career_totals(con: sqlite3.Connection, season: int, round_name: str,
+                        paired: dict, resolved: dict) -> list[str]:
+    """Every player's stated career games must be one more than we hold.
+
+    AFL Tables counts the match being read, so a player with 174 games in the
+    database is listed at 175 and a debutant at 1. That makes the Player
+    Details column an independent check on the identity decision, catching
+    both ways a name can go wrong:
+
+    * a debut that is really a failed match -- the source says 175 career
+      games and we hold none, so a new player_id would split a real career
+      in two;
+    * a match to the wrong namesake -- we hold 48 games for an Archie Roberts
+      who last played in 1937 and the source says 46.
+
+    It also catches a game missing from the database underneath, which is
+    the same evidence read from the other direction.
+    """
+    counted = {}
+    for player_id, total in con.execute(
+            "SELECT player_id, COUNT(*) FROM games "
+            "WHERE NOT (season = ? AND round = ?) GROUP BY player_id",
+            (season, str(round_name))):
+        counted[player_id] = total
+
+    notes = []
+    for game in paired.values():
+        for club, lines in game.players.items():
+            for line in lines:
+                if not line.career_games_text:
+                    continue
+                found = CAREER_RE.match(line.career_games_text)
+                if not found:
+                    continue
+                stated = int(found.group("games"))
+                player_id = resolved[(club, line.source_name)][0]
+                held = counted.get(player_id, 0) if player_id else 0
+                if stated == held + 1:
+                    continue
+                notes.append(
+                    f"{line.source_name} ({club}): AFL Tables says this is "
+                    f"career game {stated}, the database holds {held} "
+                    f"earlier game(s)"
+                    + (" and no player of that name" if not player_id else ""))
+    return notes
+
+
 def check_against_summary(fixture: Fixture, game: GameFile) -> list[str]:
     """Do the player rows add up to the score the summary states?"""
     notes = []
@@ -1121,6 +1168,17 @@ def load(db_path: Path, folder: Path, season: int, round_name: str, *,
         for (club, name), (pid, display, kind) in sorted(resolved.items()):
             if kind == "debut":
                 print(f"    debut: {display} ({club})")
+
+        careers = check_career_totals(con, season, round_name, paired, resolved)
+        if careers:
+            print("\nCareer totals disagree with the database:")
+            for note in careers:
+                print(f"  {note}")
+            raise LoadError(
+                "the stated career games do not follow on from the database; "
+                "a name has matched the wrong player, or a game is missing "
+                "underneath this round")
+        print("  career checks: every total follows on from the database")
 
         if dry_run:
             print("\n--dry-run: nothing written")

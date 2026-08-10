@@ -28,6 +28,7 @@ _os.chdir(_ROOT)
 # --- end test bootstrap ---
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -442,6 +443,72 @@ def test_a_debutant_already_present_is_not_created_twice(stored):
     assert L.create_debutants(stored, 2026, "23") == []
     assert stored.execute(
         "SELECT COUNT(*) FROM players").fetchone()[0] == 2
+
+
+# --------------------------------------------------------------------------
+# career totals as a check on the identity decision
+
+
+@pytest.fixture
+def careers():
+    """A database holding 114 earlier games for one player and none for another."""
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE games (player_id INTEGER, season INTEGER, "
+                "round TEXT)")
+    con.executemany("INSERT INTO games VALUES (?, ?, ?)",
+                    [(770, 2025, str(n)) for n in range(1, 115)])
+    con.execute("INSERT INTO games VALUES (770, 2026, '23')")  # this round
+    con.commit()
+    return con
+
+
+def _one_player(name, career_games_text):
+    line = L.PlayerLine(jumper="7", source_name=name, stats={},
+                        career_games_text=career_games_text)
+    game = L.GameFile(path=Path("x.csv"), clubs=["Collingwood"],
+                      players={"Collingwood": [line]})
+    return {frozenset({"Collingwood", "West Coast"}): game}
+
+
+def test_an_established_players_next_game_number_follows_on(careers):
+    """114 games held, so AFL Tables must be calling this their 115th."""
+    notes = L.check_career_totals(
+        careers, 2026, "23", _one_player("Daicos, Nick", "115 (80-0-35)"),
+        {("Collingwood", "Daicos, Nick"): (770, "Nick Daicos", "index")})
+    assert notes == []
+
+
+def test_a_debut_must_be_the_players_first_game(careers):
+    notes = L.check_career_totals(
+        careers, 2026, "23", _one_player("Howes, Noah", "1 (1-0-0 100.00%)"),
+        {("Collingwood", "Howes, Noah"): (None, "Noah Howes", "debut")})
+    assert notes == []
+
+
+def test_a_debut_with_a_career_behind_it_is_a_failed_match_not_a_debut(careers):
+    """Creating a player here would split a real career in two."""
+    notes = L.check_career_totals(
+        careers, 2026, "23", _one_player("Dicaos, Nick", "115 (80-0-35)"),
+        {("Collingwood", "Dicaos, Nick"): (None, "Nick Dicaos", "debut")})
+    assert len(notes) == 1
+    assert "career game 115" in notes[0]
+    assert "no player of that name" in notes[0]
+
+
+def test_a_total_that_does_not_follow_on_is_reported(careers):
+    """What matching the wrong namesake looks like from the other side."""
+    notes = L.check_career_totals(
+        careers, 2026, "23", _one_player("Roberts, Archie", "46 (20-0-26)"),
+        {("Collingwood", "Roberts, Archie"): (770, "Archie Roberts", "index")})
+    assert len(notes) == 1
+    assert "holds 114 earlier game(s)" in notes[0]
+
+
+def test_a_player_whose_career_total_is_absent_is_not_guessed_at(careers):
+    notes = L.check_career_totals(
+        careers, 2026, "23", _one_player("Someone, New", None),
+        {("Collingwood", "Someone, New"): (None, "New Someone", "debut")})
+    assert notes == []
 
 
 # --------------------------------------------------------------------------
