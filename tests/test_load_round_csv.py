@@ -446,6 +446,120 @@ def test_a_debutant_already_present_is_not_created_twice(stored):
 
 
 # --------------------------------------------------------------------------
+# saying what the load decided
+
+
+def test_findings_are_grouped_with_the_unfixed_ones_first(capsys):
+    """What still needs a person must not be buried under what does not."""
+    found = L.Findings()
+    found.note("rushed behinds", "44 belong to no player")
+    found.fixed("duplicate file", "a.csv is identical to b.csv")
+    found.not_fixed("career total", "does not follow on")
+
+    found.report()
+    printed = capsys.readouterr().out.splitlines()
+    statuses = [line.split("]")[0] + "]" for line in printed
+                if line.strip().startswith("[")]
+    assert statuses == [f"  {L.NOT_FIXED}", f"  {L.FIXED}", f"  {L.NOTE}"]
+    assert "1 not fixed, 1 fixed, 1 noted" in printed[-1]
+
+
+def test_a_clean_load_says_so_rather_than_printing_nothing(capsys):
+    L.Findings().report()
+    assert "nothing to report" in capsys.readouterr().out
+
+
+def test_a_shared_name_between_two_current_players_is_reported_singly():
+    """The risky ones are named; the routine ones are counted."""
+    roster = L.Roster(indexed={"williams, bailey": {1, 2}}, named={},
+                      clubs={}, span={})
+    found = L.Findings()
+    L.describe_identities(roster, {
+        ("West Coast", "Williams, Bailey"): (2, "Bailey Williams",
+                                             "index+era+club"),
+        ("Carlton", "Cameron, Charlie"): (5, "Charlie Cameron", "index+era"),
+        ("Geelong", "Smith, Old"): (9, "Old Smith", "index+era"),
+    }, found)
+
+    named = found.of(L.FIXED)
+    assert len(named) == 1 and "two clubs this season" in named[0].detail
+    counted = found.of(L.NOTE)
+    assert len(counted) == 1 and "2 names" in counted[0].detail
+
+
+def test_a_debut_and_an_ambiguous_name_are_reported_differently():
+    roster = L.Roster(indexed={"jones, sam": {1, 2}}, named={}, clubs={},
+                      span={})
+    found = L.Findings()
+    L.describe_identities(roster, {
+        ("Carlton", "Jones, Sam"): (None, "Sam Jones", "ambiguous"),
+        ("Essendon", "New, Player"): (None, "Player New", "debut"),
+    }, found)
+
+    assert len(found.of(L.NOT_FIXED)) == 1
+    assert "could be any of 2 players" in found.of(L.NOT_FIXED)[0].detail
+    assert len(found.of(L.FIXED)) == 1
+    assert "first game" in found.of(L.FIXED)[0].detail
+
+
+def _behind_only(club, behinds):
+    line = L.PlayerLine(jumper="1", source_name="Someone, One",
+                        stats={"behinds": float(behinds)})
+    return club, [line]
+
+
+def test_rushed_behinds_are_one_line_for_the_round_not_one_per_club():
+    """Every side has some; eighteen lines would bury the real findings."""
+    # Each side is credited 1 behind but the summary states 3, so two per
+    # side were rushed -- four across the two matches.
+    fixtures, paired = [], {}
+    for home, away in (("Carlton", "Essendon"), ("Geelong", "Hawthorn")):
+        fixture = L.Fixture(
+            home=L.Side(home, [(0, 3)], 3), away=L.Side(away, [(0, 3)], 3),
+            match_date="2026-08-08", match_time="19:30", attendance=1,
+            venue="Docklands", winner=None, margin=0, source_line=1)
+        fixtures.append(fixture)
+        club_a, lines_a = _behind_only(home, 1)
+        club_b, lines_b = _behind_only(away, 1)
+        paired[fixture.clubs] = L.GameFile(
+            path=Path("x.csv"), clubs=[home, away],
+            players={club_a: lines_a, club_b: lines_b})
+
+    found = L.Findings()
+    L.describe_rushed_behinds(fixtures, paired, found)
+    notes = found.of(L.NOTE)
+    assert len(notes) == 1
+    assert "8 of the round's 12 behinds" in notes[0].detail
+
+
+def test_no_rushed_behinds_produces_no_note():
+    fixture = L.Fixture(
+        home=L.Side("Carlton", [(0, 1)], 1), away=L.Side("Essendon", [(0, 1)], 1),
+        match_date="2026-08-08", match_time="19:30", attendance=1,
+        venue="Docklands", winner=None, margin=0, source_line=1)
+    club_a, lines_a = _behind_only("Carlton", 1)
+    club_b, lines_b = _behind_only("Essendon", 1)
+    paired = {fixture.clubs: L.GameFile(
+        path=Path("x.csv"), clubs=["Carlton", "Essendon"],
+        players={club_a: lines_a, club_b: lines_b})}
+
+    found = L.Findings()
+    L.describe_rushed_behinds([fixture], paired, found)
+    assert found.items == []
+
+
+def test_a_summary_missing_a_crowd_or_venue_is_noted_not_refused():
+    fixture = L.Fixture(
+        home=L.Side("Carlton", [(1, 1)], 7), away=L.Side("Essendon", [(0, 1)], 1),
+        match_date="2026-08-08", match_time=None, attendance=None,
+        venue=None, winner="Carlton", margin=6, source_line=1)
+    found = L.Findings()
+    L.describe_fixture_gaps(fixture, found)
+    assert found.of(L.NOT_FIXED) == []
+    assert "venue, crowd, start time" in found.of(L.NOTE)[0].detail
+
+
+# --------------------------------------------------------------------------
 # career totals as a check on the identity decision
 
 

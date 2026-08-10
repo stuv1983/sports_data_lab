@@ -155,6 +155,77 @@ class LoadError(RuntimeError):
 
 
 # --------------------------------------------------------------------------
+# what the load noticed
+
+
+#: Line prefixes for the three kinds of finding. They are part of the output
+#: rather than decoration: utils/afl/load_round_gui.py colours a line by the
+#: marker it starts with, and reading them back is how the window knows which
+#: findings still want a person's attention.
+FIXED = "[fixed]"
+NOTE = "[note]"
+NOT_FIXED = "[not fixed]"
+
+#: Widest marker, so the text after them lines up in a fixed-width log.
+_MARKER_WIDTH = max(len(m) for m in (FIXED, NOTE, NOT_FIXED))
+
+
+@dataclass
+class Finding:
+    status: str      # FIXED, NOTE or NOT_FIXED
+    topic: str
+    detail: str
+
+    def line(self) -> str:
+        return f"  {self.status:<{_MARKER_WIDTH}}  {self.topic}: {self.detail}"
+
+
+class Findings:
+    """Everything the load decided, resolved or refused, in one place.
+
+    A load makes several judgement calls that used to leave no trace beyond a
+    count -- which of two identically named players a row meant, which of two
+    identical files was used, that a squad's behinds fall short of the
+    summary because rushed behinds belong to nobody. Each is recorded here
+    with whether it was settled or still wants a person, so the report says
+    what happened rather than only how many of each there were.
+    """
+
+    def __init__(self):
+        self.items: list[Finding] = []
+
+    def fixed(self, topic: str, detail: str) -> None:
+        """Noticed and resolved; nothing for anyone to do."""
+        self.items.append(Finding(FIXED, topic, detail))
+
+    def note(self, topic: str, detail: str) -> None:
+        """Worth knowing, but nothing was wrong and nothing was decided."""
+        self.items.append(Finding(NOTE, topic, detail))
+
+    def not_fixed(self, topic: str, detail: str) -> None:
+        """Stopped the load. Only a person can settle it."""
+        self.items.append(Finding(NOT_FIXED, topic, detail))
+
+    def of(self, status: str) -> list[Finding]:
+        return [item for item in self.items if item.status == status]
+
+    def report(self, heading: str = "Findings") -> None:
+        if not self.items:
+            print(f"\n{heading}: nothing to report.")
+            return
+        print(f"\n{heading}")
+        for status in (NOT_FIXED, FIXED, NOTE):
+            for item in self.of(status):
+                print(item.line())
+        counts = ", ".join(
+            f"{len(self.of(status))} {label}"
+            for status, label in ((NOT_FIXED, "not fixed"), (FIXED, "fixed"),
+                                  (NOTE, "noted"))
+            if self.of(status))
+        print(f"  -- {counts}")
+
+
+# --------------------------------------------------------------------------
 # remembering where the CSVs live
 
 
@@ -510,6 +581,80 @@ def _same_content(first: GameFile, second: GameFile) -> bool:
             for line in lines]
             for club, lines in game.players.items()}
     return shape(first) == shape(second)
+
+
+def describe_fixture_gaps(fixture: Fixture, found: Findings) -> None:
+    """Fields the season page sometimes leaves out. Absent, not wrong."""
+    missing = [label for label, value in (("venue", fixture.venue),
+                                          ("crowd", fixture.attendance),
+                                          ("start time", fixture.match_time))
+               if value is None]
+    if missing:
+        found.note("fixture detail",
+                   f"{fixture.home.club} v {fixture.away.club}: no "
+                   f"{', '.join(missing)} in the summary")
+
+
+def describe_rushed_behinds(fixtures: list[Fixture], paired: dict,
+                            found: Findings) -> None:
+    """Behinds credited to no player, which is what a rushed behind is.
+
+    check_against_summary already refuses an *excess*. A shortfall is normal
+    and is the one quantity in the round that no player row accounts for, so
+    the total is reported rather than passed over. One line for the round, not
+    one per club: every side has some, and eighteen lines saying so would bury
+    the findings that need reading.
+    """
+    rushed = total = 0
+    for fixture in fixtures:
+        game = paired[fixture.clubs]
+        for side in (fixture.home, fixture.away):
+            behinds = sum(line.stats.get("behinds") or 0
+                          for line in game.players[side.club])
+            rushed += side.quarters[-1][1] - int(behinds)
+            total += side.quarters[-1][1]
+    if rushed:
+        found.note("rushed behinds",
+                   f"{rushed} of the round's {total} behinds belong to no "
+                   f"player, as rushed behinds do")
+
+
+def describe_identities(roster: Roster, resolved: dict,
+                        found: Findings) -> None:
+    """Say which player a shared name was taken to mean, and on what grounds.
+
+    Recording only "14 resolved by era" leaves the actual decisions invisible,
+    and these are the decisions most worth being able to check by eye: the
+    round is full of names belonging to more than one player.
+    """
+    def sharing(name: str, display: str) -> int:
+        return len(roster.indexed.get(normalise_name(name), set())
+                   or roster.named.get(normalise_name(display), set()))
+
+    by_era = 0
+    for (club, name), (player_id, display, how) in sorted(resolved.items()):
+        if how == "debut":
+            found.fixed("debut", f"{display} ({club}) matches no player on "
+                                 f"record; treated as a first game")
+        elif how == "ambiguous":
+            found.not_fixed(
+                "ambiguous name",
+                f"{name} ({club}) could be any of {sharing(name, display)} "
+                f"players and neither the season nor the club separates them")
+        elif how.endswith("+club"):
+            # Two people of the same name playing in the same season: the
+            # only thing between them is which club the row was pasted under,
+            # so each of these is worth showing individually.
+            found.fixed(
+                "shared name, both current",
+                f"{name} plays for two clubs this season; the {club} row was "
+                f"read as player_id {player_id}")
+        elif how.endswith("+era"):
+            by_era += 1
+    if by_era:
+        found.note("shared name, different eras",
+                   f"{by_era} names also belong to a player from another era; "
+                   f"the season being loaded ruled those out")
 
 
 def check_career_totals(con: sqlite3.Connection, season: int, round_name: str,
@@ -1084,7 +1229,7 @@ def apply_stored(con: sqlite3.Connection, db_path: Path, season: int,
     load_club_all_games.mirror_onto_matches(con)
     touched = refresh_player_totals(con, season, round_name)
     print(f"  refreshed career totals for {touched:,} players")
-    return {"skipped": False, "games": written, "debutants": len(created)}
+    return {"skipped": False, "games": written, "created": created}
 
 
 def report_round(con: sqlite3.Connection, season: int, round_name: str) -> None:
@@ -1126,21 +1271,26 @@ def load(db_path: Path, folder: Path, season: int, round_name: str, *,
 
     print(f"{folder}")
     print(f"  {len(fixtures)} fixtures, {len(paired)} game files paired")
+
+    found = Findings()
     for path in ignored + [game.path for game in unused]:
-        print(f"  ignored: {path.name}")
+        found.fixed("file ignored", f"{path.name} is not part of this round")
     for copy, used in duplicates:
-        print(f"  duplicate: {copy.name} is identical to {used.name}, "
-              f"which was used")
+        found.fixed("duplicate file",
+                    f"{copy.name} is identical to {used.name}; used {used.name}")
+    for fixture in fixtures:
+        describe_fixture_gaps(fixture, found)
 
     notes = []
     for fixture in fixtures:
         notes.extend(check_against_summary(fixture, paired[fixture.clubs]))
     if notes:
-        print("\nScore checks:")
         for note in notes:
-            print(f"  {note}")
+            found.not_fixed("score mismatch", note)
+        found.report()
         raise LoadError("player stats disagree with the round summary")
     print("  score checks: player goals agree with every quarter total")
+    describe_rushed_behinds(fixtures, paired, found)
 
     con = sqlite3.connect(db_path)
     try:
@@ -1158,22 +1308,19 @@ def load(db_path: Path, folder: Path, season: int, round_name: str, *,
                     how[answer[2]] = how.get(answer[2], 0) + 1
         print("  players: " + ", ".join(
             f"{count} {kind}" for kind, count in sorted(how.items())))
+        describe_identities(roster, resolved, found)
+
         if how.get("ambiguous"):
-            for (club, name), (_pid, _display, kind) in sorted(resolved.items()):
-                if kind == "ambiguous":
-                    print(f"    ambiguous: {name} ({club})")
+            found.report()
             raise LoadError("a name matches more than one player and the club "
                             "does not separate them; fix the mapping in "
                             "afltables_player_index before loading")
-        for (club, name), (pid, display, kind) in sorted(resolved.items()):
-            if kind == "debut":
-                print(f"    debut: {display} ({club})")
 
         careers = check_career_totals(con, season, round_name, paired, resolved)
         if careers:
-            print("\nCareer totals disagree with the database:")
             for note in careers:
-                print(f"  {note}")
+                found.not_fixed("career total", note)
+            found.report()
             raise LoadError(
                 "the stated career games do not follow on from the database; "
                 "a name has matched the wrong player, or a game is missing "
@@ -1181,6 +1328,7 @@ def load(db_path: Path, folder: Path, season: int, round_name: str, *,
         print("  career checks: every total follows on from the database")
 
         if dry_run:
+            found.report("Findings (nothing was written)")
             print("\n--dry-run: nothing written")
             return 0
 
@@ -1188,7 +1336,10 @@ def load(db_path: Path, folder: Path, season: int, round_name: str, *,
         stats = store(con, season, round_name, fixtures, paired, resolved)
         print(f"\nStored {stats['player_rows']:,} player rows and "
               f"{stats['fixtures']} fixtures")
-        apply_stored(con, db_path, season, round_name)
+        outcome = apply_stored(con, db_path, season, round_name)
+        for player_id, name in outcome.get("created", []):
+            found.fixed("new player",
+                        f"{name} debuted; created as player_id {player_id}")
 
         # The ladder and the club paths are derived from `games`, so a round
         # added underneath them leaves both a round behind. afl/build_db.py
@@ -1199,7 +1350,13 @@ def load(db_path: Path, folder: Path, season: int, round_name: str, *,
         from utils.shared import repair_database
         repair_database.run(str(db_path))
 
+        if outcome.get("created"):
+            found.note("obscurity",
+                       "new players are unscored until you run "
+                       "`python -m utils.shared.recompute_obscurity "
+                       "--sport afl`")
         report_round(con, season, round_name)
+        found.report("Findings (round written)")
     finally:
         con.close()
     return 0

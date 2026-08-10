@@ -298,6 +298,27 @@ python -m utils.shared.recompute_obscurity --sport afl   # if anyone debuted
 Always check first — `--dry-run`, or the **Check** button. It reads everything,
 resolves every name and writes nothing, so the report is the review step.
 
+**What it found.** Both the command line and the window end with a findings
+report, so the decisions the load made are visible rather than only counted:
+
+```
+Findings (nothing was written)
+  [fixed]      shared name, both current: Williams, Bailey plays for two clubs
+               this season; the West Coast row was read as player_id 12836
+  [note]       rushed behinds: 44 of the round's 202 behinds belong to no player
+  [note]       shared name, different eras: 14 names also belong to a player from
+               another era; the season being loaded ruled those out
+  -- 1 fixed, 2 noted
+```
+
+`[fixed]` is something noticed and settled — a duplicate file dropped, a shared
+name resolved, a debutant created. `[note]` is worth knowing but needed no
+decision. `[not fixed]` stopped the load and only a person can settle it. The
+risky decisions are named individually and the routine ones counted, so a
+report stays short enough to read: two players of the same name *both playing
+this season* get a line each, while namesakes separated by a century are one
+line saying how many.
+
 **The browse window.** These CSVs are written by hand and live wherever suits
 at the time, so the folder is a setting rather than a fixed path under `data/`.
 `load_round_gui.py` is a browse window over the same loader: pick the folder,
@@ -305,6 +326,8 @@ and it reports what it found, offers the round summary it thinks you mean, and
 fills in the season and round from the summary's dates and the folder's name.
 **Check** and **Load** run the loader on a worker thread and stream its output
 into the log pane, so a load that takes a minute does not freeze the window.
+Findings are coloured there by their marker — red for `[not fixed]`, green for
+`[fixed]`, amber for `[note]` — and the tally appears in the status line.
 
 The folder is remembered as soon as one has been checked, in
 `data/app/round_loader.json`, and the command line reads the same setting —

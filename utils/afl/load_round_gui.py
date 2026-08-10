@@ -117,6 +117,8 @@ class RoundLoader:
         self.root = root
         self.output: queue.Queue = queue.Queue()
         self.worker: threading.Thread | None = None
+        self.buffer = ""                       # partial line from the worker
+        self.tally: dict[str, int] = {}        # findings seen this run
 
         root.title("Load an AFL round from CSV")
         root.minsize(760, 520)
@@ -192,6 +194,11 @@ class RoundLoader:
         bar = ttk.Scrollbar(parent, orient="vertical", command=text.yview)
         bar.grid(row=0, column=1, sticky="ns")
         text.configure(yscrollcommand=bar.set)
+        # The loader marks each finding with its status, so a line can be
+        # coloured by what it is without the window parsing any of the prose.
+        text.tag_configure(L.NOT_FIXED, foreground="#b42318")
+        text.tag_configure(L.FIXED, foreground="#1a7f37")
+        text.tag_configure(L.NOTE, foreground="#7a5c00")
         return text
 
     # ------------------------------------------------------------------
@@ -247,6 +254,7 @@ class RoundLoader:
 
         self.check_button.state(["disabled"])
         self.load_button.state(["disabled"])
+        self.tally.clear()          # findings are per run, not cumulative
         self.progress.start(12)
         self.status.set("Checking..." if dry_run
                         else "Loading. This takes about a minute.")
@@ -280,9 +288,10 @@ class RoundLoader:
             while True:
                 item = self.output.get_nowait()
                 if isinstance(item, tuple):
+                    self.flush()
                     self.finish(item[1], item[2])
                 else:
-                    self.say(item, newline=False)
+                    self.stream(item)
         except queue.Empty:
             pass
         self.root.after(POLL_MS, self.drain)
@@ -292,22 +301,52 @@ class RoundLoader:
         self.check_button.state(["!disabled"])
         self.load_button.state(["!disabled"])
         if outcome == "refused":
-            self.status.set("Nothing was written. Fix the CSVs and check "
-                            "again.")
+            self.status.set(f"Nothing was written. {self.summarise()} "
+                            f"Fix the CSVs and check again.")
         elif outcome == "failed":
             self.status.set("The load failed. See the log above.")
         elif dry_run:
-            self.status.set("Checks passed and nothing was written. "
-                            "Load it when you are ready.")
+            self.status.set(f"Checks passed and nothing was written. "
+                            f"{self.summarise()} Load it when you are ready.")
         else:
-            self.status.set("Loaded. Run recompute_obscurity if anyone "
-                            "debuted -- the log says whether they did.")
+            self.status.set(f"Loaded. {self.summarise()}")
+
+    def summarise(self) -> str:
+        """The findings tally, in the words the log used."""
+        parts = [f"{self.tally[marker]} {label}"
+                 for marker, label in ((L.NOT_FIXED, "not fixed"),
+                                       (L.FIXED, "fixed"), (L.NOTE, "noted"))
+                 if self.tally.get(marker)]
+        return f"Findings: {', '.join(parts)}." if parts else "No findings."
 
     def say(self, text, newline=True):
+        """Write one or more whole lines, each tagged by its finding status."""
         self.log.configure(state="normal")
-        self.log.insert("end", text + ("\n" if newline else ""))
+        for line in (text + ("\n" if newline else "")).splitlines(keepends=True):
+            marker = next((m for m in (L.NOT_FIXED, L.FIXED, L.NOTE)
+                           if line.lstrip().startswith(m)), None)
+            if marker:
+                self.tally[marker] = self.tally.get(marker, 0) + 1
+            self.log.insert("end", line, (marker,) if marker else ())
         self.log.see("end")
         self.log.configure(state="disabled")
+
+    def stream(self, chunk: str):
+        """Buffer worker output until whole lines are available.
+
+        print() writes the text and its newline as separate calls, so a chunk
+        off the queue is not reliably a line, and a status marker split across
+        two chunks would go unrecognised.
+        """
+        self.buffer += chunk
+        while "\n" in self.buffer:
+            line, _, self.buffer = self.buffer.partition("\n")
+            self.say(line)
+
+    def flush(self):
+        if self.buffer:
+            self.say(self.buffer)
+            self.buffer = ""
 
 
 #: Imported by the load itself rather than by this window, so a missing one
