@@ -31,11 +31,24 @@ from pathlib import Path
 import re
 import sys
 
-try:
-    from bs4 import BeautifulSoup
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit(
-        "Missing dependency. Run: python -m pip install beautifulsoup4") from exc
+
+def _soup(html: str):
+    """BeautifulSoup over a scraped page, imported at the point of use.
+
+    Only the two functions that read a page need it, but importing it at
+    module scope made it a hard requirement of everything that imports this
+    module -- including utils/afl/load_round_csv.py, which reads CSVs and no
+    HTML at all, and which then refused to start on a Python without
+    beautifulsoup4 installed.
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError as exc:  # pragma: no cover
+        raise SystemExit(
+            "Missing dependency. Run: python -m pip install beautifulsoup4"
+        ) from exc
+    return BeautifulSoup(html, "html.parser")
+
 
 FINALS_ROUNDS = {"EF", "QF", "SF", "PF", "GF"}
 EXPECTED_HEADERS = ["Rnd", "T", "Opponent", "Scoring", "F", "Scoring", "A",
@@ -238,7 +251,7 @@ def parse_all_games(source: Path | str, source_club_id: str,
         html = source.read_bytes().decode("windows-1252", errors="replace")
     else:
         html = source
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _soup(html)
 
     heading = soup.find("h1")
     heading_raw = clean_text(heading.get_text()).split(" - ")[0] if heading else ""
@@ -347,7 +360,7 @@ def parse_season_footers(source: Path | str) -> dict[int, dict]:
         html = source.read_bytes().decode("windows-1252", errors="replace")
     else:
         html = source
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _soup(html)
     footers: dict[int, dict] = {}
     for table in soup.find_all("table"):
         season = _season_from_caption(table)

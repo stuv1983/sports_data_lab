@@ -24,6 +24,7 @@ puts text on a queue and the main loop drains it.
 from __future__ import annotations
 
 import io
+import os
 import queue
 import sys
 import threading
@@ -309,6 +310,49 @@ class RoundLoader:
         self.log.configure(state="disabled")
 
 
+#: Imported by the load itself rather than by this window, so a missing one
+#: only shows up after the Load button is pressed. Checked up front instead.
+REQUIRED = ("pandas",)
+
+
+def wrong_interpreter() -> str | None:
+    """Say so if this Python is not the one the project is installed into.
+
+    An editor or a `uv`-managed toolchain will happily run this file with a
+    Python that has none of the project's packages, and the resulting
+    "Run: python -m pip install ..." is actively misleading -- `python` on the
+    PATH is a *different* interpreter, so the install succeeds and changes
+    nothing. Name the interpreter that is actually running instead.
+    """
+    missing = []
+    for name in REQUIRED:
+        try:
+            __import__(name)
+        except ImportError:
+            missing.append(name)
+    if not missing:
+        return None
+
+    lines = [
+        f"This Python cannot run the loader: {', '.join(missing)} "
+        f"{'is' if len(missing) == 1 else 'are'} not installed in it.",
+        "",
+        f"  running: {sys.executable}",
+        f"  version: {sys.version.split()[0]}",
+        "",
+        "The project's packages are installed in a different interpreter, so "
+        "`pip install` from a terminal will report them already satisfied and "
+        "nothing will change.",
+    ]
+    if os.name == "nt":
+        lines += ["", "Run it with the project's Python instead:",
+                  "", "    py -m utils.afl.load_round_gui"]
+    lines += ["", "Or install them into this one:",
+              "", f'    "{sys.executable}" -m pip install '
+                  f'{" ".join(missing)}']
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         import tkinter as tk
@@ -317,9 +361,26 @@ def main(argv: list[str] | None = None) -> int:
               "line: python -m utils.afl.load_round_csv --help",
               file=sys.stderr)
         return 1
-    if not L.DEFAULT_DB.exists():
-        print(f"no AFL database at {L.DEFAULT_DB}", file=sys.stderr)
+
+    problem = wrong_interpreter()
+    if problem is None and not L.DEFAULT_DB.exists():
+        problem = f"No AFL database at {L.DEFAULT_DB}."
+    if problem:
+        print(problem, file=sys.stderr)
+        # Launched from a shortcut there is no console to read it in, so say
+        # it in a window too. Not when there is a terminal: the text is
+        # already there and a modal would only be one more thing to dismiss.
+        if not sys.stderr or not sys.stderr.isatty():
+            try:
+                from tkinter import messagebox
+                root = tk.Tk()
+                root.withdraw()
+                messagebox.showerror("Load an AFL round from CSV", problem)
+                root.destroy()
+            except Exception:                                   # noqa: BLE001
+                pass
         return 1
+
     root = tk.Tk()
     RoundLoader(root)
     root.mainloop()
