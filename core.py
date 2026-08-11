@@ -581,6 +581,140 @@ class Generic:
                     HAVING COUNT(DISTINCT {s.season}) >= ?""",
                 [_code(round_code), _code(result), appearances])
 
+    def played_round_between(self, round_code, lo, hi):
+        """Appeared in a named title round within a span of seasons.
+
+        Gridley scopes achievements by era -- "GRAND FINAL PLAYER DURING
+        2020s" -- and answering that with the unscoped version accepts a
+        1980s Grand Finalist for a 2020s square.
+        """
+        s = self.s
+        return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
+                    WHERE {s.round} = ? AND {s.season} BETWEEN ? AND ?""",
+                [_code(round_code), lo, hi])
+
+    def round_outcome_between(self, round_code, result, lo, hi):
+        """Recorded an outcome in a named title round within a season span."""
+        s = self.s
+        return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
+                    WHERE {s.round} = ? AND {s.result} = ?
+                      AND {s.season} BETWEEN ? AND ?""",
+                [_code(round_code), _code(result), lo, hi])
+
+    def games_in_season_min(self, n, season=None):
+        """Played `n` or more games within one season.
+
+        With `season` the question is about that year ("20+ GAMES IN
+        2023"); without it, any season of the career qualifies.
+        """
+        s = self.s
+        if season is None:
+            return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
+                        GROUP BY {s.player_id}, {s.season}
+                        HAVING COUNT(*) >= ?""", [n])
+        return (f"""SELECT {s.player_id} FROM {s.games} WHERE {s.season} = ?
+                    GROUP BY {s.player_id} HAVING COUNT(*) >= ?""",
+                [season, n])
+
+    def results_in_season_min(self, result, n):
+        """Played in `n`+ games with one result in a single season --
+        "15 LOSSES SINGLE SEASON" counts appearances in losses, not the
+        club's ladder record."""
+        s = self.s
+        return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
+                    WHERE {s.result} = ?
+                    GROUP BY {s.player_id}, {s.season}
+                    HAVING COUNT(*) >= ?""", [_code(result), n])
+
+    def results_in_a_row(self, result, n):
+        """Appeared in `n` consecutive games (of their own career) with one
+        result -- "10 WINS IN A ROW".
+
+        A window of the player's last `n` appearances, ordered the way the
+        career unfolded: the streak is over games they played, so a match
+        they sat out does not break it, which is how the puzzle means it.
+        """
+        s = self.s
+        n = int(n)
+        return (f"""SELECT DISTINCT {s.player_id} FROM (
+                      SELECT {s.player_id},
+                             SUM(CASE WHEN {s.result} = ? THEN 1 ELSE 0 END)
+                               OVER w AS hits,
+                             COUNT(*) OVER w AS span
+                      FROM {s.games}
+                      WINDOW w AS (PARTITION BY {s.player_id}
+                                   ORDER BY {s.season}, {s.date}
+                                   ROWS BETWEEN {n - 1} PRECEDING
+                                            AND CURRENT ROW)
+                    ) WHERE span = {n} AND hits = {n}""", [_code(result)])
+
+    def postseason_wins_min(self, n):
+        """Won `n` or more post-season games -- more than won_postseason's
+        single win, less than a premiership count."""
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {s.is_final} = 1 AND {s.result} = 'W'
+                    GROUP BY {s.player_id} HAVING COUNT(*) >= ?""", [n])
+
+    def postseason_at_multiple_clubs(self, clubs=2):
+        """Played a post-season game for `clubs` or more different clubs."""
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {s.is_final} = 1
+                    GROUP BY {s.player_id}
+                    HAVING COUNT(DISTINCT {s.club_now}) >= ?""", [clubs])
+
+    def stat_total_more_than(self, stat_a, stat_b):
+        """Career total of one stat exceeds another's -- "MORE FREES FOR
+        THAN AGAINST". Rows where neither stat was recorded contribute
+        nothing, so the comparison is over the recorded era only."""
+        self._check(stat_a, stat_b)
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {stat_a} IS NOT NULL OR {stat_b} IS NOT NULL
+                    GROUP BY {s.player_id}
+                    HAVING SUM(COALESCE({stat_a}, 0))
+                         > SUM(COALESCE({stat_b}, 0))""", [])
+
+    def club_stat_leader(self, stat, times=1):
+        """Led their club's season total of `stat` at least `times` times.
+
+        Ties at the top all count as leading, matching how "had the most
+        for their team" reads when two players finish level.
+        """
+        self._check(stat)
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM (
+                      SELECT {s.player_id}, {s.season}, {s.club_now},
+                             RANK() OVER (
+                               PARTITION BY {s.season}, {s.club_now}
+                               ORDER BY SUM({stat}) DESC) AS pos
+                      FROM {s.games} WHERE {stat} IS NOT NULL
+                      GROUP BY {s.player_id}, {s.season}, {s.club_now}
+                    ) WHERE pos = 1
+                    GROUP BY {s.player_id} HAVING COUNT(*) >= ?""", [times])
+
+    def career_teammates_min(self, n):
+        """Shared a club-season with `n` or more distinct other players.
+
+        Club-season rather than match sheet, matching Gridley's own note
+        that a listed teammate they never took the field with still counts.
+        Collapsing to distinct (player, club, season) rows first keeps the
+        self-join at squad size rather than squad-size-times-games-played
+        squared, which is the difference between ~1s and never finishing.
+        """
+        s = self.s
+        return (f"""WITH ps AS (
+                      SELECT DISTINCT {s.player_id}, {s.club_now}, {s.season}
+                      FROM {s.games}
+                    )
+                    SELECT a.{s.player_id} FROM ps a
+                    JOIN ps b ON b.{s.club_now} = a.{s.club_now}
+                            AND b.{s.season} = a.{s.season}
+                            AND b.{s.player_id} <> a.{s.player_id}
+                    GROUP BY a.{s.player_id}
+                    HAVING COUNT(DISTINCT b.{s.player_id}) >= ?""", [n])
+
     def debuted_between(self, lo, hi):
         s = self.s
         return (f"SELECT {s.player_id} FROM {s.players} "

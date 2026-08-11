@@ -21,6 +21,7 @@ their data is loaded.
 | One-club player | — |  |
 | Multi-club player | — |  |
 | Played for X+ clubs | clubs |  |
+| X+ games at one club | games | `n`+ games for a single club, whatever else the career held -- |
 | X+ goals at 2+ clubs | goals, clubs | e.g. 30+ goals for each of two different clubs. |
 | X+ games at 2+ clubs | games, clubs |  |
 
@@ -34,8 +35,11 @@ their data is loaded.
 | X or fewer career goals | goals | At most n career goals/points -- INCLUSIVE of n. |
 | X+ of a stat in a career | stat, x | Accumulated `n` or more of `stat` across a whole career. |
 | Career average of a stat | stat, avg, min_games | Averaged `avg` or more of `stat` per game across a career. |
+| More of stat A than stat B (career) | stat_a, stat_b | Career total of one stat exceeds another's -- "MORE FREES FOR |
+| X+ career teammates | x | Shared a club-season with `n` or more distinct other players. |
 | Winning record in a derby | derby | Won more matches in this derby than they lost. |
 | Club leading goalkicker | — | Led their club's goalkicking in at least one season. |
+| Club leading goalkicker X+ times | times | Led their club's goalkicking in `times`+ seasons -- "2x LEADING |
 
 ## Single-game feats
 
@@ -54,6 +58,11 @@ their data is loaded.
 | Debuted between seasons | from, to |  |
 | X+ of a stat in one season | stat, x | Accumulated `n` or more of `stat` within a single season. |
 | Season average of a stat | stat, avg | Averaged `avg` or more of `stat` per game across a whole season. |
+| X+ games in one season | games | Played `n` or more games within one season. |
+| X+ wins in one season | times | Appeared in `n`+ winning games within one season. |
+| X+ losses in one season | times | Appeared in `n`+ losing games within one season. |
+| X+ wins in a row | times | Played in `n` consecutive winning games of their own career. |
+| Led club in a stat (season) | stat, times | Led their club's season total of `stat` at least `times` times. |
 | Wooden spoon season | — | Played for a club in a season it finished last. |
 | Minor premiership | — | Played for a club in a season it finished top of the ladder. |
 | No minor premierships | — | Never played a game for a club in a season it topped the ladder. |
@@ -66,9 +75,11 @@ their data is loaded.
 | Played in a final | — |  |
 | X+ finals games | x |  |
 | Won a final | — | Won at least one post-season game (any round, any venue). |
+| X+ finals wins | x | Won `n` or more post-season games -- more than won_postseason's |
 | Never won a final | — | Includes players who never played a post-season game at all. |
 | No finals wins (played finals) | — | Played at least one post-season game, never won one. |
 | Never played finals | — |  |
+| Played finals for X+ clubs | clubs | Played a post-season game for `clubs` or more different clubs. |
 | X+ of a stat in a final | stat, x | Reached `n` of `stat` in a single finals game. |
 | X+ of a stat in a grand final | stat, x | Reached `n` of `stat` in a single grand final. |
 | X+ of a stat in finals (career) | stat, x | Accumulated `n` or more of `stat` across a whole finals career. |
@@ -77,9 +88,14 @@ their data is loaded.
 | Played a grand final | — |  |
 | No grand finals | — | Never played in a grand final. |
 | Played in X+ Grand Finals | times |  |
+| Played in X+ Preliminary Finals | times | Played `times`+ Preliminary Finals. Counted by match, like the |
+| Grand Final for X+ clubs | clubs | Played a Grand Final for `clubs`+ different clubs. |
+| Grand Final between seasons | from, to | Played a Grand Final within a span of seasons. |
 | Premiership player | — |  |
 | Won X+ premierships | times |  |
+| Premiership between seasons | from, to | Won a premiership within a span of seasons. |
 | Lost X+ Grand Finals | times |  |
+| Lost a Grand Final against… | player | Played in a losing Grand Final side against a named player. |
 
 ## Grounds & venues
 
@@ -88,6 +104,7 @@ their data is loaded.
 | Played at venue | venue |  |
 | X+ games at venue | venue, x | Played `n` or more games at one venue. |
 | Won a final at venue | venue |  |
+| X+ of a stat in a game at venue | venue, stat, x | Reached `n` of a statistic in a single game at one ground -- |
 | Ground performance | venue, ground_status, ground_metric, x | Players reaching a cumulative performance threshold at one ground. |
 
 ## Teammates
@@ -116,6 +133,7 @@ their data is loaded.
 | Drafted by club | club |  |
 | Drafted by club, never played there | club | Drafted by a club, never played a senior game for it. |
 | Recruited from… | source | Recruited through one step of the path to the draft. |
+| Traded X+ times | times | Changed clubs by trade at least `times` times (Draftguru records |
 
 ## Captaincy
 
@@ -130,10 +148,12 @@ their data is loaded.
 
 | Question | Arguments | What it answers |
 |---|---|---|
+| Hall of Fame player | — | Inducted into the Australian Football Hall of Fame as a player. |
 | Academy selection | — |  |
 | All-Australian | times | Named in at least N All-Australian teams. |
 | All-Australian between years | from, to |  |
 | All-Australian captain | — |  |
+| All-Australian in a position | aa_position | Named All-Australian in one line of the ground -- "ALL AUSTRALIAN |
 | All-Australian squad | — |  |
 | B&F at 2+ clubs | clubs |  |
 | Brownlow Medallist | — |  |
@@ -149,6 +169,7 @@ their data is loaded.
 | Exact Brownlow finish | place |  |
 | Top X Brownlow finish | place |  |
 | Top X Brownlow finish X+ times | place, times |  |
+| Won the Brownlow with X+ votes | votes | Won the Brownlow in a season they polled `votes` or more -- |
 | X+ Brownlow votes in a season | votes |  |
 | Rising Star nominee | — |  |
 | Rising Star nominee between seasons | from, to |  |
@@ -187,5 +208,8 @@ their data is loaded.
 | Team scored X+ points | points | Played in a match where their own team scored `points` or more. |
 | Winning record in a derby | derby | Won more matches in this derby than they lost. |
 | Winning record in a marquee match | event | Won more of this marquee fixture than they lost. |
+| Won a derby | derby | Won this derby at least once -- "SHOWDOWN WINNER" asks for a win, |
+| Won a marquee match | event | Played for the winning side of this marquee fixture at least once. |
 | X+ games in a derby | derby, games | Played X+ matches in this derby, win or lose. |
 | X+ marquee matches | event, games | Played X+ of this marquee fixture. |
+| X+ of a stat in a derby game | derby, stat, x | Reached `n` of a statistic in a single game of this derby -- |

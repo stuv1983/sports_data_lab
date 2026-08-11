@@ -7,15 +7,19 @@ columns, types -- is discovered from the live database at render time, and
 the UI is generated from what discovery found. Load a new sport, or add a
 column to an existing build, and the builder simply offers it.
 
-Three builder modes, chosen in the sidebar:
+Three builder modes, switched at the top of the page (everything lives in
+the main column -- the sidebar is collapsed on a phone, and a control kept
+there is functionally invisible):
 
-* **Grid constraints** -- the Grid Solver's own criteria catalogue
-  (BUILDER_GROUPS: a category, a question, its arguments), chained with
-  AND/OR into a ranked player search. "Played for Collingwood AND 150+
-  career games" is three picks, not a syntax.
-* **Visual builder** -- `streamlit-condition-tree`, a drag-and-drop tree of
+* **Grid query** -- a real query builder over the Grid Solver's criteria
+  catalogue. The query is a visible object: requirement cards combined
+  with AND, each holding OR alternatives, every chip carrying a live
+  player count with edit and remove controls. Criteria are found through
+  one searchable picker over every question a square can ask, so "played
+  100+ games at the MCG" is typing "venue" and setting two values.
+* **Visual tree** -- `streamlit-condition-tree`, a drag-and-drop tree of
   nested AND/OR groups; its structured tree is compiled server-side here.
-* **Filter panel** -- native Streamlit widgets, one operator-driven filter
+* **Table filters** -- native Streamlit widgets, one operator-driven filter
   per column the reader chooses, compiled into a fully parameterised
   WHERE, with an optional COUNT(*)-per-group aggregation.
 
@@ -725,66 +729,347 @@ def _cached_players(sql, params, revision, _con) -> pd.DataFrame:
     return frame.convert_dtypes()
 
 
-def _constraints_mode(sport, revision) -> None:
-    """The Grid Solver's criteria as a search: pick, chain, rank.
+def _ensure_layers(sport, con) -> None:
+    """Connection-local placeholder tables for the optional layers, so a
+    criterion over an unloaded layer selects nothing instead of erroring."""
+    for helper in ("ensure_captain_table", "ensure_rising_star_table",
+                   "ensure_brownlow_table",
+                   "ensure_family_relationship_tables",
+                   "ensure_all_australian_history_table"):
+        ensure = getattr(sport.C, helper, None)
+        if ensure:
+            ensure(con)
 
-    Every criterion is chosen from the same organised catalogue the grid
-    builder uses -- a category, then the question, then its arguments --
-    so "Played for Collingwood AND 150+ career games" or "Drafted by
-    Hawthorn OR drafted by Geelong AND premiership player" is three picks,
-    not a syntax. OR joins a criterion into an either/or group with the
-    one before it; AND starts a new group every player must also satisfy.
+
+@st.cache_data(show_spinner=False, max_entries=1024)
+def _criterion_count(sport_key, sql, params, revision) -> int:
+    """How many players one stored criterion matches.
+
+    Keyed on the compiled SQL and the database revision, so the number on
+    a chip survives every rerun and dies with the file it measured.
+    """
+    import db_pool
+    import sports
+
+    sport = sports.get(sport_key)
+    con = db_pool.get_con(sport.db, revision)
+    _ensure_layers(sport, con)
+    return sport.C.count(con, [(sql, list(params))])
+
+
+@st.cache_data(show_spinner=False, max_entries=256)
+def _query_count(sport_key, where, params, revision) -> int:
+    """How many players the whole query matches, past any row limit."""
+    import db_pool
+    import sports
+
+    sport = sports.get(sport_key)
+    con = db_pool.get_con(sport.db, revision)
+    _ensure_layers(sport, con)
+    return con.execute(
+        f"SELECT COUNT(*) FROM {sport.schema.players} p WHERE {where}",
+        list(params)).fetchone()[0]
+
+
+def _builder_state(sport) -> dict:
+    """The one dict the builder keeps in the session.
+
+    groups  -- the query itself: a list of AND requirements, each a list
+               of OR alternatives, each alternative a stored criterion.
+    editing -- (group, index) of the criterion open in the panel, or None.
+    or_into -- group index a new criterion should join as an OR, or None.
+    nonce   -- folded into the panel's widget keys; bumping it hands the
+               panel fresh widgets whenever its contents must change under
+               it (loading an edit, finishing an add), because Streamlit
+               ignores a new default once a key exists.
+    """
+    return st.session_state.setdefault(
+        sport.k("qbc_query"),
+        {"groups": [], "editing": None, "or_into": None, "nonce": 0})
+
+
+def _md(text) -> str:
+    """Escape markdown formatting characters in database-derived text."""
+    return re.sub(r"([\\`*_~\[\]])", r"\\\1", str(text))
+
+
+def _store_criterion(sport, kind, args, player_label=None) -> dict:
+    """Everything a chip needs to display, re-edit and rebuild itself."""
+    import ui_widgets
+
+    fn, argnames = sport.C.BUILDERS[kind]
+    sql, params = fn(*args)
+    defaults: dict = {}
+    for name, value in zip(argnames, args):
+        if name == "player_id":
+            defaults["player"] = player_label or ""
+        else:
+            defaults[name] = value
+    label = ui_widgets.builder_label(kind, list(args), sport, player_label)
+    return {"kind": kind, "label": " ".join(str(label).split()),
+            "args": list(args), "defaults": defaults,
+            "sql": sql, "params": list(params)}
+
+
+def _criterion_catalogue(sport, available):
+    """Every offered builder, ordered by its BUILDER_GROUPS category."""
+    groups = getattr(sport.C, "BUILDER_GROUPS", {}) or {}
+    ordered: list = []
+    category: dict = {}
+    for name, kinds in groups.items():
+        for kind in kinds:
+            if kind in available and kind not in category:
+                ordered.append(kind)
+                category[kind] = name
+    for kind in available:
+        if kind not in category:
+            ordered.append(kind)
+            category[kind] = "More"
+    return ordered, category
+
+
+def _example_queries(sport, revision, available):
+    """One-tap starter queries, built only from builders this database
+    offers. Each is wrapped defensively: an example must never be the
+    thing that breaks the page."""
+    import ui_widgets
+
+    out = []
+    offered = set(available)
+    clubs = list(sport.schema.clubs)
+    V = sport.vocab
+    try:
+        if "X+ games at venue" in offered:
+            venues = ui_widgets.venue_options(sport.key, sport.db, revision)
+            if venues:
+                venue = venues[0][0]
+                out.append((f"100+ {V.games} at {venue}",
+                            [[("X+ games at venue", [venue, 100])]]))
+    except Exception:
+        pass
+    try:
+        if clubs and {"Played for club", "150+ / X+ career games"} <= offered:
+            club = "Collingwood" if "Collingwood" in clubs else clubs[0]
+            out.append((f"{club} + 150 {V.games}",
+                        [[("Played for club", [club])],
+                         [("150+ / X+ career games", [150])]]))
+    except Exception:
+        pass
+    try:
+        if len(clubs) > 1 and {"Drafted by club",
+                               "Premiership player"} <= offered:
+            a, b = (("Hawthorn", "Geelong")
+                    if {"Hawthorn", "Geelong"} <= set(clubs)
+                    else (clubs[0], clubs[1]))
+            out.append((f"Drafted {a} or {b}, won a {V.title}",
+                        [[("Drafted by club", [a]),
+                          ("Drafted by club", [b])],
+                         [("Premiership player", [])]]))
+    except Exception:
+        pass
+    return out
+
+
+def _load_example(sport, spec) -> list:
+    """Compile one example spec ([(kind, args), ...] per group) to stored
+    criteria."""
+    return [[_store_criterion(sport, kind, args) for kind, args in group]
+            for group in spec]
+
+
+def _query_chips(sport, revision) -> None:
+    """The query as an object: requirement cards, chips, edit and remove."""
+    state = _builder_state(sport)
+    groups = state["groups"]
+
+    for g, group in enumerate(groups):
+        if g:
+            st.markdown("<div class='qb-joiner'>AND</div>",
+                        unsafe_allow_html=True)
+        with st.container(border=True):
+            for i, crit in enumerate(group):
+                row = st.container(horizontal=True, gap="small",
+                                   vertical_alignment="center")
+                with row:
+                    with st.container(width="stretch", gap=None):
+                        joiner = "*or*&ensp;" if i else ""
+                        st.markdown(f"{joiner}**{_md(crit['label'])}**")
+                        try:
+                            n = _criterion_count(
+                                sport.key, crit["sql"],
+                                tuple(crit["params"]), revision)
+                            st.caption(f"{n:,} player{'' if n == 1 else 's'}")
+                        except Exception:
+                            st.caption("—")
+                    if st.button(":material/edit:",
+                                 key=sport.k("qbc_edit_btn", g, i),
+                                 type="tertiary",
+                                 help="Edit this criterion"):
+                        state.update(editing=(g, i), or_into=None)
+                        state["nonce"] += 1
+                        st.rerun()
+                    if st.button(":material/close:",
+                                 key=sport.k("qbc_drop_btn", g, i),
+                                 type="tertiary",
+                                 help="Remove this criterion"):
+                        group.pop(i)
+                        if not group:
+                            groups.pop(g)
+                        state.update(editing=None, or_into=None)
+                        state["nonce"] += 1
+                        st.rerun()
+            if st.button("or…", key=sport.k("qbc_or_btn", g),
+                         type="tertiary", icon=":material/add:",
+                         help="Add an either/or alternative to this "
+                              "requirement"):
+                state.update(or_into=g, editing=None)
+                state["nonce"] += 1
+                st.rerun()
+
+
+def _criterion_panel(sport, revision, available) -> None:
+    """Where a criterion is configured: one searchable picker over every
+    question the grid can ask, then that question's own inputs, a live
+    count, and a single commit button whose meaning follows the state --
+    add, add-as-OR, or save an edit."""
+    import ui_widgets
+
+    state = _builder_state(sport)
+    editing, or_into = state["editing"], state["or_into"]
+    key = sport.k("qbc_panel", state["nonce"])
+
+    ordered, category = _criterion_catalogue(sport, available)
+    if not ordered:
+        st.info("No criteria are available for this database.")
+        return
+
+    default_kind, defaults = None, None
+    if editing:
+        g, i = editing
+        if g < len(state["groups"]) and i < len(state["groups"][g]):
+            crit = state["groups"][g][i]
+            default_kind, defaults = crit["kind"], crit["defaults"]
+        else:
+            state["editing"] = editing = None
+
+    if editing:
+        title = "Edit criterion"
+    elif or_into is not None:
+        title = f"Add an alternative (OR) to requirement {or_into + 1}"
+    else:
+        title = ("Add a criterion" if state["groups"]
+                 else "Start your query")
+
+    with st.container(border=True):
+        head = st.container(horizontal=True, vertical_alignment="center")
+        with head:
+            with st.container(width="stretch"):
+                st.markdown(f"**{title}**")
+            if editing or or_into is not None:
+                if st.button("Cancel", key=f"{key}_cancel",
+                             type="tertiary", icon=":material/close:"):
+                    state.update(editing=None, or_into=None)
+                    state["nonce"] += 1
+                    st.rerun()
+
+        picked = st.selectbox(
+            "Question — type to search",
+            ordered,
+            index=(ordered.index(default_kind)
+                   if default_kind in ordered else 0),
+            key=f"{key}_kind",
+            format_func=lambda k:
+                f"{ui_widgets._builder_label(k, sport.vocab)} — {category[k]}",
+            help="Every question a grid square can ask, searchable. Try "
+                 "typing “venue”, “premiership”, “drafted” or a category "
+                 "name.")
+
+        label, built, args, player_label = ui_widgets.criterion_inputs(
+            f"{key}_args", picked,
+            defaults if picked == default_kind else None,
+            sport, revision)
+
+        pretty = " ".join(str(label).split())
+        if built is not None:
+            try:
+                n = _criterion_count(sport.key, built[0], tuple(built[1]),
+                                     revision)
+                st.caption(f"**{_md(pretty)}** — {n:,} "
+                           f"player{'' if n == 1 else 's'} qualify")
+            except Exception as exc:
+                st.warning(f"This criterion cannot run here: {exc}")
+                built = None
+
+        verb = ("Save changes" if editing
+                else "Add alternative" if or_into is not None
+                else "Add to query")
+        icon = ":material/check:" if editing else ":material/add:"
+        if st.button(verb, key=f"{key}_commit", type="primary", icon=icon,
+                     disabled=built is None):
+            crit = _store_criterion(sport, picked, args, player_label)
+            if editing:
+                g, i = editing
+                state["groups"][g][i] = crit
+            elif or_into is not None and or_into < len(state["groups"]):
+                state["groups"][or_into].append(crit)
+            else:
+                state["groups"].append([crit])
+            state.update(editing=None, or_into=None)
+            state["nonce"] += 1
+            st.rerun()
+
+
+def _constraints_mode(sport, revision) -> None:
+    """A query builder over the grid-criteria catalogue.
+
+    The query is a visible object, not a pile of dropdowns: requirement
+    cards the reader adds to, edits and removes, combined with AND top to
+    bottom, each card holding either/or alternatives. "Played in 100 or
+    more games at the MCG" is one search away -- type "venue" into the
+    question picker, choose the ground, set the number.
+
+    Everything renders in the main column. The sidebar owns nothing here,
+    because on a phone the sidebar is collapsed and anything living there
+    -- as the add/remove buttons once did -- simply does not exist.
     """
     import components
     import db_pool
-    import ui_widgets
 
-    st.caption(
-        "Chain the grid's own criteria. **OR** joins a criterion into an "
-        "either/or group with the one above it; **AND** starts a new "
-        "requirement every player must also meet.")
+    state = _builder_state(sport)
+    available = list(st.session_state.get("AVAILABLE") or sport.C.BUILDERS)
+    groups = state["groups"]
 
-    side = st.sidebar
-    available = list(st.session_state.get("AVAILABLE")
-                     or sport.C.BUILDERS)
-    count_key = sport.k("qbc_count")
-    count = st.session_state.setdefault(count_key, 1)
-    add_col, drop_col = side.columns(2)
-    if add_col.button("Add criterion", icon=":material/add:",
-                      key=sport.k("qbc_add"), width="stretch"):
-        count = st.session_state[count_key] = count + 1
-    if drop_col.button("Remove last", icon=":material/remove:",
-                       key=sport.k("qbc_drop"), width="stretch",
-                       disabled=count <= 1):
-        count = st.session_state[count_key] = max(1, count - 1)
+    if groups:
+        described = [" OR ".join(c["label"] for c in group)
+                     for group in groups]
+        st.caption("Players must satisfy every card; alternatives inside "
+                   "a card count as either/or.")
+        _query_chips(sport, revision)
+    else:
+        st.caption("Build a search from the questions grid squares ask — "
+                   "pick one below, set its details, add it, and chain "
+                   "more with AND / OR.")
+        examples = _example_queries(sport, revision, available)
+        if examples:
+            pick = st.pills("Or start from an example",
+                            [name for name, _ in examples],
+                            key=sport.k("qbc_examples"))
+            if pick:
+                try:
+                    state["groups"] = _load_example(sport,
+                                                    dict(examples)[pick])
+                    state["nonce"] += 1
+                    st.rerun()
+                except Exception as exc:
+                    st.warning(f"Could not load that example: {exc}")
 
-    groups: list[list] = []
-    described: list[str] = []
-    for i in range(count):
-        joiner = "AND"
-        with st.container(border=True):
-            if i:
-                joiner = st.segmented_control(
-                    "Combine", ["AND", "OR"], default="AND",
-                    key=sport.k("qbc_join", i),
-                    label_visibility="collapsed") or "AND"
-            label, built = ui_widgets.axis_widget(
-                sport.k("qbc", i), "Played for club", None,
-                sport, revision, available)
-        if built is None:
-            continue
-        pretty = str(label).replace(chr(10), " ")
-        if i and joiner == "OR" and groups:
-            groups[-1].append(built)
-            described[-1] = f"{described[-1]} OR {pretty}"
-        else:
-            groups.append([built])
-            described.append(pretty)
+    _criterion_panel(sport, revision, available)
 
+    groups = state["groups"]
     if not groups:
-        st.info("Configure at least one criterion above to search.")
         return
 
+    # -- results ----------------------------------------------------------
     sc = sport.schema
     V = sport.vocab
     orders = {
@@ -795,11 +1080,47 @@ def _constraints_mode(sport, revision) -> None:
         "Oldest": f"p.{sc.debut_season} ASC, p.{sc.player}",
         "Name": f"p.{sc.player} COLLATE NOCASE ASC",
     }
-    order = side.selectbox("Rank by", list(orders), key=sport.k("qbc_order"))
-    limit = side.number_input("Rows", 1, MAX_ROWS, 100, step=25,
-                              key=sport.k("qbc_limit"))
 
-    where, params = compile_constraint_sets(sc, groups)
+    constraint_sets = [[(c["sql"], c["params"]) for c in group]
+                       for group in groups]
+    try:
+        where, params = compile_constraint_sets(sc, constraint_sets)
+    except Exception as exc:
+        st.error(f"Could not compile the query: {exc}")
+        return
+
+    con = db_pool.get_con(sport.db, revision)
+    _ensure_layers(sport, con)
+    try:
+        total = _query_count(sport.key, where, tuple(params), revision)
+    except (sqlite3.Error, pd.errors.DatabaseError) as exc:
+        st.error(f"Database error while counting: {exc}")
+        return
+
+    bar = st.container(horizontal=True, vertical_alignment="bottom",
+                       gap="small")
+    with bar:
+        with st.container(width="stretch", gap=None):
+            st.metric("Matching players", f"{total:,}")
+        order = st.selectbox("Rank by", list(orders),
+                             key=sport.k("qbc_order"))
+        limit = st.number_input("Rows", 1, MAX_ROWS, 100, step=25,
+                                key=sport.k("qbc_limit"))
+        if st.button("Clear query", key=sport.k("qbc_clear"),
+                     type="tertiary", icon=":material/delete_sweep:"):
+            state.update(groups=[], editing=None, or_into=None)
+            state["nonce"] += 1
+            st.rerun()
+
+    sentence = " AND ".join(f"({part})" if " OR " in part else part
+                            for part in described)
+    st.caption(_md(sentence))
+
+    if not total:
+        st.info("No players satisfy every criterion — loosen a card or "
+                "turn one requirement into an OR alternative.")
+        return
+
     sql = (
         f'SELECT p.{sc.player} AS Player, '
         f'p.{sc.debut_season} AS "From", p.{sc.final_season} AS "To", '
@@ -810,16 +1131,6 @@ def _constraints_mode(sport, revision) -> None:
         f'FROM {sc.players} p WHERE {where} '
         f'ORDER BY {orders[order]} LIMIT ?'
     )
-    con = db_pool.get_con(sport.db, revision)
-    # Optional layers back some builders with connection-local placeholder
-    # tables; the same ensures the solver runs before solving.
-    for helper in ("ensure_captain_table", "ensure_rising_star_table",
-                   "ensure_brownlow_table",
-                   "ensure_family_relationship_tables",
-                   "ensure_all_australian_history_table"):
-        ensure = getattr(sport.C, helper, None)
-        if ensure:
-            ensure(con)
     try:
         frame = _cached_players(sql, tuple([*params, int(limit)]),
                                 revision, con)
@@ -827,13 +1138,14 @@ def _constraints_mode(sport, revision) -> None:
         st.error(f"Database error while searching: {exc}")
         return
 
-    st.caption(" AND ".join(f"({part})" if " OR " in part else part
-                            for part in described))
     if frame.empty:
         st.info("No players satisfy every criterion.")
     else:
-        st.caption(f"{len(frame):,} result"
-                   f"{'s' if len(frame) != 1 else ''} shown.")
+        shown_count = len(frame)
+        st.caption(f"Showing {shown_count:,} of {total:,}."
+                   if total > shown_count
+                   else f"{shown_count:,} result"
+                        f"{'s' if shown_count != 1 else ''}.")
         shown = components.player_results_table(
             frame, sport, con, key=sport.k("qbc_results"))
         st.download_button(
@@ -847,17 +1159,24 @@ def _constraints_mode(sport, revision) -> None:
         st.code(repr([*params, int(limit)]), language="python")
 
 
+#: Short names for the mode switcher; the stored values stay the long
+#: strings so existing sessions keep their choice.
+_MODE_SHORT = {MODE_CONSTRAINTS: "Grid query",
+               MODE_TREE: "Visual tree",
+               MODE_FILTERS: "Table filters"}
+
+
 def page(sport, heading=True):
-    """Render the query builder for whichever sport is active."""
+    """Render the query builder for whichever sport is active.
+
+    Every control lives in the main column: the page has to work on a
+    phone, where the sidebar is collapsed and anything kept there is
+    functionally invisible.
+    """
     from sqlalchemy.exc import SQLAlchemyError
 
     if heading:
         st.markdown("# Advanced Search")
-    st.caption(
-        "Build a query visually against the live database. Tables, columns "
-        "and value ranges below are discovered from the data itself; values "
-        "are parameterised and the connection is read-only."
-    )
 
     try:
         revision = _db_revision(sport.db)
@@ -865,22 +1184,26 @@ def page(sport, heading=True):
         st.error(f"Could not read the {sport.label} database: {exc}")
         return
 
-    # -- sidebar: mode toggle and query scaffolding -----------------------
-    side = st.sidebar
-    side.markdown("### Query builder")
     modes = [MODE_CONSTRAINTS] \
         + ([MODE_TREE] if HAS_CONDITION_TREE else []) + [MODE_FILTERS]
-    mode = side.segmented_control("Mode", modes, default=modes[0],
-                                  key=sport.k("qb_mode")) or modes[0]
-    if not HAS_CONDITION_TREE:
-        side.caption("Install `streamlit-condition-tree` to enable the "
-                     "drag-and-drop visual builder.")
+    mode = st.segmented_control(
+        "Builder mode", modes, default=modes[0], key=sport.k("qb_mode"),
+        format_func=lambda m: _MODE_SHORT.get(m, m),
+        label_visibility="collapsed") or modes[0]
 
     if mode == MODE_CONSTRAINTS:
         # The grid catalogue needs no table discovery: its criteria are
         # the sport's own builders, compiled against the players table.
         _constraints_mode(sport, revision)
         return
+
+    st.caption(
+        "Query any table of the live database. Tables, columns and value "
+        "ranges are discovered from the data itself; values are "
+        "parameterised and the connection is read-only."
+        + ("" if HAS_CONDITION_TREE else
+           " Install `streamlit-condition-tree` for the drag-and-drop "
+           "visual tree."))
 
     # -- connect and discover, failing as a red box rather than a traceback
     try:
@@ -895,30 +1218,39 @@ def page(sport, heading=True):
 
     tables = list(schema)
     default_table = getattr(sport.schema, "players", None)
-    table = side.selectbox(
-        "Table", tables,
-        index=tables.index(default_table) if default_table in tables else 0,
-        key=sport.k("qb_table"))
+
+    top = st.container(horizontal=True, vertical_alignment="bottom",
+                       gap="small")
+    with top:
+        with st.container(width="stretch"):
+            table = st.selectbox(
+                "Table", tables,
+                index=(tables.index(default_table)
+                       if default_table in tables else 0),
+                key=sport.k("qb_table"))
+        display = st.popover("Display", icon=":material/tune:")
+
     cols = schema[table]
     names = [c.name for c in cols]
 
-    shown = side.multiselect("Columns to show", names, default=names,
-                             key=sport.k("qb_cols", table))
-    order_by = side.selectbox("Sort by", ["(database order)"] + names,
-                              key=sport.k("qb_sort", table))
-    order_by = None if order_by == "(database order)" else order_by
-    descending = side.toggle("Descending", value=True,
-                             key=sport.k("qb_desc", table),
-                             disabled=order_by is None)
-    limit = side.number_input("Row limit", 1, MAX_ROWS, 500, step=100,
-                              key=sport.k("qb_limit"))
-    aggregate = side.toggle(
-        "Count per group", key=sport.k("qb_agg", table),
-        help="Group the matching rows and count them — e.g. games per "
-             "venue, players per debut season.")
-    group_columns = (side.multiselect("Group by", names,
-                                      key=sport.k("qb_groupby", table))
-                     if aggregate else [])
+    with display:
+        shown = st.multiselect("Columns to show", names, default=names,
+                               key=sport.k("qb_cols", table))
+        order_by = st.selectbox("Sort by", ["(database order)"] + names,
+                                key=sport.k("qb_sort", table))
+        order_by = None if order_by == "(database order)" else order_by
+        descending = st.toggle("Descending", value=True,
+                               key=sport.k("qb_desc", table),
+                               disabled=order_by is None)
+        limit = st.number_input("Row limit", 1, MAX_ROWS, 500, step=100,
+                                key=sport.k("qb_limit"))
+        aggregate = st.toggle(
+            "Count per group", key=sport.k("qb_agg", table),
+            help="Group the matching rows and count them — e.g. games per "
+                 "venue, players per debut season.")
+        group_columns = (st.multiselect("Group by", names,
+                                        key=sport.k("qb_groupby", table))
+                         if aggregate else [])
 
     # Profiles feed both modes: widget bounds in B, field config in A.
     try:
@@ -956,18 +1288,23 @@ def page(sport, heading=True):
             except ValueError:
                 tree = None
     else:
-        side.markdown("### Filters")
-        combinator = side.radio("Combine filters with", ["AND", "OR"],
-                                horizontal=True,
-                                key=sport.k("qb_combine", table))
-        chosen = side.multiselect("Filter on columns", names,
-                                  key=sport.k("qb_filter_cols", table))
-        for col in (c for c in cols if c.name in chosen):
-            box = side.container(border=True)
-            predicate = _filter_widget(box, sport, table, col,
-                                       profiles[col.name], bag)
-            if predicate:
-                predicates.append(predicate)
+        with st.container(border=True):
+            fbar = st.container(horizontal=True,
+                                vertical_alignment="center", gap="small")
+            with fbar:
+                with st.container(width="stretch"):
+                    chosen = st.multiselect(
+                        "Filter on columns", names,
+                        key=sport.k("qb_filter_cols", table))
+                combinator = st.radio("Combine with", ["AND", "OR"],
+                                      horizontal=True,
+                                      key=sport.k("qb_combine", table))
+            for col in (c for c in cols if c.name in chosen):
+                box = st.container(border=True)
+                predicate = _filter_widget(box, sport, table, col,
+                                           profiles[col.name], bag)
+                if predicate:
+                    predicates.append(predicate)
 
     # -- compile ----------------------------------------------------------
     try:

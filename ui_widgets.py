@@ -407,8 +407,6 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
     """One axis of the grid. Returns (label, constraint) or (label, None)."""
     defaults = defaults or {}
     C = sport.C
-    SCHEMA = sport.schema
-    V = sport.vocab
 
     kinds = available_builders
     # A sport that organises its catalogue gets a category picker first,
@@ -441,9 +439,30 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
     kind = st.selectbox("Type", kinds, index=default_index,
                         key=f"{key}_kind", label_visibility="collapsed",
                         format_func=lambda k: _builder_label(k, sport.vocab))
+    label, built, _args, _who = criterion_inputs(
+        key, kind, defaults, sport, db_revision)
+    return label, built
+
+
+def criterion_inputs(key, kind, defaults, sport, db_revision):
+    """Render the argument widgets for one builder kind and compile it.
+
+    The half of axis_widget below its two pickers, split out so the query
+    builder can offer the same criteria through its own search-first
+    picker. Returns ``(label, built, args, player_label)``: the display
+    label, the compiled (sql, params) constraint or None while an argument
+    is unresolved, the raw argument values in BUILDERS order (what a
+    stored criterion needs to rebuild or re-edit itself), and the resolved
+    player name for the kinds that pick one.
+    """
+    defaults = defaults or {}
+    C = sport.C
+    SCHEMA = sport.schema
+    V = sport.vocab
 
     fn, argnames = C.BUILDERS[kind]
     args = []
+    player_label = None
 
     for a in argnames:
         wk = f"{key}_{a}"
@@ -480,6 +499,7 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
             else:
                 pid, player_name = selected
                 args.append(pid)
+                player_label = player_name
                 st.session_state[f"{wk}_label"] = player_name
         elif a == "kind":
             draft_kinds = list(getattr(C, "DRAFT_TYPES", ()))
@@ -555,6 +575,18 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
         elif a == "player":
             args.append(st.text_input("Player", defaults.get("player", ""),
                                       key=wk))
+        elif a == "aa_position":
+            choices = list(getattr(C, "AA_POSITION_CHOICES", ()))
+            keys = [k for k, _ in choices]
+            want = defaults.get("aa_position")
+            idx = keys.index(want) if want in keys else 0
+            pick = st.selectbox("Line", range(len(choices)), index=idx,
+                                format_func=lambda i, options=choices:
+                                    options[i][1],
+                                key=wk,
+                                help="Positions are recorded on "
+                                     "All-Australian teams from 1991.")
+            args.append(choices[pick][0] if choices else None)
         elif a == "award_axis":
             choices = list(getattr(C, "AWARD_AXIS_CHOICES", ()))
             keys = [k for k, _ in choices]
@@ -691,13 +723,35 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
                     step=1, key=wk,
                     help="This is the X in the builder name above."))
 
+    label = builder_label(kind, args, sport, player_label)
+
+    if kind in ("Teammate of…", "Played with…") and (
+            not args or args[0] is None):
+        return label, None, args, player_label
+
+    try:
+        return label, fn(*args), args, player_label
+    except Exception as e:
+        st.warning(str(e))
+        return label, None, args, player_label
+
+
+def builder_label(kind, args, sport, player_label=None):
+    """The board or chip label for one configured builder.
+
+    Pure: everything it needs arrives as arguments, so the query builder
+    can label a stored criterion without re-rendering its widgets.
+    """
+    C = sport.C
+    V = sport.vocab
+
     label = kind
     if kind == "Played for club":
         label = args[0]
     elif kind == "Teammate of…":
-        label = f"{st.session_state.get(f'{key}_player_id_label', '—')} teammate"
+        label = f"{player_label or '—'} teammate"
     elif kind == "Played with…":
-        label = f"played with\n{st.session_state.get(f'{key}_player_id_label', '—')}"
+        label = f"played with\n{player_label or '—'}"
     elif kind in ("Played at venue", "Won a final at venue"):
         verb = ("played at" if kind.startswith("Played")
                 else f"won a {V.postseason_one} at")
@@ -767,22 +821,45 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
         label = f"top-{args[0]} Brownlow\n{args[1]}+ times"
     elif kind == "X+ Brownlow votes in a season":
         label = f"{args[0]}+ Brownlow votes\nin a season"
+    elif kind == "X+ games at one club":
+        label = f"{args[0]}+ {V.games} at\none {V.club}"
+    elif kind == "Led club in a stat (season)":
+        stat = _stat_label(args[0])
+        label = (f"led {V.club} in {stat}" if args[1] <= 1
+                 else f"led {V.club} in {stat}\n{args[1]}+ {V.season}s")
+    elif kind == "More of stat A than stat B (career)":
+        label = (f"more career {_stat_label(args[0])}\n"
+                 f"than {_stat_label(args[1])}")
+    elif kind == "Lost a Grand Final against…":
+        label = f"lost a grand final\nto {args[0] or '—'}"
+    elif kind == "X+ of a stat in a game at venue":
+        label = f"{args[2]}+ {_stat_label(args[1])}\nin a game at {args[0]}"
+    elif kind == "Won a derby":
+        label = f"won a\n{C.DERBY_LABELS.get(args[0], args[0])}"
+    elif kind == "X+ of a stat in a derby game":
+        label = (f"{args[2]}+ {_stat_label(args[1])} in a\n"
+                 f"{C.DERBY_LABELS.get(args[0], args[0])}")
+    elif kind == "Won a marquee match":
+        label = f"won\n{args[0]}"
+    elif kind == "All-Australian in a position":
+        label = f"All-Australian\n{args[0]}"
+    elif kind in ("Played between seasons", "Debuted between seasons",
+                  "Grand Final between seasons",
+                  "Premiership between seasons", "Drafted between years"):
+        verb = {"Played between seasons": "played",
+                "Debuted between seasons": "debuted",
+                "Grand Final between seasons": "grand final",
+                "Premiership between seasons": "premiership",
+                "Drafted between years": "drafted"}[kind]
+        label = f"{verb}\n{args[0]}–{args[1]}"
 
     # Safety net for every key the chain above has no rule for: a template
     # placeholder must never reach the board. Cheap, and it means a new
     # BUILDERS entry reads correctly before anyone writes it a rule.
     if re.search(r"\b[XY]\b", label):
-        label = _fill_placeholders(label, args, V)
+        label = _fill_placeholders(label, args, sport.vocab)
 
-    if kind in ("Teammate of…", "Played with…") and (
-            not args or args[0] is None):
-        return label, None
-
-    try:
-        return label, fn(*args)
-    except Exception as e:
-        st.warning(str(e))
-        return label, None
+    return label
 
 
 @st.cache_data(show_spinner=False)

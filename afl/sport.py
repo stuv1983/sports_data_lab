@@ -44,6 +44,11 @@ VENUE_ALIASES = {
     "football park": "Football Park", "aami stadium": "Football Park",
     "princes park": "Princes Park", "waverley": "Waverley Park",
     "victoria park": "Victoria Park", "windy hill": "Windy Hill",
+    # Bellerive Oval has been renamed twice by sponsors; Gridley uses the
+    # current name. Jiangwan hosted the 2017-19 China games.
+    "ninja stadium": "Bellerive Oval", "blundstone arena": "Bellerive Oval",
+    "bellerive": "Bellerive Oval", "bellerive oval": "Bellerive Oval",
+    "jiangwan": "Jiangwan Stadium", "jiangwan stadium": "Jiangwan Stadium",
 }
 
 SCHEMA = core.Schema(

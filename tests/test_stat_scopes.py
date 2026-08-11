@@ -234,7 +234,7 @@ UI_HANDLED_ARGS = {"club", "venue", "state", "player_id", "kind", "source", "awa
                    "times", "avg", "player", "stat", "stat_a", "stat_b",
                    "min_games", "derby", "event", "rivalry",
                    "ground_status", "ground_metric",
-                   "award_axis", "position", "average",
+                   "award_axis", "position", "aa_position", "average",
                    "min_plate_appearances", "war", "place", "votes",
                    "cm", "kg", "decade"}
 UI_NUMERIC_ARGS = {"x", "y", "x_a", "x_b", "games", "goals", "clubs", "from",
@@ -280,7 +280,9 @@ def test_live_every_stat_builder_executes_for_every_stat():
     if con is None:
         pytest.skip("no built database")
     sample = {"x": 5, "y": 5, "avg": 1.0, "min_games": 10, "times": 2,
-              "x_a": 5, "x_b": 1}
+              "x_a": 5, "x_b": 1,
+              # Builders that scope a statistic to a fixture or a ground.
+              "derby": "showdown", "event": "Anzac Day", "venue": "M.C.G."}
     bad = []
     for name, (fn, argnames) in C.BUILDERS.items():
         if not any(a.startswith("stat") for a in argnames):

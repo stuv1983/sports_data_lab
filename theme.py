@@ -665,5 +665,37 @@ hr {{ border-color: var(--line); }}
 .st-key-grid_board [data-testid="column"] {{
   min-width: 0 !important;
 }}
+
+/* Query builder: the AND separator drawn between requirement cards. */
+.qb-joiner {{
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: .68rem;
+  letter-spacing: .18em;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin: -.15rem 0 -.15rem .9rem;
+}}
+
+/* Phones. Streamlit's default block padding spends ~4rem of a 390px
+   screen on margins, and the display headings are sized for a desk. */
+@media (max-width: 640px) {{
+  .stApp .block-container,
+  .stApp [data-testid="stMainBlockContainer"] {{
+    padding-left: .9rem !important;
+    padding-right: .9rem !important;
+    padding-top: 2.6rem !important;
+  }}
+  h1 {{ font-size: 1.55rem !important; }}
+  h2 {{ font-size: 1.25rem !important; }}
+  h3 {{ font-size: 1.05rem !important; }}
+  .hero {{ padding: 1rem 1.1rem; }}
+  .hero-title {{ font-size: 1.8rem; }}
+  .count {{ font-size: 2rem; }}
+  /* Number/date inputs shrink below usability inside flex rows unless
+     they may wrap; let horizontal groups wrap on a narrow screen. */
+  [data-testid="stHorizontalBlock"] {{ row-gap: .35rem; }}
+  /* Dataframes own their scroll; the page itself must never pan. */
+  section.main {{ overflow-x: hidden; }}
+}}
 </style>
 """

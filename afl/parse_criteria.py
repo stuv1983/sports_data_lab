@@ -100,6 +100,21 @@ UNSUPPORTED = {
         "player background isn't in the available linked data",
     r"guernsey|jumper number|number \d+": "jumper numbers aren't stored",
     r"\bcoach": "coaching records aren't in the players table",
+    # Wordings Gridley has actually used whose data no loaded layer holds.
+    # Each declines by name, so the board can say what is missing instead
+    # of shrugging "couldn't interpret".
+    r"22\s*under\s*22": "the AFLPA 22Under22 team isn't in the linked award data",
+    r"\b(?:mark|goal) of the year\b":
+        "Mark and Goal of the Year winners aren't in the linked award data",
+    r"\blisted player\b|\bcurrently listed\b":
+        "club lists aren't in the data — only players with a recorded game",
+    r"int'?l rules|international rules":
+        "International Rules representation isn't in the data",
+    r"after (?:the )?siren": "shot-by-shot match timing isn't recorded",
+    r"\brecruited by\b": "recruiter attribution isn't recorded",
+    r"\bspoils?\b": "spoils aren't recorded in AFL Tables data",
+    r"\bfirst name\b": "first-name novelty squares aren't supported",
+    r"\bnfl\b": "other-league careers aren't in the data",
 }
 
 
@@ -109,8 +124,11 @@ def _num(s, default=None):
 
 
 # Phrases that mean "at most n" rather than "fewer than n". Gridley writes
-# both, and the difference is a whole boundary player.
-_INCLUSIVE_MAX = re.compile(r"or fewer|or less|at most|no more than|up to")
+# both, and the difference is a whole boundary player. The physical forms
+# matter as much as the counting ones: "180cm OR SHORTER" includes the
+# 180cm player, and reading it strictly dropped everyone on the boundary.
+_INCLUSIVE_MAX = re.compile(r"or fewer|or less|at most|no more than|up to"
+                            r"|or shorter|or lighter|or under|or smaller")
 _STRICT_MAX = re.compile(r"less than|fewer than|under|below|\bunder\b|<")
 
 
@@ -131,6 +149,44 @@ def _max_bound(t, n):
     if _INCLUSIVE_MAX.search(t):
         return n
     return max(n - 1, 0)
+
+
+def _season_window(t):
+    """A span of seasons named in the text, or None.
+
+    Three shapes Gridley writes: a decade ("DURING 2020s"), an explicit
+    range ("2010 TO 2019"), and an open end ("2020 ONWARDS"). The bare
+    four-digit year is deliberately not one of them -- "2004 ALL
+    AUSTRALIAN" is a single season and stays with the rules that own it.
+    """
+    m = re.search(r"\b(18|19|20)(\d)0s\b", t)
+    if m:
+        lo = int(f"{m.group(1)}{m.group(2)}0")
+        return lo, lo + 9
+    m = re.search(r"\b((?:18|19|20)\d{2})\s*(?:to|[-–])\s*"
+                  r"((?:18|19|20)\d{2})\b", t)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = re.search(r"\b((?:18|19|20)\d{2})\s*(?:onwards?|or later|and later)\b",
+                  t)
+    if m:
+        return int(m.group(1)), 9999
+    return None
+
+
+def _person_name(words):
+    """Title-case a name, undoing the two ways Gridley's display mangles it.
+
+    The two-line board often repeats the surname ("MAX GAWN / GAWN
+    TEAMMATE" arrives glued as "MAX GAWN GAWN TEAMMATE"), so a final word
+    already present earlier truncates the run at its first appearance.
+    title() then lowercases the C in "McKercher"; put it back.
+    """
+    words = list(words)
+    if len(words) > 2 and words[-1] in words[:-1]:
+        words = words[: words.index(words[-1]) + 1]
+    name = " ".join(words).title()
+    return re.sub(r"\bMc([a-z])", lambda m: f"Mc{m.group(1).upper()}", name)
 
 
 def _family_builders_available():
@@ -214,6 +270,21 @@ def _parse_exact(text):
         club = CLUB_ALIASES[stripped]
         return C.played_for(club), club
 
+    # 1b. Teammate criteria, claimed before anything keyed on a substring.
+    # Surnames collide with award names -- "KEIDEAN COLEMAN TEAMMATE" is
+    # not the Coleman Medal and "NICK LARKEY TEAMMATE" is not the Larke --
+    # so text that says teammate IS a teammate square, whatever else its
+    # letters happen to contain. The count form is claimed first so
+    # "100+ TEAMMATES CAREER" cannot read as somebody named Career.
+    m = re.search(r"(\d+)\s*\+?\s*teammates\b", t)
+    if m:
+        return (C.career_teammates_min(int(m.group(1))),
+                f"{m.group(1)}+ career teammates")
+    m = re.match(r"^(.+?)\s+teammates?(?:\s+of\s+\S+)?$", t)
+    if m and re.fullmatch(r"[a-z][a-z\-' ]*", m.group(1)):
+        name = _person_name(m.group(1).split())
+        return C.teammate_of(name), f"{name} teammate"
+
     # 2. Awards and Draftguru signing types. These must run before the
     # unsupported checks so "All-Australian captain" is not mistaken for
     # unsupported club captaincy, and explicit father-son selections are
@@ -223,10 +294,25 @@ def _parse_exact(text):
             return A.all_australian_captain(), "All-Australian captain"
         if "squad" in t:
             return A.all_australian_squad(), "All-Australian squad"
-        yr = re.search(r"(\d{4})\s*[-–]\s*(\d{4})", t)
-        if yr:
-            lo, hi = int(yr.group(1)), int(yr.group(2))
-            return A.all_australian_between(lo, hi), f"All-Australian {lo}-{hi}"
+        # "ALL AUSTRALIAN FORWARD": one line of the ground, not any team
+        # spot. Named lines only -- Gridley excludes the interchange from
+        # these squares, and so does the builder's own grouping.
+        position = next((group for word, group in (
+            ("forward", "forward"), ("defender", "back"),
+            ("defence", "back"), ("back", "back"),
+            ("midfield", "midfield"), ("centre", "midfield"),
+            ("wing", "midfield"), ("ruck", "ruck"),
+            ("interchange", "interchange"), ("bench", "interchange"),
+        ) if re.search(rf"\b{word}", t)), None)
+        if position:
+            return (A.all_australian_position_group(position),
+                    f"All-Australian {position}")
+        window = _season_window(t)
+        if window:
+            lo, hi = window
+            label = (f"All-Australian {lo}-{hi}" if hi < 9999
+                     else f"All-Australian since {lo}")
+            return A.all_australian_between(lo, hi), label
         one_year = re.search(r"\b((?:19|20)\d{2})\b", t)
         if one_year:
             year = int(one_year.group(1))
@@ -273,6 +359,14 @@ def _parse_exact(text):
         votes = int(m.group(1))
         return B.brownlow_votes_in_season(votes), f"{votes}+ brownlow votes in a season"
 
+    m = re.search(r"(?:won|winning)\s+(?:the\s+|a\s+)?brownlow.{0,16}?"
+                  r"(\d+)\s*\+?\s*votes"
+                  r"|brownlow.{0,10}\bwith\s+(\d+)\s*\+?\s*votes", t)
+    if m:
+        votes = int(m.group(1) or m.group(2))
+        return (B.brownlow_won_with_votes(votes),
+                f"won the Brownlow with {votes}+ votes")
+
     if re.search(r"brownlow (medal(?:list|ist)?|winner)", t):
         return A.brownlow_medallist(), "Brownlow Medallist"
     if re.search(r"coleman", t):
@@ -297,6 +391,9 @@ def _parse_exact(text):
             return A.won_award(slug), f"{phrase.title()} medallist"
     if re.search(r"state[- ]league medallist", t):
         return A.state_league_medallist(), "state-league medallist"
+
+    if re.search(r"hall of fame", t):
+        return C.hall_of_fame_player(), "Hall of Fame player"
 
     # Gridley writes the club award as "BEST & FAIREST", with the ampersand
     # its own word. Only "best and fairest" and "b&f" were matched here, so
@@ -336,6 +433,22 @@ def _parse_exact(text):
         return A.father_son(), "father-son selection"
     if re.search(r"\bacademy selection\b", t):
         return A.academy_selection(), "academy selection"
+
+    # "ROOKIE DRAFT PICK": a named draft category rather than a pick number.
+    if re.search(r"\bdraft|\bpick|\bselection", t):
+        for word, kind in (("rookie", "Rookie"), ("pre-season", "Pre-Season"),
+                           ("pre season", "Pre-Season"),
+                           ("mid-season", "Mid-Season"),
+                           ("mid season", "Mid-Season")):
+            if word in t:
+                return C.draft_of_type(kind), f"{kind} draft selection"
+
+    # "TRADED 1+ TIMES": the Draftguru trade records, from 1988.
+    m = re.search(r"\btraded\b(?:\s*(\d+)\s*\+?\s*times?)?", t)
+    if m:
+        times = int(m.group(1)) if m.group(1) else 1
+        return (C.traded_min(times),
+                f"traded {times}+ times" if times > 1 else "traded at least once")
 
     # "RECRUITED FROM GLENELG", "FROM OAKLEIGH CHARGERS", "VIA NORWOOD".
     # The rest of the text is the place, so this runs after every rule
@@ -419,6 +532,11 @@ def _parse_exact(text):
         return C.teammate_of(name), f"{name} teammate"
 
     # 3b. Venue squares. "MCG WON A FINAL" must beat the generic rules.
+    # "PLAYED IN CHINA" first: the square means the Shanghai fixtures, and
+    # the ground has a name the database knows.
+    if re.search(r"\bchina\b", t):
+        return (C.played_at_venue("Jiangwan Stadium"),
+                "played at Jiangwan Stadium (China)")
     venue_hit = None
     for alias in sorted(C.VENUE_ALIASES, key=len, reverse=True):
         if re.search(rf"\b{re.escape(alias)}\b", t):
@@ -430,12 +548,28 @@ def _parse_exact(text):
             return C.won_a_final_at(canon), f"won a final at {venue_hit}"
         # "100+ GAMES AT THE MCG" is a tenure count, and the bare
         # played-at fallback below used to answer it as "ever appeared
-        # there" -- confidently wrong by a hundred games.
-        m = re.search(r"(\d+)\s*\+?\s*(?:games?|matches)\b", t)
+        # there" -- confidently wrong by a hundred games. Gridley words
+        # the same square "PLAYED AT MCG 100+ Times", so the count nouns
+        # include "times" and "appearances", not only "games".
+        m = re.search(r"(\d+)\s*\+?\s*(?:games?|matches|times|appearances)\b",
+                      t)
         if m:
             count = int(m.group(1))
             return (C.games_at_venue_min(canon, count),
                     f"{count}+ games at {venue_hit}")
+        # "MCG KICKED A GOAL": a single-game feat at the ground. The verb
+        # "kicked" was stripped with the league noise, so the stat word
+        # and an optional number are what remains.
+        stat_word = next((w for w in STAT_WORDS_BY_LENGTH if w in t), None)
+        if stat_word:
+            col = STAT_WORDS[stat_word]
+            n = _num(t, 1)
+            try:
+                built = C.venue_stat_in_game(canon, col, n)
+            except ValueError:
+                built = None
+            if built is not None:
+                return built, f"{n}+ {col} in a game at {venue_hit}"
         return C.played_at_venue(canon), f"played at {venue_hit}"
 
     # 3c. "<CLUB> FIRST CAREER GAME" / "DEBUTED FOR <CLUB>"
@@ -443,6 +577,14 @@ def _parse_exact(text):
         for alias, club in CLUB_ALIASES.items():
             if re.search(rf"\b{re.escape(alias)}\b", t):
                 return C.debut_club(club), f"{club} first career game"
+        # "DEBUT GAME 2010 TO 2019" / "DEBUT GAME 2020 ONWARDS": a first
+        # game inside a window is debuted_between, not played_in_range.
+        window = _season_window(t)
+        if window:
+            lo, hi = window
+            return (C.debuted_between(lo, hi),
+                    f"debuted {lo}-{hi}" if hi < 9999
+                    else f"debuted {lo} onwards")
 
     # 3c9. The minor premiership: finishing top of the home-and-away ladder.
     # It is not the premiership and usually not even the same club, so it
@@ -459,6 +601,38 @@ def _parse_exact(text):
             return (C.minor_premierships_min(count),
                     f"{count}+ minor premierships")
         return C.minor_premiership_player(), "minor premiership"
+
+    # 3d-pre. Rounds and shapes the generic finals rules must not swallow.
+    # A Preliminary Final is its own round: answering "PRELIM FINAL PLAYER"
+    # with any finals appearance is wrong by two whole weeks of September.
+    if re.search(r"prelim(?:inary)?\s*finals?", t):
+        n = _num(t, 1)
+        return (C.preliminary_finals_min(n),
+                f"played {n}+ preliminary finals" if n > 1
+                else "played a preliminary final")
+
+    # "5+ FINALS WINS" counts victories, where the bare rule below answers
+    # any single one.
+    m = re.search(r"(\d+)\s*\+?\s*finals? wins?\b", t)
+    if m:
+        return (C.finals_wins_min(int(m.group(1))),
+                f"{m.group(1)}+ finals wins")
+
+    # "GRAND FINAL FOR TWO CLUBS" before the plainer finals version of the
+    # same shape, which would otherwise claim it.
+    m = re.search(r"grand finals?\b.{0,16}\b(?:multiple|two|three|2|3)\+?"
+                  r"\s*clubs", t)
+    if m:
+        k = 3 if re.search(r"\b(?:three|3)\b", t) else 2
+        return (C.grand_final_at_multiple_clubs(k),
+                f"grand final for {k}+ clubs")
+
+    # "FINALS PLAYER MULTIPLE CLUBS" -- September football for 2+ clubs.
+    if re.search(r"finals?\b.{0,20}\b(?:for )?(?:multiple|two|three|2|3)\+?"
+                 r"\s*clubs", t):
+        k = 3 if re.search(r"\b(?:three|3)\b", t) else 2
+        return (C.finals_at_multiple_clubs(k),
+                f"played finals for {k}+ clubs")
 
     # 3d. Finals counts and averages.
     m = re.search(r"(\d+)\+?\s*finals? games?", t)
@@ -481,6 +655,47 @@ def _parse_exact(text):
                     f"won {count}+ premierships")
         return (C.grand_finals_played_min(count),
                 f"played in {count}+ grand finals")
+
+    # "DEFEATED BY DUSTY IN A GF": the losing side against a named player.
+    m = re.match(r"^(.+?)\s+defeated by\b.*\b(?:gf|grand final)", t)
+    if m and re.fullmatch(r"[a-z][a-z\-' ]*", m.group(1)):
+        name = _person_name(m.group(1).split())
+        return (C.lost_grand_final_to(name),
+                f"lost a grand final to {name}")
+
+    # "LOST A GRAND FINAL" with no number is still about losing one, and
+    # the participation rule below used to swallow it -- a square about
+    # defeat answered with everyone who was merely there.
+    if (re.search(r"\b(?:lost|losing|lose)\b.{0,14}grand final", t)
+            and not re.search(r"\bnever\b|\bno\b", t)):
+        return C.grand_finals_lost_min(1), "lost a grand final"
+
+    # "MULTI-PREMIERSHIP PLAYER" and "3x PREMIERSHIP PLAYER" count flags;
+    # the bare premiership rule in section 4 answers one, which accepted
+    # every single-flag player for a square that asked for the repeat.
+    if re.search(r"multi[- ]premiership", t):
+        return C.premierships_won_min(2), "won 2+ premierships"
+    m = re.search(r"(\d+)\s*x\s*premiership", t)
+    if m and int(m.group(1)) > 1:
+        n = int(m.group(1))
+        return C.premierships_won_min(n), f"won {n}+ premierships"
+
+    # Era-scoped flags and Grand Finals: "PREMIERSHIP PLAYER 2010 TO 2019",
+    # "GRAND FINAL PLAYER DURING 2020s". Unscoped rules would accept any
+    # era's premiership for a square that names one.
+    window = _season_window(t)
+    if window and re.search(r"premiership|flag|(?:won|win|winner).{0,12}"
+                            r"grand final", t):
+        lo, hi = window
+        return (C.premiership_between(lo, hi),
+                f"premiership {lo}-{hi}" if hi < 9999
+                else f"premiership since {lo}")
+    if window and re.search(r"grand final", t):
+        lo, hi = window
+        return (C.grand_final_between(lo, hi),
+                f"grand final {lo}-{hi}" if hi < 9999
+                else f"grand final since {lo}")
+
     m = re.search(r"([\d.]+)\+?\s*goals?\s*(avg|average)", t)
     if m and "final" in t:
         return (C.goal_average_in_finals(float(m.group(1))),
@@ -630,8 +845,26 @@ def _parse_exact(text):
                                       f"{n}+ {col} in a game")
 
     # 3e. Season and club awards derivable from the data.
+    m = re.search(r"(\d+)\s*x\s*leading goal ?kicker", t)
+    if m and int(m.group(1)) > 1:
+        n = int(m.group(1))
+        return (C.leading_goalkicker_min(n),
+                f"{n}x club leading goalkicker")
     if re.search(r"leading goal ?kicker", t):
         return C.leading_goalkicker(), "club leading goalkicker"
+    # "MOST DISPOSALS TEAM": led the club's season tally of a statistic.
+    # Goals stay with the official leading-goalkicker table; every other
+    # statistic is ranked from the game rows.
+    m = re.search(r"\bmost\s+(.+?)\s+(?:team|club)\b", t)
+    if m:
+        phrase = m.group(1)
+        if re.search(r"\bgoals?\b", phrase):
+            return C.leading_goalkicker(), "club leading goalkicker"
+        for w in STAT_WORDS_BY_LENGTH:
+            if w in phrase:
+                col = STAT_WORDS[w]
+                return (C.club_stat_leader(col, 1),
+                        f"led club in {col} in a season")
     if re.search(r"wooden spoon", t):
         return C.wooden_spoon_player(), "wooden spoon season"
     if re.search(r"multi[- ]club", t):
@@ -668,14 +901,55 @@ def _parse_exact(text):
         if re.search(r"\bwinning record\b", t):
             return (C.derby_winning_record(derby_key),
                     f"{derby_label} winning record")
-        m = re.search(r"(\d+)\+?\s*(?:games?|matches)", t)
+        # "SHOWDOWN KICKED A GOAL", "SYDNEY DERBY 5+ TACKLES": a feat
+        # within the fixture. The scoring verb was stripped with the
+        # league noise, so the stat word and an optional number remain.
+        stat_word = next((w for w in STAT_WORDS_BY_LENGTH if w in t), None)
+        if stat_word:
+            col = STAT_WORDS[stat_word]
+            n = _num(t, 1)
+            return (C.derby_stat_in_game(derby_key, col, n),
+                    f"{n}+ {col} in a {derby_label}")
+        # "SHOWDOWN WINNER" asks for a win, not the whole winning record.
+        if re.search(r"\bwinner\b|\bwon\b|\bwin\b", t):
+            return C.derby_won(derby_key), f"won a {derby_label}"
+        # "SHOWDOWN PLAYED IN 10+" and the older "10+ SHOWDOWN GAMES".
+        m = re.search(r"(\d+)\+?\s*(?:games?|matches|times)\b"
+                      r"|played(?:\s+in)?\s+(\d+)\s*\+?"
+                      r"|(\d+)\s*\+\s*$", t)
         if m:
-            return (C.derby_games_min(derby_key, int(m.group(1))),
-                    f"{m.group(1)}+ {derby_label} games")
+            count = int(m.group(1) or m.group(2) or m.group(3))
+            return (C.derby_games_min(derby_key, count),
+                    f"{count}+ {derby_label} games")
         return C.played_in_derby(derby_key), f"played in a {derby_label}"
 
     if re.search(r"\bderby\b", t):
         return None, "a derby criterion has to name which derby"
+
+    # Marquee fixtures named by their day: Anzac Day, the Big Freeze (the
+    # King's Birthday match since 2015), Dreamtime. These read the scraped
+    # match_event tags, same as the marquee builders in the grid maker.
+    marquee_hit = next(
+        ((alias, event) for alias, event in (
+            ("anzac day", "Anzac Day"),
+            ("dreamtime", "Dreamtime at the 'G"),
+            ("king's birthday", "King's Birthday"),
+            ("kings birthday", "King's Birthday"),
+        ) if alias in t), None)
+    if marquee_hit:
+        _alias, event = marquee_hit
+        article = "an" if event[0].upper() in "AEIOU" else "a"
+        if re.search(r"\bwinner\b|\bwon\b|\bwinning\b", t):
+            return C.marquee_event_won(event), f"won {article} {event} match"
+        m = re.search(r"(\d+)\s*\+?\s*(?:games?|matches|times)\b", t)
+        if m:
+            return (C.marquee_event_games_min(event, int(m.group(1))),
+                    f"{m.group(1)}+ {event} matches")
+        return (C.played_marquee_event(event),
+                f"played {article} {event} match")
+    if "big freeze" in t:
+        return (C.marquee_event_played_since("King's Birthday", 2015),
+                "played a Big Freeze match (King's Birthday, 2015 on)")
 
     if re.search(r"\bwinning record\b", t):
         return C.winning_record(), "winning record"
@@ -697,6 +971,22 @@ def _parse_exact(text):
 
     if re.search(r"\bdrawn? (match|game)\b|\btied game\b|played in a draw", t):
         return C.played_in_a_draw(), "played in a drawn match"
+
+    # 3e-ter. "MORE FREES FOR THAN AGAINST": one career total over another.
+    m = re.search(r"\bmore\s+(.+?)\s+than\s+(.+)$", t)
+    if m:
+        a = next((w for w in STAT_WORDS_BY_LENGTH if w in m.group(1)), None)
+        b = next((w for w in STAT_WORDS_BY_LENGTH if w in m.group(2)), None)
+        # The right-hand noun is often elided -- "…THAN AGAINST" -- so the
+        # free-kick pair fills in its other half.
+        if a and not b:
+            if "against" in m.group(2) and STAT_WORDS[a] == "frees_for":
+                b = "frees against"
+            elif "for" in m.group(2) and STAT_WORDS[a] == "frees_against":
+                b = "frees for"
+        if a and b and STAT_WORDS[a] != STAT_WORDS[b]:
+            return (C.career_stat_more_than(STAT_WORDS[a], STAT_WORDS[b]),
+                    f"more career {STAT_WORDS[a]} than {STAT_WORDS[b]}")
 
     # 3f. Two stats in the same game: "30+ DISPOSALS & 3+ GOALS GAME"
     if "&" in t or " and " in t:
@@ -754,6 +1044,35 @@ def _parse_exact(text):
             bound = _max_bound(t, kg)
             return C.weight_max(bound), f"{bound} kg or lighter"
         return C.weight_min(kg), f"{kg}+ kg heavy"
+
+    # 5c. Tenure and season-count squares that name no career keyword.
+    # "200+ GAMES SAME CLUB" is loyalty, not a career total; "20+ GAMES IN
+    # 2023" and "15 LOSSES SINGLE SEASON" are one year's workload; "10
+    # WINS IN A ROW" is a streak of the player's own appearances.
+    m = re.search(r"(\d+)\s*\+?\s*games?\b.{0,16}\b(?:same|single|one)\s+club",
+                  t)
+    if m:
+        return (C.games_at_one_club_min(int(m.group(1))),
+                f"{m.group(1)}+ games at one club")
+    m = re.search(r"(\d+)\s*\+?\s*games? in (?:season )?((?:19|20)\d{2})\b", t)
+    if m:
+        return (C.games_in_season_min(int(m.group(1)), int(m.group(2))),
+                f"{m.group(1)}+ games in {m.group(2)}")
+    m = re.search(r"(\d+)\s*\+?\s*games?\b.{0,14}\b(?:a|one|single) season", t)
+    if m:
+        return (C.games_in_season_min(int(m.group(1))),
+                f"{m.group(1)}+ games in a season")
+    m = re.search(r"(\d+)\s*\+?\s*(wins|winning games?|losses|losing games?)"
+                  r"\b.{0,16}\bseason", t)
+    if m:
+        n = int(m.group(1))
+        if m.group(2).startswith(("loss", "losing")):
+            return C.losses_in_season_min(n), f"{n}+ losses in a season"
+        return C.wins_in_season_min(n), f"{n}+ wins in a season"
+    m = re.search(r"(\d+)\s*\+?\s*(?:consecutive wins|wins in a row)", t)
+    if m:
+        return (C.wins_in_a_row(int(m.group(1))),
+                f"{m.group(1)} wins in a row")
 
     # 6. "N+ goals/games for two different clubs".
     two_clubs = re.search(r"(two|2|three|3)\s*(?:diff\w*|different)?\s*clubs", t)
