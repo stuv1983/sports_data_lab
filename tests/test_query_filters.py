@@ -18,6 +18,17 @@ import pytest
 
 import core
 import query_filters as Q
+from afl import search_tokens
+
+
+def _afl():
+    """Fresh AFL token extensions, as sport.search_extensions() supplies.
+
+    The captaincy and draft tokens are AFL extensions now, not built-in
+    fields, so the tests that exercise them pass the extension list the
+    same way the search page does.
+    """
+    return search_tokens.extensions()
 
 
 def fixture():
@@ -64,7 +75,8 @@ def run():
     assert [row[0] for row in rows] == ["Alpha One"]
 
     sql, params, _ = Q.compile_query(
-        schema, 'captain:true captain_club:B captain_year:1995..1997', con=con
+        schema, 'captain:true captain_club:B captain_year:1995..1997',
+        con=con, extensions=_afl(),
     )
     assert con.execute(sql, params).fetchone()[0] == "Alpha One"
 
@@ -290,7 +302,8 @@ def _draft_fixture():
 
 def _found(query):
     con, schema = _draft_fixture()
-    sql, params, _ = Q.compile_query(schema, query, con=con)
+    sql, params, _ = Q.compile_query(schema, query, con=con,
+                                     extensions=_afl())
     return [row[0] for row in con.execute(sql, params)]
 
 
@@ -323,7 +336,7 @@ def test_draft_tokens_trust_only_a_resolved_link():
     con.execute("UPDATE draft_links SET match_status='ambiguous' "
                 "WHERE draft_rowid=2")
     sql, params, _ = Q.compile_query(schema, "recruited_from:Oakleigh",
-                                     con=con)
+                                     con=con, extensions=_afl())
     assert con.execute(sql, params).fetchall() == []
 
 
@@ -336,7 +349,15 @@ def test_a_draft_search_without_the_layer_says_so():
     con, schema = fixture()          # no draft tables
     for query in ("recruited_from:Glenelg", "pick:1", "draft_year:2001"):
         with pytest.raises(Q.QuerySyntaxError, match="not loaded"):
-            Q.compile_query(schema, query, con=con)
+            Q.compile_query(schema, query, con=con, extensions=_afl())
+
+
+def test_an_extension_token_without_its_extension_is_unknown():
+    """A sport that registers no extensions rejects the token by name --
+    the field genuinely does not exist for that sport."""
+    con, schema = fixture()
+    with pytest.raises(Q.QuerySyntaxError, match="Unknown search field"):
+        Q.compile_query(schema, "captain:true", con=con)
 
 
 def test_name_terms_reads_what_the_did_you_mean_needs():

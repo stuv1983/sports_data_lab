@@ -12,6 +12,12 @@ import sqlite3
 from types import SimpleNamespace
 
 import query_filters_family as Q
+from afl import search_tokens
+
+
+def _afl():
+    """The AFL's registered extensions, which now carry the family tokens."""
+    return search_tokens.extensions()
 
 
 SCHEMA = SimpleNamespace(
@@ -104,7 +110,8 @@ def build_db() -> sqlite3.Connection:
 
 
 def names(con: sqlite3.Connection, query: str) -> list[str]:
-    sql, params, _ = Q.compile_query(SCHEMA, query, con=con)
+    sql, params, _ = Q.compile_query(SCHEMA, query, con=con,
+                                     extensions=_afl())
     return [row[0] for row in con.execute(sql, params)]
 
 
@@ -142,7 +149,8 @@ def run() -> None:
             "club_hist TEXT, season INTEGER, is_final INTEGER)"
         )
         try:
-            Q.compile_query(SCHEMA, "family_relation:brother", con=missing)
+            Q.compile_query(SCHEMA, "family_relation:brother", con=missing,
+                            extensions=_afl())
         except Q.QuerySyntaxError as exc:
             assert "family relationship data is not loaded" in str(exc)
         else:

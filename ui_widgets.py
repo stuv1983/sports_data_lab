@@ -347,6 +347,8 @@ _STAT_SCOPE_LABELS = {
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])} avg\nper {V.game}",
     "X+ of a stat in a final":
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])}\nin a {V.postseason_one}",
+    "X+ of a stat in finals (career)":
+        lambda a, V: f"{a[1]}+ {_stat_label(a[0])}\nin {V.postseason}",
     "Finals average of a stat":
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])} avg\nin {V.postseason}",
 }
@@ -404,15 +406,41 @@ def _fill_placeholders(template, args, vocab):
 def axis_widget(key, default_type, defaults, sport, db_revision, available_builders):
     """One axis of the grid. Returns (label, constraint) or (label, None)."""
     defaults = defaults or {}
+    C = sport.C
+    SCHEMA = sport.schema
+    V = sport.vocab
+
     kinds = available_builders
+    # A sport that organises its catalogue gets a category picker first,
+    # so sixty builders read as a dozen kinds of question. Builders in no
+    # declared group still appear, under "More" -- a new BUILDERS entry is
+    # usable before anyone files it. Sports without groups keep the flat
+    # list.
+    groups = getattr(C, "BUILDER_GROUPS", None)
+    if groups:
+        grouped = {}
+        for category, names in groups.items():
+            offered = [k for k in names if k in kinds]
+            if offered:
+                grouped[category] = offered
+        placed = {k for offered in grouped.values() for k in offered}
+        extras = [k for k in kinds if k not in placed]
+        if extras:
+            grouped["More"] = extras
+        categories = list(grouped)
+        default_category = next(
+            (c for c in categories if default_type in grouped[c]),
+            categories[0])
+        category = st.selectbox(
+            "Question category", categories,
+            index=categories.index(default_category),
+            key=f"{key}_group", label_visibility="collapsed")
+        kinds = grouped.get(category, kinds)
+
     default_index = kinds.index(default_type) if default_type in kinds else 0
     kind = st.selectbox("Type", kinds, index=default_index,
                         key=f"{key}_kind", label_visibility="collapsed",
                         format_func=lambda k: _builder_label(k, sport.vocab))
-    
-    C = sport.C
-    SCHEMA = sport.schema
-    V = sport.vocab
 
     fn, argnames = C.BUILDERS[kind]
     args = []
@@ -622,6 +650,14 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
             args.append(st.number_input(
                 word.capitalize(), min_value=1,
                 value=int(defaults.get(a, fallback)), step=1, key=wk))
+        elif a == "decade":
+            lo, hi = season_span(sport.key, sport.db, db_revision)
+            starts = list(range(lo - lo % 10, hi + 1, 10))
+            want = int(defaults.get("decade", starts[-1]))
+            idx = starts.index(want) if want in starts else len(starts) - 1
+            args.append(st.selectbox(
+                "Decade", starts, index=idx, key=wk,
+                format_func=lambda d: f"{d}s ({d}–{d + 9})"))
         elif a in ("cm", "kg"):
             label, lo, hi, fallback = {
                 "cm": ("Height (cm)", 150, 250, 190),
@@ -666,6 +702,12 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
         verb = ("played at" if kind.startswith("Played")
                 else f"won a {V.postseason_one} at")
         label = f"{verb}\n{args[0]}"
+    elif kind == "X+ games at venue":
+        label = f"{args[1]}+ {V.games} at\n{args[0]}"
+    elif kind == "Played in a decade":
+        label = f"played in the\n{args[0]}s"
+    elif kind == "X+ of a stat in a grand final":
+        label = f"{args[1]}+ {_stat_label(args[0])}\nin a grand final"
     elif kind == "Ground performance":
         statuses = dict(getattr(C, "GROUND_STATUS_CHOICES", ()))
         metrics = dict(getattr(C, "GROUND_METRIC_CHOICES", ()))

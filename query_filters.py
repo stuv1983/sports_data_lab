@@ -3,6 +3,11 @@
 The compiler accepts a compact, shell-like query string and produces one
 parameterised SQLite statement. Only schema-declared columns and statistics
 can become SQL identifiers; user values always remain bound parameters.
+
+Sport-specific tokens (captaincy, draft, family) are not built in: a sport
+registers :class:`SearchExtension` handlers via ``search_extension_modules``
+on its Sport entry, and callers pass ``sport.search_extensions()`` through
+``compile_query``. This module stays free of any sport's tables.
 """
 
 from __future__ import annotations
@@ -104,18 +109,37 @@ def _has_values(con, table: str, column: str) -> bool:
 #: Advanced Search key -> the column each sport stores it in.
 _PHYSICAL_COLUMNS = {"height": "height_cm", "weight": "weight_kg"}
 
-#: Trusted draft rows joined to the player they resolved to. Shared by
-#: every draft token so they agree on which links count -- an ambiguous
-#: link must not answer a search any more than it answers a grid square.
-_DRAFTED = ("SELECT dl.player_id FROM draft d JOIN draft_links dl "
-            "ON dl.draft_rowid = d.rowid "
-            "WHERE dl.match_status IN ('unique','resolved') "
-            "AND dl.player_id IS NOT NULL")
+
+class SearchExtension:
+    """One sport's extra search tokens, registered on its Sport entry.
+
+    The compiler offers every token its built-in fields do not recognise
+    to each extension in turn. A ``claim`` returning True consumes the
+    token -- accumulating whatever state the extension needs, and raising
+    :class:`QuerySyntaxError` for a value it cannot read -- and ``finish``
+    then returns ``(sql, params)`` fragments to AND into the player WHERE
+    clause, each referencing ``p.<player_id>``. Instances are created
+    fresh per query by the sport's ``extensions()`` factory, so claims may
+    keep state across tokens; checks that need the database (is a layer
+    loaded?) belong in ``finish``, which is where ``con`` arrives.
+
+    This is what keeps the compiler sport-agnostic: captaincy, draft and
+    family tokens are AFL data shapes and live in afl/search_tokens.py,
+    declared by ``Sport.search_extension_modules`` the same way BUILDERS
+    declare grid constraints.
+    """
+
+    def claim(self, key: str, operator: str, value: str) -> bool:
+        return False
+
+    def finish(self, schema, con) -> list:
+        return []
 
 
-def _require_draft(con) -> None:
-    if not _table_exists(con, "draft") or not _table_exists(con, "draft_links"):
-        raise QuerySyntaxError("Draft data is not loaded")
+def _field_only(key: str, operator: str) -> None:
+    """Reject comparison operators on tokens that only take field:value."""
+    if operator not in {":", "="}:
+        raise QuerySyntaxError(f"{key} supports only field:value syntax")
 
 
 def _club_identities(schema, value: str) -> list | None:
@@ -251,8 +275,13 @@ def _parse(query: str) -> tuple[list[tuple[str, str, str]], QuerySpec]:
     return tokens, spec
 
 
-def compile_query(schema, query: str, con=None):
-    """Compile a search expression into ``(sql, params, QuerySpec)``."""
+def compile_query(schema, query: str, con=None, extensions=()):
+    """Compile a search expression into ``(sql, params, QuerySpec)``.
+
+    ``extensions`` is the sport's :class:`SearchExtension` list, usually
+    ``sport.search_extensions()``; tokens no built-in field recognises are
+    offered to them before being rejected as unknown.
+    """
     tokens, spec = _parse(query)
     s = schema
     stats = set(s.stats)
@@ -269,8 +298,6 @@ def compile_query(schema, query: str, con=None):
     avg_params: list[Any] = []
     career_conditions: list[str] = []
     career_params: list[Any] = []
-    captain_conditions: list[str] = []
-    captain_params: list[Any] = []
 
     aliases = {
         "games": s.career_games,
@@ -366,74 +393,6 @@ def compile_query(schema, query: str, con=None):
                 f"WHERE pg.{s.is_final}=1)"
             )
             player_where.append(predicate if wanted else f"NOT {predicate}")
-        elif key == "captain":
-            if not _boolean(value):
-                player_where.append(
-                    f"p.{s.player_id} NOT IN (SELECT cp.player_id FROM captaincies cp "
-                    "WHERE cp.match_status IN ('unique','resolved'))"
-                )
-            else:
-                captain_conditions.append("1=1")
-        elif key == "captain_club":
-            captain_conditions.append("LOWER(cp.club)=LOWER(?)")
-            captain_params.append(value)
-        elif key in {"captain_year", "captain_season"}:
-            lo, hi = _range(value, key)
-            captain_conditions.append("cp.season BETWEEN ? AND ?")
-            captain_params.extend([lo, hi])
-        elif key == "award":
-            if not _table_exists(con, "awards") or not _table_exists(con, "person_links"):
-                raise QuerySyntaxError("Award data is not loaded")
-            player_where.append(
-                f"p.{s.player_id} IN (SELECT al.player_id FROM awards a JOIN person_links al "
-                "ON al.dg_person_id=a.dg_person_id "
-                "WHERE al.match_status IN ('from_draft','unique','resolved') "
-                "AND a.award_slug=?)"
-            )
-            params.append(value)
-        elif key in {"recruited_from", "recruited", "from_club"}:
-            _require_draft(con)
-            # `original_club` is a path -- "Greythorn / Xavier College /
-            # Oakleigh U18" -- so the term is matched against a whole step
-            # of it. The rule lives with the other path-reading code
-            # rather than being spelled out again here; it is pure text
-            # handling with nothing sport-specific to import.
-            from afl import recruitment
-
-            player_where.append(
-                f"p.{s.player_id} IN ({_DRAFTED} AND "
-                f"{recruitment.segment_or_prefix_sql('d.original_club')})"
-            )
-            params.extend([value, value])
-        elif key in {"pick", "draft_pick"}:
-            _require_draft(con)
-            lo, hi = _range(value, key)
-            # National draft only. Draftguru restarts pick numbering for
-            # the rookie, pre-season and mid-season drafts, so an
-            # unqualified `pick:1..10` sweeps in four different pick 1s.
-            player_where.append(
-                f"p.{s.player_id} IN ({_DRAFTED} "
-                "AND LOWER(d.draft_type) LIKE '%national%' "
-                "AND d.pick BETWEEN ? AND ?)"
-            )
-            params.extend([lo, hi])
-        elif key in {"draft_year", "drafted_year"}:
-            _require_draft(con)
-            lo, hi = _range(value, key)
-            player_where.append(
-                f"p.{s.player_id} IN ({_DRAFTED} "
-                "AND d.draft_year BETWEEN ? AND ?)")
-            params.extend([lo, hi])
-        elif key == "drafted_by":
-            if not _table_exists(con, "draft") or not _table_exists(con, "draft_links"):
-                raise QuerySyntaxError("Draft data is not loaded")
-            player_where.append(
-                f"p.{s.player_id} IN (SELECT dl.player_id FROM draft d JOIN draft_links dl "
-                "ON dl.draft_rowid=d.rowid "
-                "WHERE dl.match_status IN ('unique','resolved') "
-                "AND LOWER(d.club) LIKE ? ESCAPE '\\')"
-            )
-            params.append(names.like_contains(value.lower()))
         elif key.startswith("game."):
             stat = key.split(".", 1)[1]
             if stat not in stats:
@@ -485,7 +444,11 @@ def compile_query(schema, query: str, con=None):
             else:
                 raise QuerySyntaxError(f"Unknown career statistic: {stat}")
         else:
-            raise QuerySyntaxError(f"Unknown search field: {key}")
+            for extension in extensions:
+                if extension.claim(key, operator, value):
+                    break
+            else:
+                raise QuerySyntaxError(f"Unknown search field: {key}")
 
     for club in club_all:
         names_list = _club_identities(s, club)
@@ -576,15 +539,10 @@ def compile_query(schema, query: str, con=None):
         )
         params.extend(career_params)
 
-    if captain_conditions:
-        if not _table_exists(con, "captaincies"):
-            raise QuerySyntaxError("Captaincy data is not loaded")
-        player_where.append(
-            f"p.{s.player_id} IN (SELECT cp.player_id FROM captaincies cp "
-            "WHERE cp.match_status IN ('unique','resolved') AND "
-            + " AND ".join(captain_conditions) + ")"
-        )
-        params.extend(captain_params)
+    for extension in extensions:
+        for fragment, values in extension.finish(s, con):
+            player_where.append(fragment)
+            params.extend(values)
 
     orders = {
         "obscurity": f"p.{s.obscurity} DESC, p.{s.career_games} ASC",

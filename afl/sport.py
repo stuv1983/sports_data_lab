@@ -158,6 +158,7 @@ SPORT = Sport(
                     "`python -m utils.afl.load_club_sources` for Club Explorer."),
     family_hint=("Run `afl/scrape_wikipedia_families.py`, then "
                  "`python -m utils.afl.load_family_relationships` for family links."),
+    search_extension_modules=("afl.search_tokens",),
     search_examples=(
         'club:Hawthorn games>=200 sort:obscurity',
         'game.disposals>=40 postseason:true',

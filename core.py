@@ -533,6 +533,20 @@ class Generic:
         return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
                     WHERE {s.is_final} = 1 AND {stat} >= ?""", [n])
 
+    def postseason_stat_total_min(self, stat, n):
+        """Accumulated `n` or more of `stat` across a whole finals career.
+
+        "Kicked 30+ goals in finals" is a different question from a
+        single finals game and from the regular-season career total, and
+        neither of those could stand in for it. NULL games are excluded
+        rather than counted as zero, same as every other total here.
+        """
+        self._check(stat)
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {s.is_final} = 1 AND {stat} IS NOT NULL
+                    GROUP BY {s.player_id} HAVING SUM({stat}) >= ?""", [n])
+
     def postseason_stat_average_min(self, stat, avg, min_games=None):
         """Averaged `avg` or more of `stat` across finals."""
         self._check(stat)
@@ -654,6 +668,29 @@ class Generic:
         sql = (f"SELECT DISTINCT {s.player_id} FROM {s.games} "
                f"WHERE {s.venue} IN ({placeholders})")
         return sql, list(names)
+
+    def games_at_venue_min(self, venue, n):
+        """Played `n` or more games at one venue.
+
+        "100+ games at the MCG" is a home-ground tenure question, not the
+        "ever appeared there" one played_at_venue answers. Same alias
+        canonicalisation and escaped LIKE as the other venue builders.
+        """
+        import names
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {s.venue} LIKE ? ESCAPE '\\'
+                    GROUP BY {s.player_id} HAVING COUNT(*) >= ?""",
+                [names.like_contains(s.canonical_venue(venue)), n])
+
+    def played_in_decade(self, decade):
+        """Played at least one game in the decade starting `decade`.
+
+        Any year inside the decade names it: 2015 means the 2010s, which
+        is 2010-2019 inclusive -- the wording Gridley itself uses.
+        """
+        start = int(decade) - (int(decade) % 10)
+        return self.played_in_season_range(start, start + 9)
 
     # -- post-season (generic shape; sports name it finals or playoffs) --
     def postseason_games_min(self, n):

@@ -197,6 +197,15 @@ def _parse_exact(text):
 
     t = " ".join(str(text).lower().split())
     t = t.replace("’", "'").replace("+", "+ ")
+    # League-name noise: "100+ VFL/AFL GAMES" and "100+ GAMES" are the
+    # same question, and every rule below should see them the same way.
+    t = re.sub(r"\bvfl\s*/\s*afl\b|\bafl\s*/\s*vfl\b|\bvfl\b"
+               r"|\bafl\b(?!\s*tables)", " ", t)
+    # "KICKED 30+ GOALS" is the scoring verb, not the kicks statistic --
+    # the stat table's "kick" sits inside "kicked" and was winning the
+    # word race, answering a goals criterion with kicks. The kicks stat
+    # is always phrased as the noun ("20+ KICKS"), never past tense.
+    t = re.sub(r"\bkicked\b", " ", t)
     t = " ".join(t.split())
 
     # 1. A bare club name.
@@ -359,10 +368,13 @@ def _parse_exact(text):
                 return C.captain_of(club), f"{club} captain"
         return C.club_captain(), "club captain"
 
-    # SDL_RISING_STAR_PARSE — optional FootyWire nomination layer.
+    # SDL_RISING_STAR_PARSE — optional FootyWire nomination layer. A bare
+    # "RISING STAR" axis means the nomination: Gridley words the award as
+    # "RISING STAR WINNER", which the awards block above already claimed,
+    # so the nominee wording is optional here (board #1117 says only
+    # "RISING STAR").
     if (re.search(r"\brising star\b", t)
-            and re.search(r"\bnominee|nomination|nominated\b", t)
-            and not re.search(r"\bwinner|won\b", t)):
+            and not re.search(r"\b(winner|won|medallist)\b", t)):
         years = [int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", t)]
         aliases = globals().get(
             "CLUB_ALIASES", {club.lower(): club for club in C.CLUBS})
@@ -416,6 +428,14 @@ def _parse_exact(text):
         canon = C.VENUE_ALIASES[venue_hit]
         if re.search(r"won a final|final win", t):
             return C.won_a_final_at(canon), f"won a final at {venue_hit}"
+        # "100+ GAMES AT THE MCG" is a tenure count, and the bare
+        # played-at fallback below used to answer it as "ever appeared
+        # there" -- confidently wrong by a hundred games.
+        m = re.search(r"(\d+)\s*\+?\s*(?:games?|matches)\b", t)
+        if m:
+            count = int(m.group(1))
+            return (C.games_at_venue_min(canon, count),
+                    f"{count}+ games at {venue_hit}")
         return C.played_at_venue(canon), f"played at {venue_hit}"
 
     # 3c. "<CLUB> FIRST CAREER GAME" / "DEBUTED FOR <CLUB>"
@@ -473,6 +493,19 @@ def _parse_exact(text):
     if re.search(r"(won|win|winner).{0,12}grand final|grand final (win|winner)",
                  t):
         return C.premiership_player(), "premiership player"
+    # "3+ GOALS IN A GRAND FINAL" is a feat on the day, and the bare
+    # participation rule below used to swallow it -- a stat criterion
+    # answered as merely having been there.
+    gf_stat = (None if _is_max(t)
+               else next((w for w in STAT_WORDS_BY_LENGTH if w in t), None))
+    if gf_stat and "grand final" in t:
+        m = re.search(r"([\d.]+)\s*\+?", t)
+        if m:
+            raw = float(m.group(1))
+            n = int(raw) if raw.is_integer() else raw
+            col = STAT_WORDS[gf_stat]
+            return (C.stat_in_a_grand_final(col, n),
+                    f"{n}+ {col} in a grand final")
     if re.search(r"played (in )?a grand final|grand final", t):
         return C.played_a_grand_final(), "played a grand final"
     # "WON A FINALS GAME" -- a finals win anywhere, as opposed to
@@ -537,6 +570,16 @@ def _parse_exact(text):
                 if is_avg:
                     return (C.finals_stat_average_min(col, n),
                             f"{n}+ {col} avg in finals")
+                # Plural "finals" with no single-game wording is the
+                # career total across every final -- "KICKED 30+ GOALS IN
+                # FINALS" -- where "in a final" stays one game. Reading
+                # the plural as a single game answered a question about a
+                # career with a bar nobody has cleared in one afternoon.
+                if (re.search(r"\bfinals\b", t)
+                        and not re.search(r"\bin (?:a|an|one) final\b"
+                                          r"|\bsingle final\b", t)):
+                    return (C.finals_stat_total_min(col, n),
+                            f"{n}+ {col} in finals (career)")
                 return (C.stat_in_a_final(col, n),
                         f"{n}+ {col} in a final")
 

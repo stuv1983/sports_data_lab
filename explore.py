@@ -405,7 +405,8 @@ def _find_players(sport, con):
         return
 
     try:
-        sql, params, spec = Q.compile_query(sc, query, con=con)
+        sql, params, spec = Q.compile_query(
+            sc, query, con=con, extensions=sport.search_extensions())
         frame = pd.read_sql_query(sql, con, params=params)
     except (Q.QuerySyntaxError, ValueError) as exc:
         st.error(str(exc))
@@ -802,7 +803,7 @@ def _career_charts(sport, seasons, V) -> None:
     for column, (title, chart) in zip(st.columns(len(drawn)), drawn):
         with column:
             st.caption(title)
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
 
 
 def _player_card_logos(sport, con, clubs_hist):
@@ -1081,6 +1082,8 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                 brownlow, brownlow["Season"].tolist(), sport, con,
                 key=sport.k(key_prefix, "brownlow", pid), nested=nested)
 
+    _form_section(sport, con, pid, key_prefix, revision)
+
     st.markdown(f"### Biggest {V.games}")
     metric = st.selectbox("Ranked by", list(sc.stats),
                           format_func=labels.title,
@@ -1113,7 +1116,136 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                           if c not in ("Player", "PlayerID")])
 
 
+def _form_section(sport, con, pid, key_prefix, revision) -> None:
+    """A stat across the whole career with its rolling average on top.
+
+    Game-grain sports chart every recorded game by career game number; a
+    season-grain sport (MLB — `schema.games_per_row` is set) charts the
+    per-game rate of each season instead, because it has no game rows to
+    roll over. Either way the average is taken over *recorded* entries
+    only: a career that straddles a stat's first recorded season starts
+    its line where the record starts, not at an invented zero.
+    """
+    import charts
+
+    V, sc = sport.vocab, sport.schema
+    st.markdown("### Form")
+
+    stats = list(sc.stats)
+    default = stats.index(sc.game_score) if sc.game_score in stats else 0
+    left, right = st.columns([2, 1])
+    stat = left.selectbox("Statistic", stats, index=default,
+                          format_func=labels.title,
+                          key=sport.k(key_prefix, "form_stat", pid))
+    warning = sport.stat_era_warning(stat)
+
+    if sc.games_per_row:
+        window = 3
+        right.caption(f"{window}-{V.season} average")
+        sql = (f"SELECT {sc.season} AS Season, "
+               f"ROUND(CAST(SUM({stat}) AS REAL) "
+               f"/ NULLIF(SUM({sc.games_per_row}), 0), 2) AS Value "
+               f"FROM {sc.games} WHERE {sc.player_id} = ? "
+               f"AND {sc.is_final} = 0 AND {stat} IS NOT NULL "
+               f"GROUP BY {sc.season} ORDER BY {sc.season}")
+        frame = _read_frame(sql, (pid,), revision, con)
+        chart = charts.rolling_form_chart(
+            frame, "Season", "Value",
+            f"{labels.title(stat)} per {V.game}", window,
+            x_title=V.season.capitalize(), ordinal_x=True)
+        caption = (f"Each bar is one {V.season}'s per-{V.game} rate; "
+                   f"the line is the {window}-{V.season} average.")
+    else:
+        window = right.segmented_control(
+            "Window", [5, 10, 20], default=10,
+            key=sport.k(key_prefix, "form_window", pid),
+            label_visibility="collapsed") or 10
+        sql = (f"SELECT {sc.career_game_no} AS Game, {stat} AS Value "
+               f"FROM {sc.games} WHERE {sc.player_id} = ? "
+               f"ORDER BY {sc.career_game_no}")
+        frame = _read_frame(sql, (pid,), revision, con)
+        chart = charts.rolling_form_chart(
+            frame, "Game", "Value", labels.title(stat), int(window),
+            x_title=f"Career {V.game}")
+        caption = (f"Each bar is one {V.game}; the line is the mean of "
+                   f"the last {window} {V.games} the stat was recorded "
+                   f"in, and starts once {window} exist.")
+
+    if chart is None:
+        st.caption(f"{labels.title(stat)} was not recorded for any of "
+                   f"this player's {V.games}."
+                   + (f" {warning}" if warning else ""))
+        return
+    if warning:
+        st.caption(f"⚠ {warning}")
+    st.altair_chart(chart, width="stretch")
+    st.caption(caption)
+
+
 # ---------------------------------------------------- player comparison
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _career_rates(sport_key, revision, _con) -> pd.DataFrame:
+    """Career per-game rates for every qualifying player, one stat a column.
+
+    The percentile a profile bar shows is a rank within this frame, so
+    who qualifies changes every number: the floor is the same career
+    games minimum the constraint engine's averages use. Season-grain
+    sports rate SUM(stat)/SUM(games) over regular-season rows; game-grain
+    sports average the game rows, NULLs excluded either way.
+    """
+    import sports as _sports
+
+    sport = _sports.get(sport_key)
+    sc = sport.schema
+    stats = list(sc.stats)[:8]
+    if sc.games_per_row:
+        selects = ", ".join(
+            f"CAST(SUM({stat}) AS REAL) / NULLIF(SUM({sc.games_per_row}), 0)"
+            f" AS {stat}" for stat in stats)
+        volume = f"SUM({sc.games_per_row})"
+        where = f"WHERE {sc.is_final} = 0"
+    else:
+        selects = ", ".join(f"AVG({stat}) AS {stat}" for stat in stats)
+        volume = "COUNT(*)"
+        where = ""
+    frame = pd.read_sql_query(
+        f"SELECT {sc.player_id} AS pid, {volume} AS n, {selects} "
+        f"FROM {sc.games} {where} GROUP BY {sc.player_id} "
+        f"HAVING n >= {int(core.Generic.CAREER_AVG_MIN_GAMES)}",
+        _con)
+    for stat in stats:
+        frame[f"{stat}__pct"] = frame[stat].rank(pct=True) * 100
+    return frame
+
+
+def _percentile_profile(sport, con, revision, a, b):
+    """A tidy (Player, Attribute, Value, Percentile) frame for two careers.
+
+    Returns (frame, skipped): attributes neither player has a recorded
+    rate for are skipped and named, so the chart never draws a zero for
+    "the source measured nothing".
+    """
+    rates = _career_rates(sport.key, revision, con)
+    stats = list(sport.schema.stats)[:8]
+    rows, skipped = [], []
+    by_pid = rates.set_index("pid")
+    for stat in stats:
+        drawn = False
+        for pid, name in (a, b):
+            if pid in by_pid.index:
+                value = by_pid.at[pid, stat]
+                pct = by_pid.at[pid, f"{stat}__pct"]
+                if pd.notna(value) and pd.notna(pct):
+                    rows.append({"Player": name,
+                                 "Attribute": labels.title(stat),
+                                 "Value": round(float(value), 2),
+                                 "Percentile": float(pct)})
+                    drawn = True
+        if not drawn:
+            skipped.append(labels.title(stat))
+    return pd.DataFrame(rows), skipped
+
 
 def _compare_players(sport, con, player_picker):
     """Two careers side by side, honest about what is comparable."""
@@ -1147,6 +1279,30 @@ def _compare_players(sport, con, player_picker):
         m1.metric(V.games.capitalize(), f"{p.career_games:,}")
         m2.metric(V.score.capitalize(), f"{p.career_score:,}")
         m3.metric(V.postseason.capitalize(), f"{p.finals:,}")
+
+    # -- skill profile --------------------------------------------------
+    import charts
+
+    name_a, name_b = a.player, b.player
+    if name_a == name_b:            # 460 names belong to more than one player
+        name_a = f"{a.player} ({a.span})"
+        name_b = f"{b.player} ({b.span})"
+    profile, skipped = _percentile_profile(
+        sport, con, _db_revision(sport.db),
+        (a_sel[0], name_a), (b_sel[0], name_b))
+    profile_chart = charts.percentile_profile_chart(profile,
+                                                    (name_a, name_b))
+    if profile_chart is not None:
+        st.markdown("#### Skill profile")
+        st.caption(
+            f"League percentile of each per-{V.game} rate, ranked among "
+            f"players with {core.Generic.CAREER_AVG_MIN_GAMES}+ career "
+            f"{V.games}. A missing bar is a rate the era never recorded "
+            f"for that career, not a zero.")
+        st.altair_chart(profile_chart, width="stretch")
+        if skipped:
+            st.caption("Not recorded for either career: "
+                       + ", ".join(skipped) + ".")
 
     # -- career shape ---------------------------------------------------
     st.markdown("#### Career")
@@ -1408,6 +1564,70 @@ def leaderboard_page(sport, con):
         df, player_ids, sport, con, key=sport.k("lb_results"))
     with st.expander("SQL"):
         st.code(q, language="sql")
+
+    _quadrant_section(sport, con, stat, where, params, revision)
+
+
+def _quadrant_section(sport, con, stat, where, params, revision) -> None:
+    """Career volume against per-game efficiency, quartered by medians.
+
+    Behind a toggle because it aggregates every qualifying career: the
+    leaderboard above stays instant and this renders only when asked.
+    The active context filters carry over, so quartering "the field"
+    means the field currently being looked at. Clicking a point opens
+    that player's card.
+    """
+    import charts
+    import components
+
+    V, sc = sport.vocab, sport.schema
+    if not st.toggle(f"Volume vs efficiency (career {labels.words(stat)})",
+                     key=sport.k("lb_quadrant_on")):
+        return
+
+    games_word = V.games.capitalize()
+    rate_column = f"{labels.title(stat)} per {V.game}"
+    floor = int(core.Generic.CAREER_AVG_MIN_GAMES)
+    if sc.games_per_row:
+        volume = f"SUM(g.{sc.games_per_row})"
+        rate = (f"ROUND(CAST(SUM(g.{stat}) AS REAL) "
+                f"/ NULLIF(SUM(g.{sc.games_per_row}), 0), 2)")
+    else:
+        volume = "COUNT(*)"
+        rate = f"ROUND(AVG(g.{stat}), 2)"
+    quadrant_sql = f"""
+        SELECT p.{sc.player_id} AS PlayerID, g.{sc.player} AS Player,
+               {volume} AS "{games_word}", {rate} AS "{rate_column}"
+        FROM {sc.games} g JOIN {sc.players} p
+          ON p.{sc.player_id} = g.{sc.player_id}
+        WHERE {where} AND g.{stat} IS NOT NULL
+        GROUP BY g.{sc.player_id}
+        HAVING {volume} >= {floor}
+        ORDER BY SUM(g.{stat}) DESC LIMIT 400"""
+    frame = _read_frame(quadrant_sql, tuple(params), revision, con)
+    chart = charts.quadrant_chart(
+        frame, games_word, rate_column, "Player",
+        x_title=f"Career {V.games} with {labels.words(stat)} recorded",
+        y_title=rate_column, id_column="PlayerID")
+    if chart is None:
+        st.caption("Nothing qualifies under the current filters.")
+        return
+    st.caption(
+        f"The top 400 careers by total {labels.words(stat)} under the "
+        f"current filters, {floor}+ recorded {V.games} each. The dashed "
+        "lines are the medians of the shown field; the named points are "
+        "the furthest from them. Click a point to open that player.")
+    event = st.altair_chart(chart, on_select="rerun",
+                            key=sport.k("lb_quadrant", stat))
+    picked = [row.get("PlayerID")
+              for row in event.selection.get("quadrant", [])
+              if row.get("PlayerID") is not None]
+    if picked:
+        chosen = frame[frame["PlayerID"].isin(picked)]
+        components.clickable_player_table(
+            chosen.drop(columns=["PlayerID"]),
+            chosen["PlayerID"].tolist(), sport, con,
+            key=sport.k("lb_quadrant_pick", stat))
 
 
 # --------------------------------------------------- random discovery

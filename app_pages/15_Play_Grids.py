@@ -8,8 +8,8 @@ import accounts
 import core
 import ui_widgets
 
-# We removed the hardcoded admin check here because app.py handles access control 
-# via _PROTECTED_PAGES and accounts.can_access, which checks the admin policy toggle.
+# Access control lives in app.py (_PROTECTED_PAGES + accounts.can_access);
+# this page renders for whoever app.py let through and must not re-check.
 
 SPORT = st.session_state.SPORT
 con = st.session_state.con

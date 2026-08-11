@@ -45,9 +45,10 @@ def _all_query_params(query_params) -> dict:
         return dict(query_params)
 
 
-#: Fallback examples, in AFL data. A sport declares its own in sports.py --
-#: showing an NBA user `club:Hawthorn` teaches them a query that returns
-#: nothing and reads as the search being broken.
+#: Fallback examples, in AFL data. A sport declares its own via
+#: `search_examples` on its Sport entry -- showing an NBA user
+#: `club:Hawthorn` teaches them a query that returns nothing and reads as
+#: the search being broken.
 EXAMPLES = [
     'club:Hawthorn captain:true games>=100 sort:obscurity',
     'captain_club:Carlton captain_year:1995..2001',
@@ -126,13 +127,24 @@ def _suggest_close_names(sport, query, state_key, revision):
                 args=(state_key, query, term, name))
 
 
-def search_page(sport, con):
+def url_query() -> str:
+    """The search expression the current URL encodes, or an empty string.
+
+    The page hosting both search modes reads this to decide which one a
+    deep link means: a shared ``?q=`` or structured-parameter link is a
+    player-search query, so that mode should open holding it.
+    """
+    return Q.query_from_params(_all_query_params(st.query_params)).strip()
+
+
+def search_page(sport, con, heading=True):
     """Render the reusable, URL-addressable player search page."""
     V = sport.vocab
     examples = _examples(sport)
     has_family = getattr(sport.C, "family_relationships_available", None)
 
-    st.markdown("# Advanced Search")
+    if heading:
+        st.markdown("# Advanced Search")
     st.caption(
         f"Combine player, {V.club}, era, match-stat and career filters. "
         "Values are parameterised; only known fields and statistics can "
@@ -190,7 +202,9 @@ def search_page(sport, con):
             ensure = getattr(sport.C, helper_name, None)
             if ensure:
                 ensure(con)
-        sql, params, spec = Q.compile_query(sport.schema, query, con=con)
+        sql, params, spec = Q.compile_query(
+            sport.schema, query, con=con,
+            extensions=sport.search_extensions())
         revision = _db_revision(sport.db)
         frame = _run_query(sql, tuple(params), revision, con)
     except (Q.QuerySyntaxError, ValueError) as exc:

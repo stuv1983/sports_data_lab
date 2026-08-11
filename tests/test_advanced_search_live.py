@@ -52,7 +52,8 @@ def table_exists(con: sqlite3.Connection, name: str) -> bool:
 
 def run_query(schema, con, query: str) -> tuple[list[str], list[str]]:
     """Return (player names, description strings) for one Advanced Search query."""
-    sql, params, spec = Q.compile_query(schema, query, con=con)
+    sql, params, spec = Q.compile_query(schema, query, con=con,
+                                        extensions=EXTENSIONS())
     rows = con.execute(sql, params).fetchall()
     names = [row[0] for row in rows]
     return names, Q.describe(spec)
@@ -72,8 +73,9 @@ def main(argv: list[str] | None = None) -> int:
 
     import data_paths
     import sports
-    global Q
+    global Q, EXTENSIONS
     import query_filters_family as Q
+    EXTENSIONS = sports.AFL.search_extensions
 
     db_path = args.db or data_paths.sport_db("afl", "gridley.db")
     if not Path(db_path).is_file():
@@ -236,12 +238,9 @@ def main(argv: list[str] | None = None) -> int:
                 note(
                     False,
                     f"{query!r} parses and executes",
-                    "KNOWN ISSUE: afl/family_draft.py:ensure_family_draft_table() "
-                    "still uses the pre-hotfix placeholder strategy and "
-                    "crashes on the read-only Streamlit connection when the "
-                    "family_draft table has not been imported. Same class of "
-                    "bug as the one fixed in afl/family_relationships.py -- "
-                    "needs the same _query_only(con) guard backported.",
+                    "afl/family_draft.py:ensure_family_draft_table() tried "
+                    "to write on the read-only connection -- the "
+                    "_query_only(con) guard has regressed.",
                 )
             else:
                 raise
@@ -249,7 +248,8 @@ def main(argv: list[str] | None = None) -> int:
     # ---------------------------------------------------------------- 10
     print("\n10. Bad input is rejected, not silently ignored")
     try:
-        Q.compile_query(schema, "family_relation:not_a_real_relation", con=con)
+        Q.compile_query(schema, "family_relation:not_a_real_relation",
+                        con=con, extensions=EXTENSIONS())
         note(False, "an invalid family_relation value is rejected")
     except Q.QuerySyntaxError:
         note(True, "an invalid family_relation value is rejected")

@@ -191,6 +191,11 @@ class Sport:
     #: so the page cannot name a command without being told which.
     past_games_hint: str = ""
     family_hint: str = ""
+    #: Modules whose ``extensions()`` factory supplies this sport's extra
+    #: Advanced Search tokens (query_filters.SearchExtension instances).
+    #: The AFL declares afl.search_tokens for its captaincy, draft and
+    #: family filters; the shared compiler itself knows no sport's tables.
+    search_extension_modules: tuple = ()
     search_examples: tuple = ()
     grid_defaults: tuple = ()
     venue_display: dict = field(default_factory=dict)
@@ -296,6 +301,18 @@ class Sport:
             return importlib.import_module(self.lineup_module)
         except ImportError:
             return None
+
+    def search_extensions(self) -> list:
+        """Fresh SearchExtension instances for one Advanced Search compile.
+
+        Imported on use like `C`, so a sport with no extensions costs
+        nothing and a page can pass `sport.search_extensions()` for any
+        sport without knowing which declare extra tokens.
+        """
+        out = []
+        for name in self.search_extension_modules:
+            out.extend(importlib.import_module(name).extensions())
+        return out
 
     def daily_grid_fetcher(self):
         """The callable behind `daily_grid_feed`, or None when unset.

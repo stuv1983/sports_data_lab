@@ -89,6 +89,70 @@ def test_between_binds_both_ends():
     assert bag.values == {"p0": 50, "p1": 100}
 
 
+def test_the_full_operator_set_compiles_parameterised():
+    """=, !=, >, >=, <, <=: the operator comes from a fixed map and the
+    value always rides as a parameter."""
+    for label, sql_op in [("=", "="), ("!=", "<>"), (">", ">"),
+                          (">=", ">="), ("<", "<"), ("<=", "<=")]:
+        bag = QB.ParamBag()
+        clause = QB.comparison_clause("goals", label, 500, bag)
+        assert clause == f'"goals" {sql_op} :p0'
+        assert bag.values == {"p0": 500}
+    with pytest.raises(KeyError):
+        QB.comparison_clause("goals", "; DROP TABLE", 1, QB.ParamBag())
+
+
+def test_null_operators_take_no_parameters():
+    assert QB.null_clause("height_cm", missing=True) == '"height_cm" IS NULL'
+    assert QB.null_clause("height_cm", missing=False) == \
+        '"height_cm" IS NOT NULL'
+
+
+def test_ends_with_and_deliberate_wildcards():
+    """"ends with" escapes the reader's wildcards like every LIKE mode;
+    the pattern operator is the one place % and _ stay live -- and even
+    there the pattern is a bound parameter, never SQL text."""
+    bag = QB.ParamBag()
+    QB.like_clause("player", "50%", "ends with", bag)
+    assert bag.values["p0"] == "%50\\%"
+    bag = QB.ParamBag()
+    clause = QB.pattern_clause("player", "sm_th%", bag)
+    assert clause == '"player" LIKE :p0'
+    assert bag.values["p0"] == "sm_th%"
+
+
+def test_a_numeric_list_parses_forgivingly():
+    assert QB.parse_number_list("1, 5,10") == [1, 5, 10]
+    assert QB.parse_number_list("2.5, junk, 7") == [2.5, 7]
+    assert QB.parse_number_list("") == []
+
+
+def test_group_select_counts_per_group_and_still_gates_identifiers():
+    bag = QB.ParamBag()
+    predicates = [QB.comparison_clause("games", ">=", 100, bag)]
+    sql = QB.build_group_select(
+        "players", ["club"], predicates, "AND", 50, bag,
+        known_tables={"players"}, known_columns={"club", "games"})
+    assert 'COUNT(*) AS total' in sql and 'GROUP BY "club"' in sql
+
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE players (player TEXT, club TEXT, games INT)")
+    con.executemany("INSERT INTO players VALUES (?,?,?)",
+                    [("A", "Fitzroy", 150), ("B", "Fitzroy", 200),
+                     ("C", "Carlton", 250), ("D", "Carlton", 50)])
+    rows = con.execute(sql, bag.values).fetchall()
+    assert rows == [("Fitzroy", 2), ("Carlton", 1)]
+
+    with pytest.raises(ValueError):
+        QB.build_group_select("players", ["club) --"], [], "AND", 10,
+                              QB.ParamBag(), known_tables={"players"},
+                              known_columns={"club"})
+    with pytest.raises(ValueError):
+        QB.build_group_select("players", [], [], "AND", 10, QB.ParamBag(),
+                              known_tables={"players"},
+                              known_columns={"club"})
+
+
 # ---------------------------------------------------------------- assembly
 
 def test_build_select_assembles_and_the_statement_actually_runs():
@@ -146,7 +210,10 @@ def test_the_tree_config_is_generated_from_discovery_not_hardcoded():
     config = QB.condition_tree_config(cols, profiles)
     fields = config["fields"]
     assert fields["games"]["type"] == "number"
-    assert fields["games"]["fieldSettings"] == {"min": 0.0, "max": 400.0}
+    # No min/max on numeric fields: the observed extremes are a fact about
+    # yesterday's data, not a cap on what may be asked -- bounding at
+    # max(goals) forbade the question "what if someone kicks more".
+    assert "fieldSettings" not in fields["games"]
     # Low-cardinality text upgrades to a select of the real values.
     assert fields["club"]["type"] == "select"
     assert {v["value"] for v in fields["club"]["fieldSettings"]["listValues"]} \
@@ -227,3 +294,68 @@ def test_a_half_built_tree_filters_nothing_instead_of_erroring():
                         _rule("games", "equal", None))
     assert QB.compile_tree_node(incomplete, {"games"}, bag) is None
     assert bag.values == {}
+
+
+# ------------------------------------------------- grid-constraint mode
+
+def _constraint_fixture():
+    import core
+
+    con = sqlite3.connect(":memory:")
+    con.executescript("""
+        CREATE TABLE players (
+          player_id INTEGER, player TEXT, career_games INTEGER
+        );
+        CREATE TABLE games (player_id INTEGER, club_now TEXT);
+        INSERT INTO players VALUES (1,'Alpha',200), (2,'Beta',50),
+                                   (3,'Gamma',120), (4,'Delta',300);
+        INSERT INTO games VALUES (1,'A'), (2,'A'), (3,'B'), (4,'C');
+    """)
+    return con, core.Schema()
+
+
+def _played(club):
+    return ("SELECT player_id FROM games WHERE club_now = ?", [club])
+
+
+def _games_min(n):
+    return ("SELECT player_id FROM players WHERE career_games >= ?", [n])
+
+
+def test_constraint_sets_or_within_a_group_and_between_groups():
+    """(played A OR played B) AND 100+ games -- the use case the mode
+    exists for, with parameter order following clause order."""
+    con, schema = _constraint_fixture()
+    where, params = QB.compile_constraint_sets(
+        schema, [[_played("A"), _played("B")], [_games_min(100)]])
+    rows = con.execute(
+        f"SELECT p.player FROM players p WHERE {where} ORDER BY p.player",
+        params).fetchall()
+    assert [r[0] for r in rows] == ["Alpha", "Gamma"]
+
+
+def test_all_and_constraint_sets_use_the_engine_intersection():
+    """Single-member groups compile through core._where, so the MLB
+    team-and-season pairing rule keeps applying to plain AND chains."""
+    con, schema = _constraint_fixture()
+    where, params = QB.compile_constraint_sets(
+        schema, [[_played("A")], [_games_min(100)]])
+    rows = con.execute(
+        f"SELECT p.player FROM players p WHERE {where}", params).fetchall()
+    assert [r[0] for r in rows] == ["Alpha"]
+
+
+def test_a_row_marked_constraint_survives_an_or_group():
+    """MLB's played_for emits a row-scoped fragment; inside an OR group it
+    must compile to the EXISTS-style membership, not raw marker text."""
+    import core
+
+    con, schema = _constraint_fixture()
+    marked = (f"{core.ROW_MARKER}team@g.club_now = ?", ["C"])
+    where, params = QB.compile_constraint_sets(
+        schema, [[marked, _played("B")]])
+    assert core.ROW_MARKER not in where
+    rows = con.execute(
+        f"SELECT p.player FROM players p WHERE {where} ORDER BY p.player",
+        params).fetchall()
+    assert [r[0] for r in rows] == ["Delta", "Gamma"]

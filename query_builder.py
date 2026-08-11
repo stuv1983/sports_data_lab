@@ -1,18 +1,23 @@
-"""query_builder.py -- The graphical SQL query builder behind Advanced Search.
+"""query_builder.py -- The graphical SQL query builder on Advanced Search.
 
-Replaces the text-syntax search with a visual builder that works for every
-registered sport, because nothing in here knows a sport's columns: the whole
-schema -- tables, columns, types -- is discovered from the live database at
-render time, and the UI is generated from what discovery found. Load a new
-sport, or add a column to an existing build, and the builder simply offers it.
+One of the page's two modes (the other is the player-search language in
+advanced_search.py). It works on any table of any registered sport because
+nothing in here knows a sport's columns: the whole schema -- tables,
+columns, types -- is discovered from the live database at render time, and
+the UI is generated from what discovery found. Load a new sport, or add a
+column to an existing build, and the builder simply offers it.
 
-Two builder modes, chosen in the sidebar:
+Three builder modes, chosen in the sidebar:
 
+* **Grid constraints** -- the Grid Solver's own criteria catalogue
+  (BUILDER_GROUPS: a category, a question, its arguments), chained with
+  AND/OR into a ranked player search. "Played for Collingwood AND 150+
+  career games" is three picks, not a syntax.
 * **Visual builder** -- `streamlit-condition-tree`, a drag-and-drop tree of
-  nested AND/OR groups that the component itself compiles to a SQL WHERE
-  clause.
-* **Filter panel** -- native Streamlit widgets, one per column the reader
-  chooses to filter on, compiled here into a fully parameterised WHERE.
+  nested AND/OR groups; its structured tree is compiled server-side here.
+* **Filter panel** -- native Streamlit widgets, one operator-driven filter
+  per column the reader chooses, compiled into a fully parameterised
+  WHERE, with an optional COUNT(*)-per-group aggregation.
 
 SECURITY MODEL
 --------------
@@ -55,6 +60,7 @@ except ImportError:          # pragma: no cover - exercised only when absent
     condition_tree = None
     HAS_CONDITION_TREE = False
 
+MODE_CONSTRAINTS = "Grid constraints"
 MODE_TREE = "Visual builder"
 MODE_FILTERS = "Filter panel"
 
@@ -251,8 +257,47 @@ def like_clause(column: str, text: str, mode: str, bag: ParamBag) -> str:
                    .replace("_", "\\_"))
     pattern = {"contains": f"%{escaped}%",
                "starts with": f"{escaped}%",
+               "ends with": f"%{escaped}",
                "equals": escaped}[mode]
     return f"{_quote_ident(column)} LIKE {bag.add(pattern)} ESCAPE '\\'"
+
+
+def pattern_clause(column: str, pattern: str, bag: ParamBag) -> str:
+    """A LIKE match whose wildcards ARE the reader's, deliberately.
+
+    The one mode where `%` and `_` keep their SQL meanings -- "sm_th"
+    matches Smith and Smyth -- offered under a label that says so. The
+    pattern still rides as a bound parameter; only its wildcard
+    characters are live, never its structure.
+    """
+    return f"{_quote_ident(column)} LIKE {bag.add(pattern)}"
+
+
+def comparison_clause(column: str, operator: str, value, bag: ParamBag) -> str:
+    """One vetted comparison; the operator comes from this map, never text."""
+    sql_op = {"=": "=", "!=": "<>", ">": ">", ">=": ">=",
+              "<": "<", "<=": "<="}[operator]
+    return f"{_quote_ident(column)} {sql_op} {bag.add(value)}"
+
+
+def null_clause(column: str, missing: bool) -> str:
+    """`IS NULL` / `IS NOT NULL` -- no parameter, nothing user-typed."""
+    return f"{_quote_ident(column)} IS {'NULL' if missing else 'NOT NULL'}"
+
+
+def parse_number_list(text: str) -> list[float | int]:
+    """Comma-separated numbers for a numeric IN(...), bad tokens dropped."""
+    out: list[float | int] = []
+    for token in str(text).split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            value = float(token)
+        except ValueError:
+            continue
+        out.append(int(value) if value.is_integer() else value)
+    return out
 
 
 def build_select(table: str, columns, predicates, combinator: str,
@@ -284,6 +329,35 @@ def build_select(table: str, columns, predicates, combinator: str,
     return sql
 
 
+def build_group_select(table: str, group_columns, predicates,
+                       combinator: str, limit: int, bag: ParamBag,
+                       known_tables, known_columns) -> str:
+    """A COUNT(*) AS total per group, filtered the same way build_select is.
+
+    The aggregation the row-limit question keeps turning into: "how many
+    games at each venue", "players per debut season". Identifiers pass the
+    same discovery gate; groups sort by their count, biggest first, so the
+    answer leads with the headline.
+    """
+    if combinator not in ("AND", "OR"):
+        raise ValueError(f"Bad combinator: {combinator!r}")
+    _require_known(table, known_tables, "table")
+    if not group_columns:
+        raise ValueError("Group by at least one column.")
+    grouped = ", ".join(
+        _quote_ident(_require_known(c, known_columns, "column"))
+        for c in group_columns)
+    sql = (f"SELECT {grouped}, COUNT(*) AS total"
+           f"\nFROM {_quote_ident(table)}")
+    if predicates:
+        joiner = f"\n  {combinator} "
+        sql += "\nWHERE " + joiner.join(predicates)
+    sql += (f"\nGROUP BY {grouped}"
+            f"\nORDER BY total DESC, {grouped}"
+            f"\nLIMIT {bag.add(min(int(limit), MAX_ROWS))}")
+    return sql
+
+
 # ------------------------------------------------- WHERE construction (A)
 
 def condition_tree_config(cols, profiles: dict) -> dict:
@@ -306,9 +380,11 @@ def condition_tree_config(cols, profiles: dict) -> dict:
                      "type": type_map[col.kind]}
         profile = profiles.get(col.name, {})
         if col.kind in ("integer", "float"):
-            lo, hi = profile.get("lo"), profile.get("hi")
-            if lo is not None and hi is not None:
-                cfg["fieldSettings"] = {"min": float(lo), "max": float(hi)}
+            # No fieldSettings min/max: the column's observed extremes are
+            # a fact about yesterday's data, not a cap on what may be
+            # asked -- bounding the input at max(goals)=40 forbade the
+            # very question "what if someone kicks 41".
+            pass
         elif col.kind == "text" and profile.get("values"):
             cfg["type"] = "select"
             cfg["fieldSettings"] = {"listValues": [
@@ -441,86 +517,163 @@ def run_query(conn, sql: str, params: dict, revision) -> pd.DataFrame:
 
 # ------------------------------------------------------------------- page
 
+#: Operators offered per widget kind. The label the reader picks maps to
+#: exactly one clause builder below; nothing typed ever becomes an operator.
+_NUMERIC_OPS = ("≥", "≤", "=", "≠", ">", "<", "between", "one of",
+                "is missing", "is present")
+_TEXT_OPS = ("contains", "starts with", "ends with", "equals", "not equals",
+             "one of", "pattern (% and _ wildcards)",
+             "is missing", "is present")
+_DATE_OPS = ("between", "on or after", "on or before",
+             "is missing", "is present")
+
+_NUMERIC_SQL = {"≥": ">=", "≤": "<=", "=": "=", "≠": "!=", ">": ">", "<": "<"}
+
+
 def _filter_widget(container, sport, table: str, col: Column, profile: dict,
                    bag: ParamBag) -> str | None:
-    """One column's filter widget, mapped from its discovered kind, and the
-    predicate the reader's setting compiles to -- or None while the widget
-    sits in its "no filter" state.
+    """One column's filter: an operator picked for its type, then inputs.
 
-    The kind->widget mapping is the heart of the dynamic UI: integers get a
-    range slider over the column's real bounds, floats a min/max pair (a
-    slider's fixed step suits counts, not averages), booleans a three-way
-    Any/Yes/No (a plain checkbox cannot say "don't filter"), dates a range
-    picker, and text either a multiselect of the actual values or a
-    wildcard-safe LIKE, depending on measured cardinality.
+    Returns the parameterised predicate the setting compiles to, or None
+    while the widget sits in its "no filter" state. Every kind offers the
+    full operator set its type supports -- comparisons, ranges, lists,
+    text patterns, and IS NULL / IS NOT NULL for the columns whose empty
+    cells are the finding. Numeric inputs carry NO upper bound: the
+    column's observed maximum is shown as a hint, never enforced, because
+    yesterday's record is not a cap on what may be asked.
     """
     key = sport.k("qb", table, col.name)
     label = labels.words(col.name)
 
-    if col.kind == "integer":
-        lo, hi = profile.get("lo"), profile.get("hi")
-        if lo is None or hi is None or lo >= hi:
-            value = container.number_input(label, key=key, value=None)
-            return None if value is None else equals_clause(col.name, int(value), bag)
-        picked = container.slider(label, int(lo), int(hi),
-                                  (int(lo), int(hi)), key=key)
-        if picked == (int(lo), int(hi)):
-            return None          # full range = not actually filtering
-        return between_clause(col.name, picked[0], picked[1], bag)
-
-    if col.kind == "float":
-        lo, hi = profile.get("lo"), profile.get("hi")
-        a, b = container.columns(2)
-        low = a.number_input(f"{label} min", key=f"{key}:lo", value=None,
-                             placeholder=None if lo is None else f"{lo:g}")
-        high = b.number_input(f"{label} max", key=f"{key}:hi", value=None,
-                              placeholder=None if hi is None else f"{hi:g}")
-        if low is not None and high is not None:
-            return between_clause(col.name, float(low), float(high), bag)
-        if low is not None:
-            return f"{_quote_ident(col.name)} >= {bag.add(float(low))}"
-        if high is not None:
-            return f"{_quote_ident(col.name)} <= {bag.add(float(high))}"
-        return None
-
+    if col.kind in ("integer", "float"):
+        return _numeric_filter(container, key, label, col, profile, bag)
     if col.kind == "boolean":
         choice = container.segmented_control(
-            label, ["Any", "Yes", "No"], default="Any", key=key)
+            label, ["Any", "Yes", "No", "Missing"], default="Any", key=key)
         if choice == "Yes":
             return equals_clause(col.name, 1, bag)
         if choice == "No":
             return equals_clause(col.name, 0, bag)
+        if choice == "Missing":
+            return null_clause(col.name, missing=True)
         return None
-
     if col.kind in ("date", "datetime"):
-        bounds = _date_bounds(profile)
-        if bounds is None:
-            # Bounds unreadable as dates (SQLite will store anything):
-            # fall back to a text match rather than a picker that lies.
-            typed = container.text_input(label, key=key)
-            return like_clause(col.name, typed, "contains", bag) if typed else None
-        picked = container.date_input(label, value=bounds, key=key,
-                                      min_value=bounds[0], max_value=bounds[1])
+        return _date_filter(container, key, label, col, profile, bag)
+    return _text_filter(container, key, label, col, profile, bag)
+
+
+def _numeric_filter(container, key, label, col, profile, bag):
+    lo, hi = profile.get("lo"), profile.get("hi")
+    span = ("" if lo is None or hi is None
+            else f"data spans {lo:g}–{hi:g}")
+    op_col, value_col = container.columns((1, 2))
+    operator = op_col.selectbox(label, _NUMERIC_OPS, key=f"{key}:op")
+    cast = int if col.kind == "integer" else float
+    if operator == "is missing":
+        return null_clause(col.name, missing=True)
+    if operator == "is present":
+        return null_clause(col.name, missing=False)
+    if operator == "between":
+        a, b = value_col.columns(2)
+        low = a.number_input("from", key=f"{key}:lo", value=None,
+                             label_visibility="collapsed",
+                             placeholder=None if lo is None else f"{lo:g}")
+        high = b.number_input("to", key=f"{key}:hi", value=None,
+                              label_visibility="collapsed",
+                              placeholder=None if hi is None else f"{hi:g}")
+        if span:
+            value_col.caption(span)
+        if low is None or high is None:
+            return None
+        low, high = sorted((cast(low), cast(high)))
+        return between_clause(col.name, low, high, bag)
+    if operator == "one of":
+        typed = value_col.text_input(
+            "values", key=f"{key}:in", label_visibility="collapsed",
+            placeholder="e.g. 1, 5, 10")
+        chosen = parse_number_list(typed)
+        return in_clause(col.name, [cast(v) for v in chosen], bag) \
+            if chosen else None
+    value = value_col.number_input(
+        "value", key=f"{key}:val", value=None,
+        label_visibility="collapsed",
+        placeholder=span or "value",
+        help=None if not span else
+        f"No cap — {span}, but any value may be asked.")
+    if value is None:
+        return None
+    return comparison_clause(col.name, _NUMERIC_SQL[operator],
+                             cast(value), bag)
+
+
+def _text_filter(container, key, label, col, profile, bag):
+    values = profile.get("values")
+    op_col, value_col = container.columns((1, 2))
+    operator = op_col.selectbox(label, _TEXT_OPS, key=f"{key}:op",
+                                index=5 if values is not None else 0)
+    if operator == "is missing":
+        return null_clause(col.name, missing=True)
+    if operator == "is present":
+        return null_clause(col.name, missing=False)
+    if operator == "one of":
+        if values is not None:
+            chosen = value_col.multiselect(
+                "values", values, key=f"{key}:pick",
+                label_visibility="collapsed")
+        else:
+            typed = value_col.text_input(
+                "values", key=f"{key}:list", label_visibility="collapsed",
+                placeholder="comma, separated, values")
+            chosen = [part.strip() for part in typed.split(",")
+                      if part.strip()]
+        return in_clause(col.name, chosen, bag) if chosen else None
+    typed = value_col.text_input("value", key=f"{key}:val",
+                                 label_visibility="collapsed",
+                                 placeholder="text")
+    if not typed:
+        return None
+    if operator == "not equals":
+        return comparison_clause(col.name, "!=", typed, bag)
+    if operator.startswith("pattern"):
+        return pattern_clause(col.name, typed, bag)
+    return like_clause(col.name, typed, operator, bag)
+
+
+def _date_filter(container, key, label, col, profile, bag):
+    bounds = _date_bounds(profile)
+    op_col, value_col = container.columns((1, 2))
+    operator = op_col.selectbox(label, _DATE_OPS, key=f"{key}:op")
+    if operator == "is missing":
+        return null_clause(col.name, missing=True)
+    if operator == "is present":
+        return null_clause(col.name, missing=False)
+    if bounds is None:
+        # Bounds unreadable as dates (SQLite will store anything): a text
+        # match is honest where a picker would lie.
+        typed = value_col.text_input("value", key=f"{key}:txt",
+                                     label_visibility="collapsed")
+        return like_clause(col.name, typed, "contains", bag) if typed else None
+    column = f"DATE({_quote_ident(col.name)})"
+    # DATE() normalises whatever ISO-ish form the column stores before
+    # comparing, at the cost of the index -- correctness over speed.
+    if operator == "between":
+        picked = value_col.date_input(label, value=bounds, key=key,
+                                      min_value=bounds[0],
+                                      max_value=bounds[1],
+                                      label_visibility="collapsed")
         if not isinstance(picked, tuple) or len(picked) != 2:
             return None          # picker mid-edit: one end chosen so far
         if picked == bounds:
-            return None
-        # DATE() normalises whatever ISO-ish form the column stores before
-        # comparing, at the cost of the index -- correctness over speed.
-        return (f"DATE({_quote_ident(col.name)}) BETWEEN "
-                f"{bag.add(picked[0].isoformat())} AND "
-                f"{bag.add(picked[1].isoformat())}")
-
-    # text
-    values = profile.get("values")
-    if values is not None:
-        chosen = container.multiselect(label, values, key=key)
-        return in_clause(col.name, chosen, bag) if chosen else None
-    a, b = container.columns((2, 1))
-    typed = a.text_input(label, key=key)
-    mode = b.selectbox("Match", ["contains", "starts with", "equals"],
-                       key=f"{key}:mode")
-    return like_clause(col.name, typed, mode, bag) if typed else None
+            return None          # full range = not actually filtering
+        return (f"{column} BETWEEN {bag.add(picked[0].isoformat())} "
+                f"AND {bag.add(picked[1].isoformat())}")
+    picked = value_col.date_input(
+        label, value=bounds[0] if operator == "on or after" else bounds[1],
+        key=f"{key}:one", label_visibility="collapsed")
+    if picked is None:
+        return None
+    sql_op = ">=" if operator == "on or after" else "<="
+    return f"{column} {sql_op} {bag.add(picked.isoformat())}"
 
 
 def _date_bounds(profile: dict):
@@ -533,21 +686,205 @@ def _date_bounds(profile: dict):
     return (lo, hi) if lo <= hi else None
 
 
-def page(sport):
+# ------------------------------------------------- grid-constraint mode
+
+def compile_constraint_sets(schema, groups):
+    """AND of groups, OR within a group, over grid-builder constraints.
+
+    ``groups`` is a list of lists of ``(sql, params)`` constraints exactly
+    as BUILDERS produce them. When every group holds one constraint the
+    intersection compiles through core._where, keeping the Immaculate
+    Grid team-and-season pairing rule; a group with alternatives compiles
+    each member standalone and ORs the clauses, because "either of these"
+    has no one row to pair on.
+    """
+    import core
+
+    if groups and all(len(group) == 1 for group in groups):
+        return core._where([group[0] for group in groups], schema)
+    clauses: list[str] = []
+    params: list = []
+    for group in groups:
+        members = []
+        for sql, values in group:
+            parts = core._row_parts(sql)
+            if parts is not None:
+                clause, bound = core._row_exists([(parts[1], values)], schema)
+            else:
+                clause, bound = f"p.{schema.player_id} IN ({sql})", list(values)
+            members.append(clause)
+            params.extend(bound)
+        clauses.append("(" + " OR ".join(members) + ")"
+                       if len(members) > 1 else members[0])
+    return (" AND ".join(clauses) if clauses else "1=1"), params
+
+
+@st.cache_data(show_spinner=False, max_entries=128)
+def _cached_players(sql, params, revision, _con) -> pd.DataFrame:
+    frame = pd.read_sql_query(sql, _con, params=list(params))
+    return frame.convert_dtypes()
+
+
+def _constraints_mode(sport, revision) -> None:
+    """The Grid Solver's criteria as a search: pick, chain, rank.
+
+    Every criterion is chosen from the same organised catalogue the grid
+    builder uses -- a category, then the question, then its arguments --
+    so "Played for Collingwood AND 150+ career games" or "Drafted by
+    Hawthorn OR drafted by Geelong AND premiership player" is three picks,
+    not a syntax. OR joins a criterion into an either/or group with the
+    one before it; AND starts a new group every player must also satisfy.
+    """
+    import components
+    import db_pool
+    import ui_widgets
+
+    st.caption(
+        "Chain the grid's own criteria. **OR** joins a criterion into an "
+        "either/or group with the one above it; **AND** starts a new "
+        "requirement every player must also meet.")
+
+    side = st.sidebar
+    available = list(st.session_state.get("AVAILABLE")
+                     or sport.C.BUILDERS)
+    count_key = sport.k("qbc_count")
+    count = st.session_state.setdefault(count_key, 1)
+    add_col, drop_col = side.columns(2)
+    if add_col.button("Add criterion", icon=":material/add:",
+                      key=sport.k("qbc_add"), width="stretch"):
+        count = st.session_state[count_key] = count + 1
+    if drop_col.button("Remove last", icon=":material/remove:",
+                       key=sport.k("qbc_drop"), width="stretch",
+                       disabled=count <= 1):
+        count = st.session_state[count_key] = max(1, count - 1)
+
+    groups: list[list] = []
+    described: list[str] = []
+    for i in range(count):
+        joiner = "AND"
+        with st.container(border=True):
+            if i:
+                joiner = st.segmented_control(
+                    "Combine", ["AND", "OR"], default="AND",
+                    key=sport.k("qbc_join", i),
+                    label_visibility="collapsed") or "AND"
+            label, built = ui_widgets.axis_widget(
+                sport.k("qbc", i), "Played for club", None,
+                sport, revision, available)
+        if built is None:
+            continue
+        pretty = str(label).replace(chr(10), " ")
+        if i and joiner == "OR" and groups:
+            groups[-1].append(built)
+            described[-1] = f"{described[-1]} OR {pretty}"
+        else:
+            groups.append([built])
+            described.append(pretty)
+
+    if not groups:
+        st.info("Configure at least one criterion above to search.")
+        return
+
+    sc = sport.schema
+    V = sport.vocab
+    orders = {
+        "Most obscure": f"p.{sc.obscurity} DESC, p.{sc.career_games} ASC",
+        f"Most {V.games}": f"p.{sc.career_games} DESC",
+        f"Fewest {V.games}": f"p.{sc.career_games} ASC",
+        "Newest": f"p.{sc.final_season} DESC, p.{sc.player}",
+        "Oldest": f"p.{sc.debut_season} ASC, p.{sc.player}",
+        "Name": f"p.{sc.player} COLLATE NOCASE ASC",
+    }
+    order = side.selectbox("Rank by", list(orders), key=sport.k("qbc_order"))
+    limit = side.number_input("Rows", 1, MAX_ROWS, 100, step=25,
+                              key=sport.k("qbc_limit"))
+
+    where, params = compile_constraint_sets(sc, groups)
+    sql = (
+        f'SELECT p.{sc.player} AS Player, '
+        f'p.{sc.debut_season} AS "From", p.{sc.final_season} AS "To", '
+        f'p.{sc.career_games} AS Games, p.{sc.career_score} AS Score, '
+        f'p.{sc.career_postseason} AS Postseason, '
+        f'p.{sc.clubs_hist} AS Teams, p.{sc.obscurity} AS ObscurityRaw, '
+        f'p.{sc.player_id} AS PlayerID '
+        f'FROM {sc.players} p WHERE {where} '
+        f'ORDER BY {orders[order]} LIMIT ?'
+    )
+    con = db_pool.get_con(sport.db, revision)
+    # Optional layers back some builders with connection-local placeholder
+    # tables; the same ensures the solver runs before solving.
+    for helper in ("ensure_captain_table", "ensure_rising_star_table",
+                   "ensure_brownlow_table",
+                   "ensure_family_relationship_tables",
+                   "ensure_all_australian_history_table"):
+        ensure = getattr(sport.C, helper, None)
+        if ensure:
+            ensure(con)
+    try:
+        frame = _cached_players(sql, tuple([*params, int(limit)]),
+                                revision, con)
+    except (sqlite3.Error, pd.errors.DatabaseError) as exc:
+        st.error(f"Database error while searching: {exc}")
+        return
+
+    st.caption(" AND ".join(f"({part})" if " OR " in part else part
+                            for part in described))
+    if frame.empty:
+        st.info("No players satisfy every criterion.")
+    else:
+        st.caption(f"{len(frame):,} result"
+                   f"{'s' if len(frame) != 1 else ''} shown.")
+        shown = components.player_results_table(
+            frame, sport, con, key=sport.k("qbc_results"))
+        st.download_button(
+            "Download results as CSV",
+            data=shown.to_csv(index=False).encode("utf-8"),
+            file_name=f"{sport.key}_grid_constraint_search.csv",
+            mime="text/csv",
+        )
+    with st.expander("SQL and parameters"):
+        st.code(sql, language="sql")
+        st.code(repr([*params, int(limit)]), language="python")
+
+
+def page(sport, heading=True):
     """Render the query builder for whichever sport is active."""
     from sqlalchemy.exc import SQLAlchemyError
 
-    st.markdown("# Advanced Search")
+    if heading:
+        st.markdown("# Advanced Search")
     st.caption(
         "Build a query visually against the live database. Tables, columns "
         "and value ranges below are discovered from the data itself; values "
         "are parameterised and the connection is read-only."
     )
 
+    try:
+        revision = _db_revision(sport.db)
+    except OSError as exc:
+        st.error(f"Could not read the {sport.label} database: {exc}")
+        return
+
+    # -- sidebar: mode toggle and query scaffolding -----------------------
+    side = st.sidebar
+    side.markdown("### Query builder")
+    modes = [MODE_CONSTRAINTS] \
+        + ([MODE_TREE] if HAS_CONDITION_TREE else []) + [MODE_FILTERS]
+    mode = side.segmented_control("Mode", modes, default=modes[0],
+                                  key=sport.k("qb_mode")) or modes[0]
+    if not HAS_CONDITION_TREE:
+        side.caption("Install `streamlit-condition-tree` to enable the "
+                     "drag-and-drop visual builder.")
+
+    if mode == MODE_CONSTRAINTS:
+        # The grid catalogue needs no table discovery: its criteria are
+        # the sport's own builders, compiled against the players table.
+        _constraints_mode(sport, revision)
+        return
+
     # -- connect and discover, failing as a red box rather than a traceback
     try:
         conn = get_connection(sport)
-        revision = _db_revision(sport.db)
         schema = discover_schema(conn, sport.db, revision)
     except (OSError, sqlite3.Error, SQLAlchemyError) as exc:
         st.error(f"Could not read the {sport.label} database: {exc}")
@@ -555,16 +892,6 @@ def page(sport):
     if not schema:
         st.error("The database contains no tables.")
         return
-
-    # -- sidebar: mode toggle and query scaffolding -----------------------
-    side = st.sidebar
-    side.markdown("### Query builder")
-    modes = [MODE_TREE, MODE_FILTERS] if HAS_CONDITION_TREE else [MODE_FILTERS]
-    mode = side.segmented_control("Mode", modes, default=modes[0],
-                                  key=sport.k("qb_mode")) or modes[0]
-    if not HAS_CONDITION_TREE:
-        side.caption("Install `streamlit-condition-tree` to enable the "
-                     "drag-and-drop visual builder.")
 
     tables = list(schema)
     default_table = getattr(sport.schema, "players", None)
@@ -585,6 +912,13 @@ def page(sport):
                              disabled=order_by is None)
     limit = side.number_input("Row limit", 1, MAX_ROWS, 500, step=100,
                               key=sport.k("qb_limit"))
+    aggregate = side.toggle(
+        "Count per group", key=sport.k("qb_agg", table),
+        help="Group the matching rows and count them — e.g. games per "
+             "venue, players per debut season.")
+    group_columns = (side.multiselect("Group by", names,
+                                      key=sport.k("qb_groupby", table))
+                     if aggregate else [])
 
     # Profiles feed both modes: widget bounds in B, field config in A.
     try:
@@ -641,9 +975,15 @@ def page(sport):
             clause = compile_tree_node(tree, set(names), bag)
             if clause:
                 predicates = [clause]
-        sql = build_select(table, shown, predicates, combinator, order_by,
-                           descending, limit, bag,
-                           known_tables=set(tables), known_columns=set(names))
+        if group_columns:
+            sql = build_group_select(
+                table, group_columns, predicates, combinator, limit, bag,
+                known_tables=set(tables), known_columns=set(names))
+        else:
+            sql = build_select(
+                table, shown, predicates, combinator, order_by,
+                descending, limit, bag,
+                known_tables=set(tables), known_columns=set(names))
     except ValueError as exc:
         st.error(str(exc))
         return

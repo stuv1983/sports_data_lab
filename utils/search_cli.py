@@ -34,7 +34,9 @@ def main(argv=None) -> int:
         ensure = getattr(sport.C, "ensure_captain_table", None)
         if ensure:
             ensure(con)
-        sql, params, _spec = Q.compile_query(sport.schema, args.query, con=con)
+        sql, params, _spec = Q.compile_query(
+            sport.schema, args.query, con=con,
+            extensions=sport.search_extensions())
         cur = con.execute(sql, params)
         columns = [d[0] for d in cur.description]
         rows = cur.fetchall()

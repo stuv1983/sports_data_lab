@@ -135,7 +135,9 @@ def test_every_search_example_actually_compiles(sport, request):
     try:
         for example in sport.search_examples:
             try:
-                sql, params, *_ = Q.compile_query(sport.schema, example, con)
+                sql, params, *_ = Q.compile_query(
+                    sport.schema, example, con,
+                    extensions=sport.search_extensions())
                 con.execute(sql, params).fetchall()
             except Q.QuerySyntaxError as exc:
                 # "not loaded" is an honest decline, not a broken example.
