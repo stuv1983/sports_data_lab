@@ -431,6 +431,11 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
                     shown["player_id"].tolist(), sport, con,
                     key=f"aw_bnf_roll_{slug}")
 
+    # -------------------------------------------------- rising star
+    if "Rising Star nominees" in tab:
+        with tab["Rising Star nominees"]:
+            _rising_star_nominees(sport, con)
+
     # ------------------------------------------------------ hall of fame
     if "Hall of Fame" in tab:
         with tab["Hall of Fame"]:
@@ -452,6 +457,97 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
         components.clickable_season_table(
             catalogue_table, [None] * len(catalogue_table), sport, con,
             key="aw_catalogue")
+
+
+ANY_SEASON = "All seasons"
+ANY_ROUND = "All rounds"
+
+
+def _rising_star_nominees(sport, con: sqlite3.Connection) -> None:
+    """One nomination per round per season, filterable by season and round.
+
+    Only rows linked to exactly one player are shown. The table also holds
+    unresolved rows for audit -- a name that matched nobody, or two people
+    equally well -- and those are counted in the caption rather than listed
+    as though they were nominations of somebody in particular.
+    """
+    trusted = "match_status IN ('unique','resolved') AND player_id IS NOT NULL"
+    seasons = [row[0] for row in con.execute(
+        f"SELECT DISTINCT season FROM rising_star_nominees WHERE {trusted} "
+        "ORDER BY season DESC")]
+    if not seasons:
+        st.info("No linked Rising Star nominations are loaded. Run "
+                "`python -m afl.fetch_wikipedia_rising_star --load-db`.")
+        return
+
+    st.caption(
+        "Every AFL Rising Star nomination, one per round. A suspended "
+        "player may still be nominated but cannot win the award, which is "
+        "shown as ineligible."
+    )
+    f1, f2, f3 = st.columns([1, 1, 1.4])
+    season = f1.selectbox("Season", [ANY_SEASON, *seasons], key="aw_rs_season")
+    rounds = [row[0] for row in con.execute(
+        f"SELECT DISTINCT round_number FROM rising_star_nominees "
+        f"WHERE {trusted}" + ("" if season == ANY_SEASON else " AND season=?")
+        + " ORDER BY round_number",
+        () if season == ANY_SEASON else (season,))]
+    chosen_round = f2.selectbox("Round", [ANY_ROUND, *rounds], key="aw_rs_round")
+    name = f3.text_input("Player contains", placeholder="surname…",
+                         key="aw_rs_name")
+
+    where, params = [trusted], []
+    if season != ANY_SEASON:
+        where.append("season = ?")
+        params.append(season)
+    if chosen_round != ANY_ROUND:
+        where.append("round_number = ?")
+        params.append(chosen_round)
+    if name.strip():
+        where.append("LOWER(player) LIKE LOWER(?)")
+        params.append(f"%{name.strip()}%")
+
+    frame = pd.read_sql_query(
+        f"""SELECT season AS Season, round_number AS Round,
+                   COALESCE(matched_player, player) AS Player,
+                   club AS Club, opponent AS Opponent,
+                   CASE WHEN is_season_winner=1 THEN 'Won the award'
+                        WHEN ineligible=1 THEN 'Ineligible (suspension)'
+                        ELSE '' END AS Status,
+                   disposals AS Disposals, goals AS Goals, marks AS Marks,
+                   tackles AS Tackles, votes AS Votes, player_id
+              FROM rising_star_nominees
+             WHERE {' AND '.join(where)}
+             ORDER BY Season DESC, Round""",
+        con, params=params)
+
+    totals = con.execute(
+        f"SELECT COUNT(*), SUM(ineligible), SUM(is_season_winner) "
+        f"FROM rising_star_nominees WHERE {trusted}"
+        + ("" if season == ANY_SEASON else " AND season = ?"),
+        () if season == ANY_SEASON else (season,)).fetchone()
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Nominations", f"{totals[0]:,}")
+    m2.metric("Winners", f"{totals[2] or 0:,}")
+    m3.metric("Ineligible through suspension", f"{totals[1] or 0:,}")
+
+    untrusted = con.execute(
+        "SELECT COUNT(*) FROM rising_star_nominees "
+        f"WHERE NOT ({trusted})").fetchone()[0]
+    if untrusted:
+        st.caption(
+            f"{untrusted:,} further nomination(s) are held for audit but not "
+            "shown: their name did not resolve to exactly one player."
+        )
+
+    if frame.empty:
+        st.info("No nominations match those filters.")
+        return
+    st.caption("Select a row to see that player's full career.")
+    components.clickable_player_table(
+        _drop_empty(frame.drop(columns=["player_id"])),
+        frame["player_id"].tolist(), sport, con,
+        key=f"aw_rs_{season}_{chosen_round}")
 
 
 def _brownlow_voting(sport, con: sqlite3.Connection) -> None:

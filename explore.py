@@ -491,7 +491,14 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
     # can hold both in one season -- every winner was nominated first. They
     # are listed apart so "nominated three times, won once" is legible,
     # rather than one line that cannot say which season was the win.
+    #
+    # The win is filed under the label the Draftguru awards layer already
+    # uses, because it already records every winner from 1993 on. A label
+    # of its own listed the same win twice under two names; sharing this
+    # one means the seasons merge into a single honour, and the win still
+    # shows on a database that has the nominations but not that layer.
     if "rising_star_nominees" in tables:
+        won_label = _clean_award_name("Rising Star Award (AFL)")
         for season, won, ineligible in _con.execute(
                 """SELECT season, is_season_winner, ineligible
                      FROM rising_star_nominees
@@ -499,7 +506,7 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
                           ('unique','resolved')""", (pid,)):
             honours.setdefault("AFL Rising Star nominee", set()).add(season)
             if won:
-                honours.setdefault("AFL Rising Star", set()).add(season)
+                honours.setdefault(won_label, set()).add(season)
             elif ineligible:
                 # Worth its own line: the nomination stood, but suspension
                 # put the award out of reach. Folding it into the nominee

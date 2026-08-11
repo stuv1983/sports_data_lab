@@ -475,6 +475,39 @@ FOOTYWIRE_HTML = """
 """
 
 
+# ------------------------------------------------------- the awards page
+
+def test_the_awards_page_lists_nominations_and_can_filter_them():
+    """The Rising Star tab, against whatever database is built here."""
+    import sports
+
+    if not sports.AFL.exists():
+        pytest.skip("no built AFL database")
+    from streamlit.testing.v1 import AppTest
+
+    app = AppTest.from_string("""
+import db_pool, data_paths, sports
+from afl import awards_page
+
+con = db_pool.open_read_only(data_paths.default_db('afl'))
+awards_page._rising_star_nominees(sports.AFL, con)
+""")
+    app.run(timeout=180)
+
+    assert not list(app.exception)
+    labels = [box.label for box in app.selectbox]
+    assert "Season" in labels and "Round" in labels
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert "Nominations" in metrics
+    assert "Ineligible through suspension" in metrics
+
+    table = app.dataframe[0].value
+    assert {"Season", "Round", "Player", "Club", "Status"} <= set(table.columns)
+    # Ineligibility is legible in the table, not only in the metric.
+    assert table["Status"].isin(
+        ["", "Won the award", "Ineligible (suspension)"]).all()
+
+
 def main() -> None:
     pytest.main([__file__, "-q"])
 

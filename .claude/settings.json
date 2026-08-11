@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(cd c:\\\\sports_data_lab; $env:PYTHONPATH=\"c:\\\\sports_data_lab\"; python \"C:\\\\Users\\\\stuar\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--sports-data-lab\\\\ef5d8205-68cd-44b7-80f3-b5e8afec3701\\\\scratchpad\\\\render_card.py\" 2>&1 | Select-String -NotMatch \"ScriptRunContext\")",
+      "PowerShell($scratch = \"C:\\\\Users\\\\stuar\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--sports-data-lab\\\\ef5d8205-68cd-44b7-80f3-b5e8afec3701\\\\scratchpad\"; cd c:\\\\sports_data_lab; python -m pytest tests/test_wikipedia_rising_star.py tests/test_player_cards.py -q -p no:cacheprovider --basetemp=\"$scratch\\\\pytest\" 2>&1 | Select-Object -Last 25)",
+      "PowerShell($scratch = \"C:\\\\Users\\\\stuar\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--sports-data-lab\\\\ef5d8205-68cd-44b7-80f3-b5e8afec3701\\\\scratchpad\"; cd c:\\\\sports_data_lab; python -m pytest tests -q -p no:cacheprovider --basetemp=\"$scratch\\\\pytest\" 2>&1 | Select-Object -Last 12)"
+    ]
+  }
+}
