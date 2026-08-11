@@ -264,6 +264,49 @@ def _render_gridley_scan(status):
         st.dataframe(boards, width="stretch", hide_index=True)
 
 
+def _render_rising_star_scan(status):
+    if not status:
+        return
+    state = status.get("state")
+    if state == "failed":
+        st.error(status.get("error", "The Rising Star check failed."))
+        return
+    if state == "starting":
+        st.info("A Rising Star check is starting.")
+        return
+    if state != "complete":
+        st.info("A Rising Star check is running.")
+        return
+
+    result = status.get("result", {})
+    season = status.get("season") or result.get("season")
+    added = result.get("new_nominations") or []
+    if added:
+        st.success(
+            f"Added {len(added)} new {season} nomination"
+            f"{'' if len(added) == 1 else 's'}: "
+            + ", ".join(f"{item['player']} ({item['club']}, round "
+                        f"{item['round']})" for item in added)
+        )
+        if status.get("promoted"):
+            st.caption(
+                "The AFL database was replaced. Use **Reload updated "
+                "databases** above to pick it up in this session."
+            )
+    elif result.get("note"):
+        st.info(result["note"])
+    else:
+        st.info(
+            f"No new {season} nomination has been published since the last "
+            "check."
+        )
+    st.caption(
+        f"Finished: {_display_time(status.get('finished_at'))} - "
+        f"Latest round listed: {result.get('latest_round', 'unknown')} - "
+        f"Nominations on file: {result.get('rows', 0)}"
+    )
+
+
 def _login_form(prefix="sidebar"):
     with st.form(f"{prefix}_login_form"):
         email = st.text_input("Email", key=f"{prefix}_login_email")
@@ -401,16 +444,20 @@ def admin_page(user):
     status = database_updates.read_status()
     check_status = database_updates.read_check_status()
     gridley_status = database_updates.read_gridley_scan_status()
+    rising_star_status = database_updates.read_rising_star_status()
     state = status.get("state", "unknown") if status else "unknown"
     gridley_state = (gridley_status.get("state", "unknown")
                      if gridley_status else "unknown")
+    rising_star_state = (rising_star_status.get("state", "unknown")
+                         if rising_star_status else "unknown")
     # Both jobs take the same lock, so both have to count here. Watching
     # only the main update's status left every button enabled while a
     # Gridley scan was running, and clicking one produced "a database
     # update is already running" instead of a disabled control.
     active = (
         (state in {"starting", "running"}
-         or gridley_state in {"starting", "running"})
+         or gridley_state in {"starting", "running"}
+         or rising_star_state in {"starting", "running"})
         and database_updates.update_is_active()
     )
     if status:
@@ -678,9 +725,39 @@ def admin_page(user):
             st.rerun()
     _render_gridley_scan(gridley_status)
 
+    st.markdown("#### AFL Rising Star nominations")
+    st.caption(
+        "Reads this season's nominations from Wikipedia, which publishes the "
+        "weekly nomination within a day. FootyWire stays the source for the "
+        "nominee's match statistics, and keeps every round it already has. "
+        "This also runs on a Monday timer, so the button is for picking up "
+        "this week's nomination early."
+    )
+    if st.button(
+        "Check for new Rising Star nominations", icon=":material/star:",
+        disabled=active,
+        help="One request. The AFL database is replaced only if a new "
+             "nomination was published.",
+    ):
+        try:
+            pid = database_updates.start_rising_star_scan_background()
+        except (OSError, RuntimeError, ValueError) as exc:
+            st.error(f"{type(exc).__name__}: {exc}")
+        else:
+            st.session_state["database_update_notice"] = {
+                "kind": "success",
+                "message": (
+                    f"Rising Star check started in the background (PID {pid}). "
+                    "Use Refresh update status to follow it."
+                ),
+            }
+            st.rerun()
+    _render_rising_star_scan(rising_star_status)
+
     with st.expander("Automatic schedule"):
         st.write("Regular scores and statistics: Friday, Saturday, Sunday and Monday at 12:10 am Sydney time.")
         st.write("Gridley board scan: every day at 6:30 am Sydney time.")
+        st.write("Rising Star nominations: Monday at 8:00 am Sydney time.")
         st.write("Brownlow and awards: 1:00 am on the Tuesday after Brownlow night (22 September in 2026).")
         st.write("Grand Final and final awards: 1:00 am on the Sunday after the last Saturday in September (27 September in 2026).")
         st.caption(

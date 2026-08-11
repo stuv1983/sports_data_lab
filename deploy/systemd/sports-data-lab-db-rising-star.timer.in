@@ -1,0 +1,18 @@
+[Unit]
+Description=Weekly Sports Data Lab AFL Rising Star nomination check
+
+[Timer]
+# One nomination is announced per round, on the Monday after it. 08:00
+# leaves the announcement time to reach Wikipedia, which is the source
+# here because FootyWire's terms forbid fetching it on a timer.
+#
+# A week with no new nomination costs one HTTP request and promotes
+# nothing, so the off-season needs no calendar guard -- and without one,
+# Persistent=true can run a Monday missed to downtime on the Tuesday.
+OnCalendar=Mon *-*-* 08:00:00 Australia/Sydney
+Unit=sports-data-lab-db-update@rising-star.service
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

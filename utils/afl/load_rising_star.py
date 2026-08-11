@@ -32,6 +32,15 @@ from typing import Iterable
 TRUSTED = {"unique", "resolved"}
 #: Reviewed corrections for nominations the automatic linker cannot resolve.
 OVERRIDES_CSV = "rising_star_name_overrides.csv"
+#: Which source owns a round when more than one publishes it, best first.
+#:
+#: FootyWire carries the nominee's match statistics and Wikipedia does not,
+#: so FootyWire wins every round it has. Wikipedia exists to cover the tail
+#: of the current season, because FootyWire's terms forbid fetching it on a
+#: timer -- see ``afl/fetch_wikipedia_rising_star.py``. A source named in
+#: neither ranks last but is still kept when it is the only one.
+SOURCE_PRECEDENCE = ("footywire", "wikipedia")
+DEFAULT_SOURCE = "footywire"
 INTEGER_FIELDS = {
     "season", "round_number", "kicks", "handballs", "disposals", "marks",
     "goals", "behinds", "tackles", "hitouts", "frees_for", "frees_against",
@@ -44,7 +53,7 @@ SOURCE_FIELDS = [
     "disposals", "marks", "goals", "behinds", "tackles", "hitouts",
     "frees_for", "frees_against", "supercoach", "afl_fantasy",
     "unavailable_stats", "is_season_winner", "winner_name", "winner_team", "player_url",
-    "source_url", "scraped_at",
+    "source_url", "scraped_at", "source",
 ]
 
 
@@ -83,11 +92,54 @@ def read_rows(paths: Iterable[Path]) -> list[dict]:
                 for field in INTEGER_FIELDS:
                     row[field] = _int(row.get(field))
                 row["name_key"] = row.get("name_key") or normalise_name(row.get("player"))
+                row["source"] = (str(row.get("source") or "").strip().lower()
+                                 or DEFAULT_SOURCE)
                 key = str(row.get("source_key") or "").strip()
                 if not key:
                     raise ValueError(f"{path}: row has no source_key")
                 rows[key] = row
-    return list(rows.values())
+    return preferred_rows(list(rows.values()))
+
+
+def _source_rank(row: dict) -> int:
+    source = str(row.get("source") or DEFAULT_SOURCE)
+    try:
+        return SOURCE_PRECEDENCE.index(source)
+    except ValueError:
+        return len(SOURCE_PRECEDENCE)
+
+
+def preferred_rows(rows: list[dict]) -> list[dict]:
+    """Keep one source per nomination round, the best one available.
+
+    A round the two sources both publish is one nomination, not two. Left
+    unresolved, a Wikipedia row written in August and a FootyWire row saved
+    by hand in September would both survive into the table and the same
+    player would appear twice for the same round -- with the statistics on
+    only one of them.
+
+    Rounds are collapsed across sources only. Two rows from *one* source
+    sharing a round is a fault in that source, and both are kept so the
+    health check can see it rather than one being silently discarded.
+    """
+    best: dict[tuple[int, int], int] = {}
+    for row in rows:
+        season, round_number = row.get("season"), row.get("round_number")
+        if season is None or round_number is None:
+            continue
+        key = (int(season), int(round_number))
+        rank = _source_rank(row)
+        if key not in best or rank < best[key]:
+            best[key] = rank
+    kept = []
+    for row in rows:
+        season, round_number = row.get("season"), row.get("round_number")
+        if season is None or round_number is None:
+            kept.append(row)
+            continue
+        if _source_rank(row) == best[(int(season), int(round_number))]:
+            kept.append(row)
+    return kept
 
 
 def _table_exists(con: sqlite3.Connection, name: str) -> bool:
@@ -297,6 +349,7 @@ CREATE TABLE rising_star_nominees (
     player_url TEXT,
     source_url TEXT NOT NULL,
     scraped_at TEXT,
+    source TEXT NOT NULL DEFAULT 'footywire',
     player_id INTEGER,
     matched_player TEXT,
     match_method TEXT,
@@ -383,6 +436,9 @@ def load_sources(db_path: str | Path, sources: Iterable[str | Path],
         result = {
             "rows": len(linked),
             "trusted": sum(counts.get(status, 0) for status in TRUSTED),
+            "sources": dict(con.execute(
+                "SELECT source, COUNT(*) FROM rising_star_nominees "
+                "GROUP BY source")),
             **counts,
         }
         if verbose:
@@ -402,6 +458,10 @@ def load_sources(db_path: str | Path, sources: Iterable[str | Path],
                 print(f"  safe fallbacks {fallback_count:>5,}")
             if override_count:
                 print(f"  reviewed overrides {override_count:>1,}")
+            for source, count in con.execute(
+                    "SELECT source, COUNT(*) FROM rising_star_nominees "
+                    "GROUP BY source ORDER BY COUNT(*) DESC"):
+                print(f"  from {source:<9} {count:>5,}")
             print(f"Trusted by search/solver: {result['trusted']:,}")
         return result
     finally:
@@ -414,9 +474,11 @@ def default_sources() -> list[Path]:
     except ImportError:
         base = Path("data/afl/raw/footywire/rising_star")
         combined = base / "rising_star_nominees.csv"
-        if combined.exists():
-            return [combined]
-        return sorted((base / "csv").glob("rising_star_nominees_*.csv"))
+        sources = ([combined] if combined.exists()
+                   else sorted((base / "csv").glob("rising_star_nominees_*.csv")))
+        sources.extend(sorted(Path("data/afl/raw/wikipedia/rising_star/csv")
+                              .glob("rising_star_nominees_*.csv")))
+        return sources
     return rising_star_sources("afl")
 
 

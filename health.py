@@ -256,7 +256,7 @@ TABLE_PURPOSE = {
     "awards": "Award winners and placings",
     "all_australian": "All-Australian selections",
     "captaincies": "Club captains by season",
-    "rising_star_nominees": "FootyWire Rising Star nominations",
+    "rising_star_nominees": "Rising Star nominations (FootyWire, Wikipedia)",
     "family_members": "People in a listed football family",
     "family_relationships": "Explicit relationships between people",
     "family_draft": "Father-son and academy draft rows",

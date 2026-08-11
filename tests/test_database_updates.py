@@ -168,6 +168,172 @@ def test_gridley_scan_promotes_new_board_atomically(tmp_path, monkeypatch):
         ).fetchall() == [(1119, "2026-08-08")]
 
 
+def _rising_star_db(path: Path, latest_round: int) -> None:
+    with closing(sqlite3.connect(path)) as con:
+        con.execute("CREATE TABLE IF NOT EXISTS players (player_id INTEGER)")
+        con.execute("CREATE TABLE IF NOT EXISTS games (season INTEGER)")
+        con.execute("DROP TABLE IF EXISTS rising_star_nominees")
+        con.execute(
+            "CREATE TABLE rising_star_nominees ("
+            "season INTEGER, round_number INTEGER, player TEXT)")
+        con.executemany(
+            "INSERT INTO rising_star_nominees VALUES (2026, ?, 'Someone')",
+            [(number,) for number in range(latest_round + 1)])
+        con.commit()
+
+
+def _rising_star_scan(tmp_path, monkeypatch, *, live, result,
+                      writes_round=22):
+    """Run a scan with the fetch and the reload replaced by fakes.
+
+    The fake reload stands in for load_rising_star: it rewrites the
+    nominations table of whatever database it is handed, so a test can see
+    which file the reload actually targeted.
+    """
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(updates, "LOG_DIR", log_dir)
+    monkeypatch.setattr(updates, "LOCK_PATH", log_dir / "update.lock")
+    monkeypatch.setattr(
+        updates, "RISING_STAR_STATUS_PATH", log_dir / "rising-star.json")
+    monkeypatch.setattr(updates.data_paths, "default_db",
+                        lambda sport: str(live))
+
+    from utils.afl import load_rising_star
+
+    reloads = []
+
+    def fake_load_sources(db, sources, verbose=True, **kwargs):
+        reloads.append(str(db))
+        _rising_star_db(Path(db), writes_round)
+        return {"rows": 1, "trusted": 1}
+
+    monkeypatch.setattr(load_rising_star, "load_sources", fake_load_sources)
+    monkeypatch.setattr(load_rising_star, "default_sources", lambda: [])
+    status = updates.run_rising_star_scan(
+        season=2026, fetcher=lambda season: result)
+    return status, reloads
+
+
+def test_a_week_with_no_new_nomination_promotes_nothing(tmp_path, monkeypatch):
+    """The common case: 51 weeks a year this must be a no-op."""
+    live = tmp_path / "afl.db"
+    _rising_star_db(live, latest_round=22)
+    before = live.stat().st_mtime_ns
+
+    status, reloads = _rising_star_scan(
+        tmp_path, monkeypatch, live=live,
+        result={"season": 2026, "changed": False, "added": 0,
+                "latest_round": 22},
+    )
+
+    assert status["state"] == "complete"
+    assert status["promoted"] is False
+    assert reloads == []
+    assert live.stat().st_mtime_ns == before
+    assert not updates.LOCK_PATH.exists()
+
+
+def test_a_new_nomination_is_loaded_and_promoted(tmp_path, monkeypatch):
+    live = tmp_path / "afl.db"
+    _rising_star_db(live, latest_round=21)
+
+    status, reloads = _rising_star_scan(
+        tmp_path, monkeypatch, live=live,
+        result={"season": 2026, "changed": True, "added": 1,
+                "latest_round": 22,
+                "new_nominations": [{"round": 22, "player": "Jesse Dattoli",
+                                     "club": "Sydney"}]},
+    )
+
+    assert status["state"] == "complete"
+    assert status["promoted"] is True
+    # The reload ran against staging, never against the live file.
+    assert reloads and reloads[0].endswith(".rising-star-building")
+    assert not live.with_suffix(".db.rising-star-building").exists()
+    with closing(sqlite3.connect(live)) as con:
+        assert con.execute(
+            "SELECT MAX(round_number) FROM rising_star_nominees"
+        ).fetchone()[0] == 22
+
+
+def test_an_unchanged_file_still_reloads_when_the_database_is_behind(
+        tmp_path, monkeypatch):
+    """A run that wrote the CSV and then failed to load it must self-heal.
+
+    Otherwise the source file says round 22 and the database stops at 21
+    for as long as nobody looks, because every later week sees an
+    unchanged file and concludes there is nothing to do.
+    """
+    live = tmp_path / "afl.db"
+    _rising_star_db(live, latest_round=21)
+
+    status, reloads = _rising_star_scan(
+        tmp_path, monkeypatch, live=live,
+        result={"season": 2026, "changed": False, "added": 0,
+                "latest_round": 22},
+    )
+
+    assert status["promoted"] is True
+    assert len(reloads) == 1
+
+
+def test_a_season_with_no_article_yet_is_not_a_failed_run(tmp_path,
+                                                          monkeypatch):
+    """In February the next season's article has usually not been created."""
+    from afl import fetch_wikipedia_rising_star as wiki
+
+    live = tmp_path / "afl.db"
+    _rising_star_db(live, latest_round=22)
+
+    def missing(season):
+        raise wiki.PageNotFound(f"{season}_AFL_Rising_Star")
+
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(updates, "LOG_DIR", log_dir)
+    monkeypatch.setattr(updates, "LOCK_PATH", log_dir / "update.lock")
+    monkeypatch.setattr(
+        updates, "RISING_STAR_STATUS_PATH", log_dir / "rising-star.json")
+    monkeypatch.setattr(updates.data_paths, "default_db",
+                        lambda sport: str(live))
+
+    status = updates.run_rising_star_scan(season=2027, fetcher=missing)
+    assert status["state"] == "complete"
+    assert status["promoted"] is False
+    assert not updates.LOCK_PATH.exists()
+
+
+def test_a_reload_that_links_nobody_leaves_the_live_database_alone(
+        tmp_path, monkeypatch):
+    live = tmp_path / "afl.db"
+    _rising_star_db(live, latest_round=21)
+    from utils.afl import load_rising_star
+
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(updates, "LOG_DIR", log_dir)
+    monkeypatch.setattr(updates, "LOCK_PATH", log_dir / "update.lock")
+    monkeypatch.setattr(
+        updates, "RISING_STAR_STATUS_PATH", log_dir / "rising-star.json")
+    monkeypatch.setattr(updates.data_paths, "default_db",
+                        lambda sport: str(live))
+    monkeypatch.setattr(load_rising_star, "default_sources", lambda: [])
+    monkeypatch.setattr(
+        load_rising_star, "load_sources",
+        lambda db, sources, verbose=True, **kwargs: {"rows": 0, "trusted": 0})
+
+    with pytest.raises(RuntimeError, match="linked no rows"):
+        updates.run_rising_star_scan(
+            season=2026,
+            fetcher=lambda season: {"season": season, "changed": True,
+                                    "latest_round": 22},
+        )
+    with closing(sqlite3.connect(live)) as con:
+        assert con.execute(
+            "SELECT MAX(round_number) FROM rising_star_nominees"
+        ).fetchone()[0] == 21
+    assert not updates.LOCK_PATH.exists()
+    assert not live.with_suffix(".db.rising-star-building").exists()
+
+
 def test_required_failure_skips_that_sport_and_does_not_block_others(
         tmp_path, monkeypatch):
     log_dir = tmp_path / "logs"

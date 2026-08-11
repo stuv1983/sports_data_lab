@@ -34,6 +34,7 @@ LOG_DIR = ROOT / "logs" / "database_updates"
 STATUS_PATH = LOG_DIR / "status.json"
 CHECK_STATUS_PATH = LOG_DIR / "check-status.json"
 GRIDLEY_SCAN_STATUS_PATH = LOG_DIR / "gridley-scan-status.json"
+RISING_STAR_STATUS_PATH = LOG_DIR / "rising-star-status.json"
 LOCK_PATH = LOG_DIR / "update.lock"
 SPORT_KEYS = ("afl", "nba", "mlb", "nfl")
 EVENTS = ("regular", "brownlow-awards", "grand-final-awards", "full")
@@ -92,6 +93,12 @@ def event_is_due(event: str, today: dt.date | None = None) -> bool:
         return today == brownlow_refresh_date(today.year)
     if event == "grand-final-awards":
         return today == grand_final_refresh_date(today.year)
+    # `rising-star` and `gridley` deliberately have no calendar guard. Both
+    # promote only when their source actually changed, so running one on
+    # the wrong day costs a request and does nothing -- while a day-of-week
+    # guard would refuse the catch-up run that `Persistent=true` schedules
+    # after the server was down on the intended day, which is the one run
+    # that most needs to happen.
     return True
 
 
@@ -349,6 +356,13 @@ def read_check_status() -> dict:
 def read_gridley_scan_status() -> dict:
     try:
         return json.loads(GRIDLEY_SCAN_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def read_rising_star_status() -> dict:
+    try:
+        return json.loads(RISING_STAR_STATUS_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
@@ -925,6 +939,114 @@ def run_gridley_scan(*, through: dt.date | None = None, max_days: int = 31,
         LOCK_PATH.unlink(missing_ok=True)
 
 
+def _loaded_rising_star_round(database: Path, season: int) -> int | None:
+    """The latest nomination round the live database actually holds."""
+    if not database.exists():
+        return None
+    try:
+        with closing(sqlite3.connect(
+                f"file:{database}?mode=ro", uri=True)) as con:
+            if not con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='rising_star_nominees'").fetchone():
+                return None
+            return con.execute(
+                "SELECT MAX(round_number) FROM rising_star_nominees "
+                "WHERE season = ?", (season,)).fetchone()[0]
+    except sqlite3.Error:
+        return None
+
+
+def run_rising_star_scan(*, season: int | None = None, trigger: str = "admin",
+                         fetcher=None) -> dict:
+    """Refresh the season's Rising Star nominations from Wikipedia.
+
+    The award adds one nomination a week all season. FootyWire, the richer
+    source, may not be fetched automatically under its own terms, so the
+    weekly catch-up comes from Wikipedia instead -- see
+    ``afl/fetch_wikipedia_rising_star.py`` for why both sources coexist and
+    ``utils/afl/load_rising_star.py`` for which one wins a round.
+
+    Same shape as the Gridley scan: refresh a source file, rebuild into a
+    copy, promote only if there is something new. A week with no new
+    nomination costs one HTTP request and changes nothing.
+    """
+    from afl import fetch_wikipedia_rising_star as wiki
+    from utils.afl import load_rising_star
+
+    season = season or dt.datetime.now().astimezone().year
+    _acquire_lock()
+    started = dt.datetime.now().astimezone()
+    live = Path(data_paths.default_db("afl"))
+    staging = live.with_suffix(live.suffix + ".rising-star-building")
+    status = {
+        "state": "running", "trigger": trigger, "season": season,
+        "started_at": started.isoformat(), "database": str(live),
+    }
+    _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+    try:
+        if not live.exists():
+            raise RuntimeError(f"No live AFL database at {live}")
+        try:
+            result = (fetcher(season) if fetcher is not None
+                      else wiki.refresh_season(season))
+        except wiki.PageNotFound:
+            status.update({
+                "state": "complete", "promoted": False, "result": {
+                    "season": season, "added": 0, "changed": False,
+                    "note": f"no {season} Wikipedia article yet",
+                },
+                "finished_at": dt.datetime.now().astimezone().isoformat(),
+            })
+            _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+            return status
+
+        # An unchanged source file is not proof the database is current: a
+        # previous run could have written the CSV and then failed to load
+        # it. Compare what is loaded against what the file now says, so a
+        # half-finished run repairs itself on the next Monday rather than
+        # staying one nomination behind until someone notices.
+        loaded_round = _loaded_rising_star_round(live, season)
+        latest = result.get("latest_round")
+        behind = (latest is not None
+                  and (loaded_round is None or loaded_round < latest))
+        if not result.get("changed") and not behind:
+            status.update({
+                "state": "complete", "promoted": False, "result": result,
+                "finished_at": dt.datetime.now().astimezone().isoformat(),
+            })
+            _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+            return status
+
+        staging.unlink(missing_ok=True)
+        shutil.copy2(live, staging)
+        loaded = load_rising_star.load_sources(
+            str(staging), load_rising_star.default_sources(), verbose=True)
+        if not loaded.get("trusted"):
+            raise RuntimeError(
+                "the reloaded Rising Star table linked no rows to a player; "
+                "the live database was left unchanged")
+        backup = _backup_and_promote("afl", staging)
+        status.update({
+            "state": "complete", "promoted": True, "backup": backup,
+            "result": result, "loaded": loaded,
+            "finished_at": dt.datetime.now().astimezone().isoformat(),
+            "after": _database_snapshot("afl", quick=True),
+        })
+        _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+        return status
+    except Exception as exc:
+        status.update({
+            "state": "failed", "error": f"{type(exc).__name__}: {exc}",
+            "finished_at": dt.datetime.now().astimezone().isoformat(),
+        })
+        _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+        raise
+    finally:
+        staging.unlink(missing_ok=True)
+        LOCK_PATH.unlink(missing_ok=True)
+
+
 def run_job(event: str, sports: Iterable[str], trigger: str = "cli",
             dry_run: bool = False) -> int:
     chosen = tuple(dict.fromkeys(sports))
@@ -1181,6 +1303,25 @@ def start_gridley_scan_background(*, max_days: int = 31,
     )
 
 
+def start_rising_star_scan_background(*, season: int | None = None,
+                                      trigger: str = "admin") -> int:
+    """Start a Rising Star refresh detached from the Streamlit process.
+
+    Short work -- one request and a reload -- but it promotes a database,
+    which means it takes the update lock and must not die with a rerun.
+    """
+    season = season or dt.datetime.now().astimezone().year
+    return _spawn_detached(
+        ["rising-star-scan", "--season", str(season), "--trigger", trigger],
+        RISING_STAR_STATUS_PATH,
+        {
+            "state": "starting", "trigger": trigger, "pid": None,
+            "season": season,
+            "started_at": dt.datetime.now().astimezone().isoformat(),
+        },
+    )
+
+
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1199,11 +1340,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="last date to check, YYYY-MM-DD (default: today)")
     scan.add_argument("--max-days", type=int, default=31)
     scan.add_argument("--trigger", default="cli")
+    rising = sub.add_parser(
+        "rising-star-scan",
+        help="refresh this season's Rising Star nominations from Wikipedia")
+    rising.add_argument("--season", type=int, default=None)
+    rising.add_argument("--trigger", default="cli")
     scheduled = sub.add_parser(
         "scheduled", help="run a guarded update from an operating-system timer")
     scheduled.add_argument(
         "event",
-        choices=("regular", "brownlow-awards", "grand-final-awards", "gridley"))
+        choices=("regular", "brownlow-awards", "grand-final-awards", "gridley",
+                 "rising-star"))
     sub.add_parser("status", help="print the last update status")
     check = sub.add_parser(
         "check", help="report currency and integrity without changing anything")
@@ -1235,6 +1382,11 @@ def main(argv: list[str] | None = None) -> int:
             through=through, max_days=args.max_days, trigger=args.trigger)
         print(json.dumps(status.get("result", {}), indent=2))
         return 0
+    if args.command == "rising-star-scan":
+        status = run_rising_star_scan(
+            season=args.season, trigger=args.trigger)
+        print(json.dumps(status.get("result", {}), indent=2))
+        return 0
     if args.command == "scheduled":
         if not event_is_due(args.event):
             print(
@@ -1244,6 +1396,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.event == "gridley":
             run_gridley_scan(trigger="systemd")
+            return 0
+        if args.event == "rising-star":
+            run_rising_star_scan(trigger="systemd")
             return 0
         sports = ("afl",) if args.event != "regular" else SPORT_KEYS
         return run_job(args.event, sports, trigger="systemd")

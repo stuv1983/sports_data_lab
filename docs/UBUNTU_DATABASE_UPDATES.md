@@ -23,12 +23,19 @@ The installer adds these schedules in the `Australia/Sydney` timezone:
 
 - regular AFL, NBA, MLB, and NFL updates at 00:10 Friday through Monday;
 - a guarded Brownlow/awards timer at 01:00 Tuesday;
-- a guarded Grand Final/awards timer at 01:00 Sunday.
+- a guarded Grand Final/awards timer at 01:00 Sunday;
+- a Gridley board scan at 06:30 daily;
+- an AFL Rising Star nomination check at 08:00 Monday.
 
 The annual timers wake weekly, but the Python calendar guard exits without
 writing unless the date is the intended post-event date. `Persistent=true`
 means systemd runs a missed timer after the server returns. The shared update
 lock prevents an Admin-triggered update and a timer update from overlapping.
+
+The Gridley and Rising Star scans have no calendar guard, because both
+promote a database only when their source actually changed. Running either
+on an unintended day costs a request and writes nothing, whereas a guard
+would refuse the catch-up run `Persistent=true` schedules after downtime.
 
 ## Configuration
 
@@ -58,6 +65,9 @@ cd /srv/sports_data_lab
 
 # Start the same guarded regular job immediately
 sudo systemctl start sports-data-lab-db-update@regular.service
+
+# Check for this week's Rising Star nomination without waiting for Monday
+.venv/bin/python -m database_updates rising-star-scan
 
 # Inspect the structured last-run result
 .venv/bin/python -m database_updates status

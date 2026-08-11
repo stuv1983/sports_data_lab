@@ -97,13 +97,16 @@ render "${SOURCE_DIR}/sports-data-lab-db-grand-final.timer.in" \
   "sports-data-lab-db-grand-final.timer"
 render "${SOURCE_DIR}/sports-data-lab-db-gridley.timer.in" \
   "sports-data-lab-db-gridley.timer"
+render "${SOURCE_DIR}/sports-data-lab-db-rising-star.timer.in" \
+  "sports-data-lab-db-rising-star.timer"
 
 systemctl daemon-reload
 systemctl enable --now \
   sports-data-lab-db-regular.timer \
   sports-data-lab-db-brownlow.timer \
   sports-data-lab-db-grand-final.timer \
-  sports-data-lab-db-gridley.timer
+  sports-data-lab-db-gridley.timer \
+  sports-data-lab-db-rising-star.timer
 
 echo "Installed database update timers:"
 systemctl list-timers --all 'sports-data-lab-db-*'
