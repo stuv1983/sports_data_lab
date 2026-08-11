@@ -65,8 +65,11 @@ def test_dustin_martin_card_has_titles_draft_votes_and_major_honours():
         honours = {row["Honour"]: row["Times"] for row in extra["honours"]}
         assert explore._titles_won(sports.AFL, con, pid, revision) == 3
         assert ("Brownlow votes", "213") in extra["metrics"]
+        # The path to the draft sits under the selection itself, junior
+        # club first, exactly as Draftguru writes it.
         assert extra["bio"] == [
-            ("Draft", "Pick 3 · 2009 · National · Richmond")]
+            ("Draft", "Pick 3 · 2009 · National · Richmond"),
+            ("Recruited from", "Castlemaine / Bendigo U18")]
         assert honours["Norm Smith Medal"] == 3
         assert honours["All-Australian"] == 4
         logos = explore._player_card_logos(sports.AFL, con, "Richmond")

@@ -2,6 +2,9 @@
 streamlit>=1.57,<2
 pandas>=2.2,<4
 numpy>=2,<3
+# Streamlit already depends on Altair; named here because charts.py imports
+# it directly and a pin that stops shipping it must fail here, not on a card.
+altair>=5,<7
 
 # Data ingestion and source parsing
 beautifulsoup4>=4.12,<5

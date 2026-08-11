@@ -213,29 +213,12 @@ def search_page(sport, con):
         st.info("No players match every filter.")
         _suggest_close_names(sport, query, state_key, revision)
     else:
-        if "ObscurityRaw" in frame.columns:
-            frame["Rating"] = frame["ObscurityRaw"].map(core.stars_text)
-            frame = frame.drop(columns=["ObscurityRaw"])
-        if "Teams" in frame.columns:
-            # One entry per club, named as the club was at the time --
-            # "Kangaroos, North Melbourne" is one club that renamed
-            # itself, not a two-club career.
-            frame["Teams"] = frame["Teams"].fillna("").map(
-                sport.collapse_club_path).str.replace(
-                "|", ", ", regex=False
-            )
         st.caption(f"{len(frame):,} result{'s' if len(frame) != 1 else ''} shown.")
-        if "PlayerID" in frame.columns:
-            player_ids = frame["PlayerID"].tolist()
-            frame = frame.drop(columns=["PlayerID"])
-            st.caption("Select a row to see that player's full career.")
-            components.clickable_player_table(
-                frame, player_ids, sport, con, key=sport.k("search_results"))
-        else:
-            st.dataframe(frame, hide_index=True, width="stretch")
+        shown = components.player_results_table(
+            frame, sport, con, key=sport.k("search_results"))
         st.download_button(
             "Download results as CSV",
-            data=frame.to_csv(index=False).encode("utf-8"),
+            data=shown.to_csv(index=False).encode("utf-8"),
             file_name=f"{sport.key}_player_search.csv",
             mime="text/csv",
         )

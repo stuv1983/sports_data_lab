@@ -328,6 +328,24 @@ def _parse_exact(text):
     if re.search(r"\bacademy selection\b", t):
         return A.academy_selection(), "academy selection"
 
+    # "RECRUITED FROM GLENELG", "FROM OAKLEIGH CHARGERS", "VIA NORWOOD".
+    # The rest of the text is the place, so this runs after every rule
+    # that owns a keyword -- a criterion naming a club and a statistic is
+    # not a recruitment square. Matching is anchored to a step of the
+    # path, so "Oakleigh" reaches the Oakleigh talent-league club without
+    # "Geelong" quietly meaning three different places.
+    m = re.match(r"^(?:recruited |drafted |came )?(?:from|via)\s+(.{3,})$", t)
+    if m:
+        source = m.group(1).strip().strip(".")
+        # Draftguru writes the talent-league clubs as "Oakleigh U18", not
+        # by their brand name, and a reader writes the brand name.
+        source = re.sub(r"\s+(chargers|falcons|stingrays|cannons|dragons|"
+                        r"jets|rebels|power|knights|ranges|bushrangers|"
+                        r"pioneers|eagles|calder|talent league|u18s?)$",
+                        "", source).strip()
+        if source and not any(word in source for word in STAT_WORDS):
+            return C.recruited_from(source.title()), f"recruited from {source}"
+
     # 3. Explicitly unsupported.
     # Parse optional linked club-captain criteria.
     # All-Australian captain is parsed earlier by the awards block.

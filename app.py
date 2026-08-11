@@ -133,6 +133,9 @@ pages = {
 
 if SPORT.has_ground_explorer:
     pages["Explore"].insert(3, st.Page("app_pages/5_Ground_Explorer.py", title="Ground Explorer", icon=":material/stadium:"))
+
+if SPORT.has_draft_page:
+    pages["Explore"].append(st.Page("app_pages/18_Draft.py", title="Draft", icon=":material/how_to_vote:"))
     
 if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Advanced Search"]):
     pages["Explore"].insert(1, st.Page("app_pages/8_Advanced_Search.py", title="Advanced Search", icon=":material/manage_search:"))

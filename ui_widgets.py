@@ -26,6 +26,24 @@ def venue_options(sport_key, db, revision):
 
 
 @st.cache_data(show_spinner=False)
+def recruit_source_options(sport_key, db, revision):
+    """Places a player can have been recruited through, most-used first.
+
+    Asked of the sport's constraints module rather than assumed, the same
+    way marquee events are: a recruitment path is a Draftguru shape and no
+    other sport here records one.
+    """
+    module = sports.get(sport_key).C
+    lookup = getattr(module, "recruit_sources", None)
+    if lookup is None:
+        return []
+    try:
+        return list(lookup(db_pool.get_con(db, revision)))
+    except Exception:
+        return []
+
+
+@st.cache_data(show_spinner=False)
 def marquee_event_options(sport_key, db, revision):
     """Marquee fixture names actually tagged in this database."""
     module = sports.get(sport_key).C
@@ -429,8 +447,30 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
             draft_kinds = list(getattr(C, "DRAFT_TYPES", ()))
             args.append(st.selectbox("Draft type", draft_kinds, key=wk))
         elif a == "source":
-            args.append(st.text_input("Recruited from",
-                                      defaults.get("source", ""), key=wk))
+            # A list, not a text box. The values are steps of a
+            # recruitment path -- "Oakleigh U18", "Port Adelaide (SANFL)"
+            # -- and nobody guesses those spellings; typing "Oakleigh"
+            # into the old box worked only because the match was a loose
+            # substring, which also made "Geelong" mean three places.
+            # The count is in the label because it is how many answers the
+            # square will have.
+            sources = recruit_source_options(sport.key, sport.db, db_revision)
+            if sources:
+                names = [name for name, _ in sources]
+                want = defaults.get("source", names[0])
+                idx = names.index(want) if want in names else 0
+                pick = st.selectbox(
+                    "Recruited from", range(len(sources)), index=idx,
+                    format_func=lambda i, options=sources:
+                        f"{options[i][0]}  ·  {options[i][1]} selections",
+                    key=wk,
+                    help="Any step of the path to the draft: the junior "
+                         "club, the school, the talent-league or "
+                         "state-league club.")
+                args.append(sources[pick][0])
+            else:
+                args.append(st.text_input("Recruited from",
+                                          defaults.get("source", ""), key=wk))
         elif a == "award":
             names = list(C.AWARD_SLUGS)
             want = defaults.get("award")

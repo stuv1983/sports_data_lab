@@ -266,6 +266,79 @@ def test_a_query_that_does_not_parse_is_returned_unchanged():
     assert Q.replace_name_term('name:"unclosed', "x", "y") == 'name:"unclosed'
 
 
+# ---------------------------------------------------------- draft tokens
+
+def _draft_fixture():
+    con, schema = fixture()
+    con.executescript("""
+        CREATE TABLE draft (
+          player TEXT, draft_year INTEGER, draft_type TEXT, pick INTEGER,
+          club TEXT, original_club TEXT
+        );
+        CREATE TABLE draft_links (
+          draft_rowid INTEGER, player_id INTEGER, match_status TEXT
+        );
+        INSERT INTO draft VALUES
+          ('Alpha One',1990,'National',3,'A','Glenelg / Sacred Heart College'),
+          ('Beta Two',2001,'National',40,'B','Greythorn / Oakleigh U18'),
+          ('Beta Two',2004,'Rookie',3,'B','Greythorn / Oakleigh U18');
+        INSERT INTO draft_links VALUES (1,1,'unique'), (2,2,'unique'),
+                                       (3,2,'ambiguous');
+    """)
+    return con, schema
+
+
+def _found(query):
+    con, schema = _draft_fixture()
+    sql, params, _ = Q.compile_query(schema, query, con=con)
+    return [row[0] for row in con.execute(sql, params)]
+
+
+def test_recruited_from_matches_a_whole_step_of_the_path():
+    """`original_club` is a path, so the term is matched against one step
+    of it rather than as a substring of the whole thing."""
+    assert _found("recruited_from:Glenelg") == ["Alpha One"]
+    assert _found('recruited_from:"Oakleigh U18"') == ["Beta Two"]
+    assert _found('recruited_from:"Sacred Heart College"') == ["Alpha One"]
+
+
+def test_recruited_from_accepts_the_name_a_person_would_type():
+    """"Oakleigh" is what somebody writes for a club whose step reads
+    "Oakleigh U18"; "North Glenelg" is a different place entirely."""
+    assert _found("recruited_from:Oakleigh") == ["Beta Two"]
+    assert _found("recruited_from:Glen") == []
+
+
+def test_a_pick_is_a_national_draft_pick():
+    """Draftguru restarts pick numbering for the rookie draft, so an
+    unqualified pick 3 would answer with two different players."""
+    assert _found("pick:3") == ["Alpha One"]
+    assert _found("pick:1..50") == ["Alpha One", "Beta Two"]
+
+
+def test_draft_tokens_trust_only_a_resolved_link():
+    """Beta Two's rookie row is ambiguous, so it cannot answer a search
+    any more than it answers a grid square."""
+    con, schema = _draft_fixture()
+    con.execute("UPDATE draft_links SET match_status='ambiguous' "
+                "WHERE draft_rowid=2")
+    sql, params, _ = Q.compile_query(schema, "recruited_from:Oakleigh",
+                                     con=con)
+    assert con.execute(sql, params).fetchall() == []
+
+
+def test_a_draft_year_is_a_year_or_a_range():
+    assert _found("draft_year:1990") == ["Alpha One"]
+    assert _found("draft_year:1990..2001") == ["Alpha One", "Beta Two"]
+
+
+def test_a_draft_search_without_the_layer_says_so():
+    con, schema = fixture()          # no draft tables
+    for query in ("recruited_from:Glenelg", "pick:1", "draft_year:2001"):
+        with pytest.raises(Q.QuerySyntaxError, match="not loaded"):
+            Q.compile_query(schema, query, con=con)
+
+
 def test_name_terms_reads_what_the_did_you_mean_needs():
     """The search page offers close spellings only for the name tokens,
     and a query that does not parse is already an error box."""

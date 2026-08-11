@@ -169,9 +169,105 @@ NOTES: tuple[Note, ...] = (
 )
 
 
+#: How the draft has worked, which is a different question from how this
+#: database records it.
+#:
+#: A draft board is unreadable without them. Pick 1 of 1986 was not the
+#: best player available -- West Australians were excluded from that draft
+#: altogether. A club holding two early picks in 1997 was not lucky, it was
+#: given a priority pick. A father-son selection at pick 60 is not a late
+#: bloomer, it is a bid being matched. Every one of those is a rule of the
+#: competition rather than a fault in the data, and the rules changed often
+#: enough that the year a record belongs to decides which applied.
+#:
+#: Dated notes are attached to the drafts they governed. The undated ones
+#: are standing rules with no useful start date inside this collection --
+#: the father-son rule predates the draft by thirty years -- and are listed
+#: as background rather than pinned to a year.
+DRAFT_NOTES: tuple[Note, ...] = (
+    Note("Draft",
+         "The VFL's first draft. Each club had two selections of interstate "
+         "players, in reverse order of finishing position. It ran alongside "
+         "the country zoning introduced in 1967, and was a response to "
+         "rising transfer fees and salaries against falling attendances.",
+         first=1981, last=1982),
+    Note("Draft",
+         "The first of the modern drafts, still run alongside the zone "
+         "system. West Australian players were excluded: the new West Coast "
+         "Eagles recruited up to 35 of them directly, no more than six from "
+         "any one WAFL club. The Brisbane Bears, also new, received six "
+         "concessional picks ahead of everyone and exclusive access to "
+         "Queensland players.",
+         first=1986, last=1986),
+    Note("Draft",
+         "Priority picks begin. A club whose win-loss record fell below a "
+         "set mark automatically received an extra early selection, which "
+         "is why some clubs hold two picks inside the first handful. "
+         "Priority selections are marked in the pick column here.",
+         first=1993, last=2011),
+    Note("Draft",
+         "Priority picks are no longer automatic: they are granted at the "
+         "AFL Commission's discretion. The automatic rule had become "
+         "controversial, with commentators alleging clubs out of finals "
+         "contention had reason to lose late-season matches, though the AFL "
+         "never charged any club over it.",
+         first=2012),
+    Note("Draft",
+         "Players must turn 18 by 31 December of the draft year, so a "
+         "player who turns 18 early in Year 12 finishes school before "
+         "being drafted. Jack Watts, pick 1 in 2008, was drafted at 17; "
+         "nobody has been since.",
+         first=2009),
+
+    Note("Draft rules",
+         "The draft is held at the end of November each year, after the "
+         "draftees' school examinations. Around 50 players are invited to "
+         "the AFL Draft Combine beforehand, with smaller state screenings "
+         "in the weeks after it."),
+    Note("Draft rules",
+         "Father-son rule: a club may recruit the son of a former player, "
+         "so that a family's association with a club continues. At a club "
+         "with 20 years or more in the VFL/AFL the father must have played "
+         "100 games for it; clubs without that history had criteria based "
+         "on their state leagues. The rule dates from 1949, three decades "
+         "before the draft. Under current rules the son is bid for: any "
+         "club may nominate a pick, and the father's club must use its "
+         "next available selection after the highest bid to match it. "
+         "Earlier versions allowed the son to be taken automatically, or "
+         "with a third-round pick."),
+    Note("Draft rules",
+         "Northern club academies: Brisbane, Gold Coast, GWS and Sydney "
+         "develop players from well before their teens in markets where "
+         "the code is not the first sport, and hold priority access to "
+         "them through a bidding system."),
+    Note("Draft rules",
+         "Next Generation Academies: clubs outside New South Wales and "
+         "Queensland develop players from multicultural and Indigenous "
+         "backgrounds, with priority access through the same bidding "
+         "system."),
+    Note("Draft rules",
+         "Zone allocations, mid-year, pre-season and rookie drafts, "
+         "expansion-club concessions and the trading of players and picks "
+         "have all been changed repeatedly since 1986. The draft's premise "
+         "-- an equalisation measure that assists the poorer-performing "
+         "clubs -- has not."),
+)
+
+
 def for_season(season) -> list[Note]:
     """Every note that applies to one season, most recent rule first."""
     return [note for note in NOTES if note.covers(season)]
+
+
+def for_draft_year(year) -> list[Note]:
+    """The dated draft rules that governed one draft."""
+    return [note for note in DRAFT_NOTES if note.covers(year)]
+
+
+def draft_background() -> list[Note]:
+    """The standing draft rules, which no single draft year owns."""
+    return [note for note in DRAFT_NOTES
+            if note.first is None and note.last is None]
 
 
 def round_numbering_note(season) -> Note | None:

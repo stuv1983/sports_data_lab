@@ -82,6 +82,10 @@ SPORT = Sport(
     has_past_games=True,
     past_games_hint=("Run `python -m utils.mlb.load_retrosheet` to fetch and load "
                      "the Retrosheet game logs."),
+    #: From the same game logs. A season-grain `games` table has no
+    #: per-player row for one match, so the match card shows who took the
+    #: field rather than a box score it cannot build.
+    lineup_module="mlb.lineups",
     #: `result` on a postseason row is the *series* outcome from SeriesPost,
     #: one row per player per round, so a 'WS' win is the title itself
     #: rather than one win inside a seven-game series.

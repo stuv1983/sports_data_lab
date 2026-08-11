@@ -1215,19 +1215,17 @@ def _as_int(value):
 _PERIOD_COLUMN = re.compile(r"^(home|away)_q\d+(_\w+)?$")
 
 
-def _period_scores(sport, match_row, details, names=()) -> tuple:
-    """(table, present) -- the score at each break, however it is recorded.
+def _period_rows(match_row, details) -> list:
+    """The running score at each break, as numbers.
 
-    Two sources, in order of richness. `match_details` holds goals and
-    behinds as well as points, which is how a football score is actually
-    written; `matches` holds running points alone. A sport that records
-    neither gets no section rather than a table of dashes.
+    `[(period, (points, goals, behinds), (points, goals, behinds)), ...]`,
+    home side first. Two sources, in order of richness: `match_details`
+    holds goals and behinds as well as points, which is how a football
+    score is actually written, and `matches` holds running points alone.
+
+    Separate from the table built on top of it because the table's cells
+    are prose -- "3.2 (20)" -- and a chart needs the number.
     """
-    sc = sport.schema
-    home, away = (list(names) + [None, None])[:2]
-    home = home or str(_field(match_row, sc.match_home_team, default="Home"))
-    away = away or str(_field(match_row, sc.match_away_team, default="Away"))
-
     def cumulative(source, template, count=9):
         rows = []
         for period in range(1, count + 1):
@@ -1246,8 +1244,23 @@ def _period_scores(sport, match_row, details, names=()) -> tuple:
         return rows
 
     rows = cumulative(details, "{side}_q{n}_points") if details else []
-    if not rows:
-        rows = cumulative(match_row, "{side}_q{n}")
+    return rows or cumulative(match_row, "{side}_q{n}")
+
+
+def _period_scores(sport, match_row, details, names=()) -> tuple:
+    """(table, present) -- the score at each break, however it is recorded.
+
+    Two sources, in order of richness. `match_details` holds goals and
+    behinds as well as points, which is how a football score is actually
+    written; `matches` holds running points alone. A sport that records
+    neither gets no section rather than a table of dashes.
+    """
+    sc = sport.schema
+    home, away = (list(names) + [None, None])[:2]
+    home = home or str(_field(match_row, sc.match_home_team, default="Home"))
+    away = away or str(_field(match_row, sc.match_away_team, default="Away"))
+
+    rows = _period_rows(match_row, details)
     if not rows:
         return pd.DataFrame(), False
 
@@ -1349,6 +1362,67 @@ def _scorers(frame, stat) -> str:
     scored = scored.sort_values(stat, ascending=False)
     return ", ".join(f"{row.Player} {_tidy(getattr(row, stat))}"
                      for row in scored.itertuples())
+
+
+def _starting_lineups(sport, con, match, sides, names, nested) -> bool:
+    """Who took the field, where a sport can say but cannot give a box score.
+
+    The MLB build is season-grain, so a match card there had nothing
+    per-player to show at all. The Retrosheet game logs do record both
+    batting orders, which is not a box score but is who played -- and it
+    is what turns the card from a dead end into a way into two teams'
+    careers.
+
+    Returns whether anything was drawn, so the caller can fall back to
+    explaining the absence when a game has no lineup recorded.
+    """
+    module = sport.lineups()
+    if module is None:
+        return False
+    key = _field(match, "source_game_key")
+    if not key:
+        return False
+
+    drawn = []
+    for (_club, role), name in zip(sides, names):
+        position = {"Home": "H", "Away": "A"}.get(role)
+        if position is None:
+            continue
+        frame = module.read(con, key, position)
+        if not frame.empty:
+            drawn.append((name, frame))
+    if len(drawn) < 2:
+        return False
+
+    st.markdown(f"**{module.HEADING}s**")
+    st.caption(
+        "Who started, in batting order. This is what the game logs record; "
+        "they hold no per-player batting or pitching line, so this is the "
+        "team sheet rather than a box score."
+    )
+    import components
+
+    for column, (name, frame) in zip(st.columns(len(drawn)), drawn):
+        with column:
+            st.markdown(f"**{name}**")
+            components.clickable_player_table(
+                frame.drop(columns=["PlayerID"]),
+                frame["PlayerID"].tolist(), sport, con,
+                key=sport.k("match_lineup", name, str(key)), nested=nested)
+    # The detail this database does not hold -- batting lines, the play
+    # log, win probability -- published by sites that do not permit
+    # automated collection. Linked rather than copied.
+    links = getattr(module, "game_links", None)
+    for label, url in (links(key) if links else []):
+        st.link_button(label, url, icon=":material/open_in_new:",
+                       type="tertiary")
+
+    st.caption(
+        "Lineups from Retrosheet. The information used here was obtained "
+        "free of charge from and is copyrighted by Retrosheet. Interested "
+        "parties may contact Retrosheet at www.retrosheet.org."
+    )
+    return True
 
 
 def match_overview(sport, con, match, nested=False) -> None:
@@ -1462,16 +1536,27 @@ def match_overview(sport, con, match, nested=False) -> None:
         st.markdown("**Scoring progression**")
         st.caption("Running score at each break, with what each side put on "
                    "in between.")
+        # The chart carries the shape of the match -- who led, when it
+        # turned -- and the table carries the numbers, which for a football
+        # score are written a way no axis can show ("3.2 (20)").
+        import charts
+
+        progression = charts.progression_chart(
+            _period_rows(match_row, details), names[0], names[1],
+            "quarter" if len(periods) == 4 else "break")
+        if progression is not None:
+            st.altair_chart(progression, use_container_width=True)
         st.dataframe(periods, hide_index=True, width="stretch")
 
     # -- both sides, statistic by statistic ---------------------------
     if box.empty or not stats:
-        st.caption(
-            f"No per-player record is stored for this {V.game}. "
-            + (f"{sport.label.replace(' Data Lab', '')} {V.games} are "
-               f"recorded as {sport.games_row_label.lower()}, not as box "
-               "scores." if sport.games_row_label else
-               "The score is recorded but the teams are not."))
+        if not _starting_lineups(sport, con, match, sides, names, nested):
+            st.caption(
+                f"No per-player record is stored for this {V.game}. "
+                + (f"{sport.label.replace(' Data Lab', '')} {V.games} are "
+                   f"recorded as {sport.games_row_label.lower()}, not as box "
+                   "scores." if sport.games_row_label else
+                   "The score is recorded but the teams are not."))
     else:
         left, right = per_side
         if not left.empty and not right.empty:

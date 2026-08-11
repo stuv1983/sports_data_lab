@@ -24,6 +24,8 @@ goalkickers, and the Draftguru draft layer.
 import core
 import sports
 
+from . import recruitment
+
 # The schema and vocabulary lists are declared once, in sports.py, because
 # the sport picker needs them before this module is imported.
 SCHEMA = sports.AFL_SCHEMA
@@ -345,10 +347,43 @@ def drafted_by_but_never_played_for(club):
 
 
 def recruited_from(source):
-    """Original club / junior club substring, e.g. 'Glenelg', 'Oakleigh'."""
+    """Recruited through one step of the path to the draft.
+
+    `draft.original_club` is a path, not a club: "Greythorn / Xavier
+    College / Oakleigh U18". A square asking for Oakleigh means the
+    Oakleigh step of somebody's path, so the match is anchored to a whole
+    step of it -- a plain substring answered "Geelong" with the Geelong
+    talent-league club, Geelong College and Geelong Falcons at once,
+    three different places.
+
+    A term that starts a step still counts, because "Oakleigh" is what a
+    person types for a club whose step reads "Oakleigh U18". Anything
+    picked from the grid maker's list is a whole step already.
+    """
+    text = str(source or "").strip()
     return (f"""{_DRAFT_JOIN}
-                  AND LOWER(d.original_club) LIKE ?""",
-            [f"%{source.lower()}%"])
+                  AND {recruitment.segment_or_prefix_sql('d.original_club')}""",
+            [text, text])
+
+
+def recruit_sources(con, limit=400):
+    """(step, selections) for the places a square can ask about.
+
+    Read from the table rather than listed, so the grid maker offers what
+    the database actually holds. Ordered by how many selections came
+    through each, because a step that produced two players makes a square
+    with two answers.
+    """
+    if not core.have_tables(con, "draft"):
+        return []
+    counted: dict[str, int] = {}
+    for path, in con.execute(
+            "SELECT original_club FROM draft "
+            "WHERE original_club IS NOT NULL AND TRIM(original_club) <> ''"):
+        for step in recruitment.path(path):
+            counted[step] = counted.get(step, 0) + 1
+    ordered = sorted(counted.items(), key=lambda item: (-item[1], item[0]))
+    return ordered[:limit]
 
 
 def drafted_between(lo, hi):

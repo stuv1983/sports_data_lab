@@ -627,6 +627,9 @@ def load_rivalries(db, people, people_teams, verbose, refresh=False):
         matches = load_retrosheet.load_matches(con, refresh=refresh,
                                                team_names=names)
         log(verbose, f"match history: {matches:,} matches")
+        lineups = load_retrosheet.load_lineups(con, refresh=refresh,
+                                               crosswalk=crosswalk)
+        log(verbose, f"starting lineups: {lineups:,} games")
     except Exception as error:                                  # noqa: BLE001
         # Never silent, even under --quiet: the build otherwise looks
         # complete while two squares are missing from the board.

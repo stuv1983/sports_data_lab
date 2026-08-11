@@ -126,6 +126,8 @@ SPORT = Sport(
     data_notes_module="afl.data_notes",
     ground_explorer_module="afl.ground_explorer",
     has_ground_explorer=True,
+    draft_page_module="afl.draft_page",
+    has_draft_page=True,
     has_draftguru_player_cards=True,
     past_games_hint=("Run `python -m utils.afl.fetch_club_sources`, then "
                      "`python -m utils.afl.load_club_all_games`."),

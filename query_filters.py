@@ -104,6 +104,19 @@ def _has_values(con, table: str, column: str) -> bool:
 #: Advanced Search key -> the column each sport stores it in.
 _PHYSICAL_COLUMNS = {"height": "height_cm", "weight": "weight_kg"}
 
+#: Trusted draft rows joined to the player they resolved to. Shared by
+#: every draft token so they agree on which links count -- an ambiguous
+#: link must not answer a search any more than it answers a grid square.
+_DRAFTED = ("SELECT dl.player_id FROM draft d JOIN draft_links dl "
+            "ON dl.draft_rowid = d.rowid "
+            "WHERE dl.match_status IN ('unique','resolved') "
+            "AND dl.player_id IS NOT NULL")
+
+
+def _require_draft(con) -> None:
+    if not _table_exists(con, "draft") or not _table_exists(con, "draft_links"):
+        raise QuerySyntaxError("Draft data is not loaded")
+
 
 def tokenize(query: str) -> list[str]:
     """Split a query like shlex.split, with double quotes the only quoting.
@@ -356,6 +369,39 @@ def compile_query(schema, query: str, con=None):
                 "AND a.award_slug=?)"
             )
             params.append(value)
+        elif key in {"recruited_from", "recruited", "from_club"}:
+            _require_draft(con)
+            # `original_club` is a path -- "Greythorn / Xavier College /
+            # Oakleigh U18" -- so the term is matched against a whole step
+            # of it. The rule lives with the other path-reading code
+            # rather than being spelled out again here; it is pure text
+            # handling with nothing sport-specific to import.
+            from afl import recruitment
+
+            player_where.append(
+                f"p.{s.player_id} IN ({_DRAFTED} AND "
+                f"{recruitment.segment_or_prefix_sql('d.original_club')})"
+            )
+            params.extend([value, value])
+        elif key in {"pick", "draft_pick"}:
+            _require_draft(con)
+            lo, hi = _range(value, key)
+            # National draft only. Draftguru restarts pick numbering for
+            # the rookie, pre-season and mid-season drafts, so an
+            # unqualified `pick:1..10` sweeps in four different pick 1s.
+            player_where.append(
+                f"p.{s.player_id} IN ({_DRAFTED} "
+                "AND LOWER(d.draft_type) LIKE '%national%' "
+                "AND d.pick BETWEEN ? AND ?)"
+            )
+            params.extend([lo, hi])
+        elif key in {"draft_year", "drafted_year"}:
+            _require_draft(con)
+            lo, hi = _range(value, key)
+            player_where.append(
+                f"p.{s.player_id} IN ({_DRAFTED} "
+                "AND d.draft_year BETWEEN ? AND ?)")
+            params.extend([lo, hi])
         elif key == "drafted_by":
             if not _table_exists(con, "draft") or not _table_exists(con, "draft_links"):
                 raise QuerySyntaxError("Draft data is not loaded")

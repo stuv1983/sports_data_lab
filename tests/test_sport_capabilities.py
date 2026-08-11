@@ -259,6 +259,8 @@ def test_afl_declares_the_pages_it_actually_has():
     assert sports.AFL.has_past_games is True
     assert sports.AFL.has_ground_explorer is True
     assert sports.AFL.ground_explorer_module == "afl.ground_explorer"
+    assert sports.AFL.has_draft_page is True
+    assert sports.AFL.draft_page_module == "afl.draft_page"
 
 
 def test_afl_club_data_tables_are_the_six_app_py_used_to_hardcode():
@@ -296,8 +298,23 @@ def test_a_declared_daily_grid_feed_resolves_to_a_callable(sport):
 def test_afl_criterion_parser_and_game_lab_modules_import():
     import importlib
     for name in (sports.AFL.criterion_parser, sports.AFL.game_lab_module,
-                 sports.AFL.ground_explorer_module):
+                 sports.AFL.ground_explorer_module,
+                 sports.AFL.draft_page_module):
         assert importlib.import_module(name)
+
+
+@pytest.mark.parametrize("sport", list(sports.SPORTS.values()),
+                         ids=list(sports.SPORTS))
+def test_a_sport_offering_a_draft_page_names_one_that_renders(sport):
+    """app.py puts the page in the sidebar on the flag alone, so a sport
+    that raises the flag without a working module gets a broken tab."""
+    import importlib
+
+    if not sport.has_draft_page:
+        assert not sport.draft_page_module, sport.key
+        return
+    module = importlib.import_module(sport.draft_page_module)
+    assert callable(getattr(module, "draft_page", None)), sport.key
 
 
 # --------------------------------------------------------------- the NBA

@@ -287,17 +287,145 @@ def _filters(sport, con, key):
 
 def player_page(sport, con, player_picker):
     st.markdown("# Player Search")
-    st.caption("Search the full player database, then inspect the selected "
-               "player's career and best performances — or put two careers "
-               "side by side.")
-    one, two, together = st.tabs(
-        ["One player", "Compare two", "Played with / against"])
+    st.caption("Search the full player database by name or by what a career "
+               "looks like, then inspect the selected player's career and "
+               "best performances — or put two careers side by side.")
+    find, one, two, together = st.tabs(
+        ["Find players", "One player", "Compare two",
+         "Played with / against"])
+    with find:
+        _find_players(sport, con)
     with one:
         _player_profile(sport, con, player_picker)
     with two:
         _compare_players(sport, con, player_picker)
     with together:
         _player_connections(sport, con, player_picker)
+
+
+def _find_players(sport, con):
+    """Find a player by what their career looks like, not by their name.
+
+    Every other tab here starts from a name, which is no use to somebody
+    who is trying to remember one. These are controls over the same query
+    compiler the Advanced Search page runs: the widgets build a query, the
+    compiler turns it into one parameterised statement, and the query it
+    built is shown underneath so a reader can take it to that page and
+    keep going.
+
+    Building the query rather than the SQL is the point. Only the
+    compiler knows which columns exist for a sport and which layers are
+    loaded, and a second path into the database would be a second set of
+    rules to keep in step with the first.
+    """
+    import components
+    import query_filters_family as Q
+    import ui_widgets
+
+    V, sc = sport.vocab, sport.schema
+    revision = _db_revision(sport.db)
+    season_min, season_max = _season_span(sport.key, revision, con)
+    tokens: list[str] = []
+
+    c1, c2, c3 = st.columns(3)
+    seasons = c1.select_slider(
+        f"Played between {V.season}s", options=range(season_min, season_max + 1),
+        value=(season_min, season_max), key=sport.k("find_seasons"))
+    if seasons != (season_min, season_max):
+        tokens.append(f"played:{seasons[0]}..{seasons[1]}")
+
+    clubs = c2.multiselect(
+        V.clubs.capitalize(), list(sc.clubs), key=sport.k("find_clubs"),
+        help=f"Two or more {V.clubs} means a career that took in every one "
+             f"of them.")
+    tokens += [f"club:{Q.quote_token(club)}" for club in clubs]
+
+    games = c3.number_input(
+        f"Minimum career {V.games}", min_value=0, value=0, step=25,
+        key=sport.k("find_games"))
+    if games:
+        tokens.append(f"games>={int(games)}")
+
+    # -- the draft, where the sport has one loaded ------------------------
+    if getattr(sport.C, "draft_available", None) and sport.C.draft_available(con):
+        d1, d2, d3 = st.columns(3)
+        sources = ui_widgets.recruit_source_options(
+            sport.key, sport.db, revision)
+        if sources:
+            names = ["Anywhere"] + [name for name, _ in sources]
+            counts = dict(sources)
+            source = d1.selectbox(
+                "Recruited from", names, key=sport.k("find_source"),
+                format_func=lambda n: (
+                    n if n == "Anywhere" else f"{n}  ·  {counts[n]}"),
+                help="Any step of the path to the draft — the junior club, "
+                     "the school, the talent-league or state-league club.")
+            if source != "Anywhere":
+                tokens.append(f"recruited_from:{Q.quote_token(source)}")
+
+        picks = d2.select_slider(
+            "National draft pick", options=range(1, 101),
+            value=(1, 100), key=sport.k("find_pick"),
+            help="Pick numbers restart for the rookie and pre-season "
+                 "drafts, so this asks about the national draft only.")
+        if picks != (1, 100):
+            tokens.append(f"pick:{picks[0]}..{picks[1]}")
+
+        drafted = d3.select_slider(
+            "Drafted between", options=range(season_min, season_max + 1),
+            value=(season_min, season_max), key=sport.k("find_drafted"))
+        if drafted != (season_min, season_max):
+            tokens.append(f"draft_year:{drafted[0]}..{drafted[1]}")
+
+    e1, e2 = st.columns([1, 2])
+    order = e1.selectbox(
+        "Sort by", ["obscurity", "games", "fewest_games", "score", "name",
+                    "newest", "oldest"],
+        format_func=lambda s: {
+            "obscurity": "Most obscure", "games": f"Most {V.games}",
+            "fewest_games": f"Fewest {V.games}",
+            "score": f"Most {V.score}", "name": "Name",
+            "newest": "Most recent", "oldest": "Earliest"}[s],
+        key=sport.k("find_sort"))
+    tokens.append(f"sort:{order}")
+    limit = e2.slider("How many to show", 25, 500, 100, step=25,
+                      key=sport.k("find_limit"))
+    tokens.append(f"limit:{limit}")
+
+    query = " ".join(tokens)
+    # Nothing but the sort and the limit means every player in the
+    # database, ranked -- a real answer, but not one anybody asked for.
+    if len(tokens) <= 2:
+        st.info(f"Choose a filter above to search. Every {V.game}, "
+                f"{V.club} and draft field can be combined.")
+        return
+
+    try:
+        sql, params, spec = Q.compile_query(sc, query, con=con)
+        frame = pd.read_sql_query(sql, con, params=params)
+    except (Q.QuerySyntaxError, ValueError) as exc:
+        st.error(str(exc))
+        return
+    except (sqlite3.Error, pd.errors.DatabaseError) as exc:
+        st.error(f"Database error while searching: {exc}")
+        return
+
+    if frame.empty:
+        st.info("No players match every filter.")
+        return
+
+    st.caption(f"{len(frame):,} player{'s' if len(frame) != 1 else ''} shown.")
+    shown = components.player_results_table(
+        frame, sport, con, key=sport.k("find_results"))
+    st.download_button(
+        "Download these players as CSV",
+        data=shown.to_csv(index=False).encode("utf-8"),
+        file_name=f"{sport.key}_player_filter.csv", mime="text/csv",
+        key=sport.k("find_download"))
+    with st.expander("The query these filters built"):
+        st.code(query, language=None)
+        st.caption("Advanced Search takes the same text, and understands "
+                   "more than these controls offer.")
 
 
 def _player_profile(sport, con, player_picker):
@@ -448,7 +576,8 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
     if sport.has_draftguru_player_cards:
         if {"draft", "draft_links"} <= tables:
             draft = _con.execute(
-                """SELECT d.draft_year, d.draft_type, d.pick, d.club
+                """SELECT d.draft_year, d.draft_type, d.pick, d.club,
+                          d.original_club
                      FROM draft d JOIN draft_links l ON l.draft_rowid=d.rowid
                     WHERE l.player_id=? AND l.match_status IN
                           ('from_draft','unique','resolved')
@@ -456,7 +585,7 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
                                   THEN 0 ELSE 1 END, d.draft_year LIMIT 1""",
                 (pid,)).fetchone()
             if draft:
-                year, draft_type, pick, club = draft
+                year, draft_type, pick, club, recruited = draft
                 parts = [f"Pick {int(pick)}" if pick is not None else None,
                          str(int(year)) if year is not None else None,
                          str(draft_type) if draft_type else None]
@@ -464,6 +593,10 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
                 if club:
                     value += f" · {club}"
                 bio.append(("Draft", value))
+                # The path to the draft, junior club first, as the source
+                # writes it: "Greythorn / Xavier College / Oakleigh U18".
+                if recruited and str(recruited).strip():
+                    bio.append(("Recruited from", str(recruited).strip()))
 
         if {"awards", "person_links"} <= tables:
             for name, season in _con.execute(
@@ -627,6 +760,37 @@ def _career_blurb(V, debut, final, games, n_clubs, draft_year=None,
             sentence += ", " + ", ".join(achievements[:-1])
             sentence += ", and " + achievements[-1]
     return prefix + sentence + "."
+
+
+def _career_charts(sport, seasons, V) -> None:
+    """The shape of a career, above the season table that details it.
+
+    Two charts rather than one with two scales: games and goals are
+    different sizes, and drawing them against a shared axis would invent a
+    relationship the numbers do not have. The score chart is dropped
+    entirely for a player who never scored, where a row of nothing is not
+    a finding about them but a fact about their position.
+    """
+    import charts
+
+    games_column = V.games.capitalize()
+    score_column = V.score.capitalize()
+    blue, orange = charts.series_colours()
+    drawn = [
+        (f"{games_column} per {V.season}",
+         charts.career_chart(seasons, "Season", games_column,
+                             games_column, blue)),
+        (f"{score_column} per {V.season}",
+         charts.career_chart(seasons, "Season", score_column,
+                             score_column, orange)),
+    ]
+    drawn = [(title, chart) for title, chart in drawn if chart is not None]
+    if not drawn:
+        return
+    for column, (title, chart) in zip(st.columns(len(drawn)), drawn):
+        with column:
+            st.caption(title)
+            st.altair_chart(chart, use_container_width=True)
 
 
 def _player_card_logos(sport, con, clubs_hist):
@@ -846,6 +1010,7 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                 st.dataframe(seasons, hide_index=True, width="stretch",
                              height=300)
             else:
+                _career_charts(sport, seasons, V)
                 # A row here is one club's season, so it opens that season
                 # for that club: who won it, how the club went, who led it.
                 import components

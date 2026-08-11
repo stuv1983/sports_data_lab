@@ -32,6 +32,7 @@ from typing import Mapping, Sequence
 import pandas as pd
 import streamlit as st
 
+import core
 import explore
 import overlays
 
@@ -341,6 +342,37 @@ def card_links(sport, con, *, key_prefix: str, player_id=None,
                          key=f"{key_prefix}_club_{position}", type="tertiary"):
                 _open_card({"kind": "club", "club": club, "label": label},
                            sport, con, nested=True)
+
+
+def player_results_table(frame, sport, con, key: str, nested: bool = False):
+    """Render a `query_filters` result frame the way both search pages do.
+
+    The compiler returns the same shape wherever it is called from -- a
+    hidden `PlayerID`, a raw obscurity to turn into stars, a `Teams` path
+    to collapse -- so the presentation belongs in one place rather than
+    being written out again by each page that runs a query.
+
+    Returns the frame as displayed, for a caller offering a download.
+    """
+    shown = frame.copy()
+    if "ObscurityRaw" in shown.columns:
+        shown["Rating"] = shown["ObscurityRaw"].map(core.stars_text)
+        shown = shown.drop(columns=["ObscurityRaw"])
+    if "Teams" in shown.columns:
+        # One entry per club, named as the club was at the time:
+        # "Kangaroos, North Melbourne" is one club that renamed itself.
+        shown["Teams"] = (shown["Teams"].fillna("")
+                          .map(sport.collapse_club_path)
+                          .str.replace("|", ", ", regex=False))
+    if "PlayerID" in shown.columns:
+        player_ids = shown["PlayerID"].tolist()
+        shown = shown.drop(columns=["PlayerID"])
+        st.caption("Select a row to see that player's full career.")
+        clickable_player_table(shown, player_ids, sport, con, key=key,
+                               nested=nested)
+    else:
+        st.dataframe(shown, hide_index=True, width="stretch")
+    return shown
 
 
 def _row_season(row):

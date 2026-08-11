@@ -155,6 +155,16 @@ class Sport:
     #: Optional sport-owned page for venue/ground history and records.
     ground_explorer_module: str = ""
     has_ground_explorer: bool = False
+    #: Optional sport-owned page for the draft. Declared per sport because
+    #: what a draft record even holds differs: the AFL's carries a signing
+    #: rule (father-son, academy, zone) that no other sport here has.
+    draft_page_module: str = ""
+    has_draft_page: bool = False
+    #: Module supplying starting lineups for a sport whose `games` rows are
+    #: not box scores. The MLB build is season-grain -- Lahman has no box
+    #: scores -- so its match card has no per-player rows to draw and shows
+    #: who took the field instead.
+    lineup_module: str = ""
     #: The `games.round` value whose win means the sport's title -- 'GF' for
     #: the AFL, 'WS' for the MLB, 'SB' for the NFL. The player profile counts
     #: distinct seasons won to show a premiership/World Series/Super Bowl
@@ -272,6 +282,15 @@ class Sport:
             return text
         sep = "|" if "|" in text else ", "
         return sep.join(self.collapse_clubs(parts))
+
+    def lineups(self):
+        """The sport's lineup module, or None when it declares none."""
+        if not self.lineup_module:
+            return None
+        try:
+            return importlib.import_module(self.lineup_module)
+        except ImportError:
+            return None
 
     def daily_grid_fetcher(self):
         """The callable behind `daily_grid_feed`, or None when unset.
