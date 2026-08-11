@@ -5,6 +5,11 @@ numpy>=2,<3
 # Streamlit already depends on Altair; named here because charts.py imports
 # it directly and a pin that stops shipping it must fail here, not on a card.
 altair>=5,<7
+# Advanced Search query builder: st.connection("sql") needs SQLAlchemy, and
+# the drag-and-drop mode is the condition-tree component (the page degrades
+# to native filters if the component is missing, but SQLAlchemy is required).
+SQLAlchemy>=2,<3
+streamlit-condition-tree>=0.1,<1
 
 # Data ingestion and source parsing
 beautifulsoup4>=4.12,<5
