@@ -247,6 +247,8 @@ def awards_page(sport, con: sqlite3.Connection) -> None:
     tab_names = ["Honour rolls", "All-Australian", "Club best and fairest"]
     if "brownlow_results" in have:
         tab_names.insert(1, "Brownlow voting")
+    if "rising_star_nominees" in have:
+        tab_names.append("Rising Star nominees")
     if "hall_of_fame" in have:
         tab_names.append("Hall of Fame")
     if "team_selections" in have:

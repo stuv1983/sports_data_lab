@@ -1,8 +1,10 @@
+import datetime as dt
 import sqlite3
 
 import streamlit as st
 
 import accounts
+import data_paths
 import database_updates
 import db_pool
 
@@ -264,18 +266,453 @@ def _render_gridley_scan(status):
         st.dataframe(boards, width="stretch", hide_index=True)
 
 
+def _days_ago(days):
+    if days is None:
+        return "Never"
+    if days <= 0:
+        return "Today"
+    if days == 1:
+        return "Yesterday"
+    return f"{days} days ago"
+
+
+def _render_rising_star_currency(currency):
+    """How current the nominations are, without running anything.
+
+    The panel used to show only the outcome of the last check, which meant
+    an administrator who had never run one saw nothing at all and had no
+    way to tell whether the award was current short of triggering a job.
+    """
+    if not currency:
+        return
+    state = currency.get("state")
+    if state == "not loaded":
+        st.info(
+            "No Rising Star nominations are loaded. Run a check below, or "
+            "rebuild the AFL database."
+        )
+        return
+    if state == "unreadable":
+        st.warning(f"Could not read the nominations: {currency.get('summary')}")
+        return
+    if state == "empty":
+        st.info("The nominations table is present but holds no rows.")
+        return
+
+    season = currency.get("season")
+    latest_round = currency.get("latest_round")
+    with st.container(horizontal=True):
+        st.metric(
+            f"Latest {season} nomination",
+            "None yet" if latest_round is None else f"Round {latest_round}",
+            border=True,
+            help=("The newest nomination in the live database. Rounds carry "
+                  "no date, so this says what is loaded, not how recent it is."),
+        )
+        st.metric(
+            f"Nominations in {season}", f"{currency.get('season_nominations', 0):,}",
+            border=True,
+            help=f"{currency.get('total', 0):,} across every season.",
+        )
+        st.metric(
+            "Source last checked", _days_ago(currency.get("days_since_check")),
+            border=True,
+            help="Wikipedia is checked every Monday, and whenever this "
+                 "page's button is used.",
+        )
+
+    if currency.get("latest_player"):
+        st.caption(
+            f"Newest: **{currency['latest_player']}** "
+            f"({currency.get('latest_club', 'unknown club')}), round "
+            f"{latest_round}, from {currency.get('latest_source', 'unknown')}"
+            + ("" if currency.get("latest_linked")
+               else " - not linked to a player, so the solver cannot see it")
+            + ". Sources: "
+            + ", ".join(f"{name} {count:,}" for name, count
+                        in sorted(currency.get("sources", {}).items()))
+            + "."
+        )
+
+    if currency.get("stale"):
+        st.warning(
+            "The season is underway and the source has not been checked "
+            f"successfully since {_days_ago(currency.get('days_since_check')).lower()}"
+            ". A nomination is announced every round, so at least one is "
+            "probably missing. Run a check below, and confirm the Monday "
+            "timer is installed."
+        )
+    elif not currency.get("in_season"):
+        st.caption(
+            "Between seasons: no further nomination is due until the next "
+            "season starts."
+        )
+
+
+def _render_manual_round_status(status):
+    """The loader's own report, which is what the operator actually needs.
+
+    It names which file paired with which fixture, which source name
+    resolved to which player, and exactly what it refused and why. A
+    success/failure banner alone would throw away the useful part.
+    """
+    if not status:
+        return
+    state = status.get("state")
+    kind = "Check" if status.get("dry_run") else "Load"
+    label = f"round {status.get('round')}, {status.get('season')}"
+    if state in {"starting", "running"}:
+        st.info(f"{kind} of {label} is {state} "
+                f"({_elapsed_time(status.get('started_at'))} so far). "
+                "Applying a round takes about a minute.")
+    elif state == "failed":
+        st.error(f"{kind} of {label} failed: {status.get('error')}")
+        st.caption("Nothing was written to the live database.")
+    elif state == "complete" and status.get("dry_run"):
+        st.success(f"{label} checked. Nothing was written — use **Load this "
+                   "round** to apply it.")
+    elif state == "complete":
+        st.success(f"{label} loaded and the AFL database was replaced. Use "
+                   "**Reload updated databases** above to pick it up.")
+    report = status.get("report")
+    if report:
+        with st.expander(f"{kind} report", expanded=state == "failed"):
+            st.code(report, language="text")
+
+
+def _render_manual_rounds(summary):
+    """Which hand-entered rounds the database is carrying, and their state."""
+    if not summary:
+        return
+    rounds = summary.get("rounds") or []
+    if summary.get("latest_round") is not None:
+        st.caption(
+            f"Latest game in the database: round {summary['latest_round']}, "
+            f"{summary.get('latest_season')} "
+            f"({summary.get('latest_date', 'date unknown')})."
+        )
+    if not rounds:
+        st.caption("No hand-entered rounds are stored. Every round in the "
+                   "database came from the upstream dataset.")
+        return
+    st.dataframe([{
+        "Season": row["season"],
+        "Round": row["round"],
+        # A stored round the rebuild now produces itself is redundant, not
+        # wrong: --apply-only already defers to the upstream rows. Saying
+        # so is how the operator knows it is safe to forget.
+        "Upstream now has it": "Yes" if row.get("upstream_has") else "No",
+    } for row in rounds], width="stretch", hide_index=True)
+    if summary.get("redundant"):
+        st.caption(
+            f"{summary['redundant']} stored round(s) are now published "
+            "upstream and can be forgotten below."
+        )
+
+
+def _rising_star_edit_form(user, active):
+    """Nominate a player, or record a suspension or vote count.
+
+    Players are chosen from a search rather than typed. A typed name that
+    does not resolve loads as `unmatched` -- kept for audit, invisible to
+    the solver -- so the nomination would look saved and answer nothing.
+    Picking from the database cannot produce that.
+    """
+    from utils.afl import rising_star_manual as manual
+
+    st.caption(
+        "Hand-entered nominations are stored as a source file and re-applied "
+        "on every load, so a rebuild replays them rather than losing them. "
+        "A suspension or a vote count is recorded against the published "
+        "nomination and keeps its match statistics."
+    )
+
+    term = st.text_input(
+        "Find a player", key="rs_player_search",
+        placeholder="Surname, or part of a name",
+        help="Search the players already in the database.")
+    if len(term.strip()) < 2:
+        st.caption("Type at least two characters to search.")
+        return
+
+    try:
+        con = db_pool.open_read_only(data_paths.default_db("afl"))
+        try:
+            matches = manual.search_players(con, term)
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError) as exc:
+        st.error(f"Could not search players: {exc}")
+        return
+    if not matches:
+        st.warning(f"No player matches {term!r}.")
+        return
+
+    chosen = st.selectbox(
+        "Player", matches, format_func=lambda row: row["label"],
+        key="rs_player_choice",
+        help="Career span, games and clubs are shown because a name is not "
+             "an identity — two Bailey Williamses played in 2026.")
+
+    today = dt.date.today()
+    with st.form("rising_star_edit"):
+        fields = st.container(horizontal=True)
+        season = fields.number_input(
+            "Season", min_value=1993, max_value=today.year + 1,
+            value=min(max(chosen["final_season"], 1993), today.year),
+            step=1, format="%d", key="rs_season")
+        round_number = fields.number_input(
+            "Round", min_value=0, max_value=30, value=0, step=1,
+            format="%d", key="rs_round",
+            help="The round the nomination was for. Ignored when you are "
+                 "only recording a suspension or votes.")
+        club = fields.text_input("Club", value=(chosen["clubs"] or "").split(",")[0].strip(),
+                                 key="rs_club")
+        votes = fields.number_input(
+            "Votes", min_value=0, max_value=200, value=0, step=1,
+            format="%d", key="rs_votes",
+            help="Final panel votes, published with the winner. Leave at 0 "
+                 "to record none.")
+        ineligible = st.checkbox(
+            "Ineligible to win the Rising Star due to suspension",
+            key="rs_ineligible",
+            help="Records that a nominated player was later suspended and "
+                 "so cannot win. The nomination itself stands.")
+        winner = st.checkbox("Won the Rising Star this season", key="rs_winner")
+        buttons = st.container(horizontal=True)
+        nominate = buttons.form_submit_button(
+            "Add nomination", icon=":material/add:", type="primary",
+            disabled=active)
+        annotate = buttons.form_submit_button(
+            "Record against existing nomination", icon=":material/edit:",
+            disabled=active)
+
+    if not (nominate or annotate):
+        return
+    try:
+        manual.upsert(
+            int(season), chosen["player"],
+            # The club is recorded either way. On an annotation it is what
+            # tells two same-named nominees apart, and without it the
+            # loader refuses to guess which one was suspended.
+            club=club,
+            # A round is what makes an entry a nomination. Passing it on an
+            # annotation would turn "this nominee was suspended" into a
+            # second nomination in whichever round the box happened to show.
+            round_number=int(round_number) if nominate else None,
+            ineligible=True if ineligible else None,
+            votes=int(votes) or None,
+            winner=True if winner else None,
+            edited_by=getattr(user, "email", "admin"))
+    except (OSError, ValueError) as exc:
+        st.error(f"{type(exc).__name__}: {exc}")
+        return
+
+    try:
+        database_updates.apply_rising_star_edits()
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        st.error(f"Saved the edit, but the database was not updated: {exc}")
+        return
+    st.session_state["database_update_notice"] = {
+        "kind": "success",
+        "message": (
+            f"{chosen['player']} saved for {int(season)} and the AFL "
+            "database was updated. Use Reload updated databases to pick it "
+            "up in this session."
+        ),
+    }
+    st.rerun()
+
+
+def _render_rising_star_edits():
+    """The hand-entered rows, so an edit can be found and undone."""
+    from utils.afl import rising_star_manual as manual
+
+    try:
+        entries = manual.read_entries()
+    except OSError as exc:
+        st.warning(f"Could not read hand-entered nominations: {exc}")
+        return
+    if not entries:
+        return
+    st.caption(f"{len(entries)} hand-entered row(s):")
+    st.dataframe([{
+        "Season": row.get("season"),
+        "Round": row.get("round_number") or "—",
+        "Player": row.get("player"),
+        "Club": row.get("club") or "—",
+        "Ineligible": "Yes" if str(row.get("ineligible")) == "1" else "",
+        "Votes": row.get("votes") or "",
+        "Winner": "Yes" if str(row.get("is_season_winner")) == "1" else "",
+        "Edited by": row.get("edited_by"),
+    } for row in entries], width="stretch", hide_index=True)
+
+    labels = {
+        f"{row.get('season')} {row.get('player')}": row.get("source_key")
+        for row in entries
+    }
+    remove = st.selectbox("Undo an edit", ["—", *labels], key="rs_remove")
+    if remove != "—" and st.button("Remove this edit",
+                                   icon=":material/undo:", key="rs_remove_go"):
+        manual.remove(labels[remove])
+        try:
+            database_updates.apply_rising_star_edits()
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            st.error(f"Removed the edit, but the reload failed: {exc}")
+            return
+        st.session_state["database_update_notice"] = {
+            "kind": "success",
+            "message": f"Removed the hand-entered row for {remove}.",
+        }
+        st.rerun()
+
+
+def _render_manual_round_section(active):
+    """Enter a round the upstream dataset has not published yet.
+
+    afl/build_db.py does not scrape AFL Tables -- its robots.txt disallows
+    it -- so game data arrives through the cached fitzRoy dataset, which
+    lags the live season by a round or two. This is the supported way to
+    close that gap, and it is the same loader the command line and the
+    desktop window use, so all three agree on what a valid round is.
+
+    Nothing here writes to the live database directly: a round is loaded
+    into a staged copy and promoted only if the loader accepted it, and the
+    parsed rows are stored so a rebuild replays them instead of losing
+    them.
+    """
+    st.markdown("#### Hand-entered round results")
+    st.caption(
+        "For a round that has been played but not yet published upstream. "
+        "Upload the round summary and one file per match, copied from the "
+        "AFL Tables match pages. Player statistics, Brownlow votes where "
+        "published, debutants and the ladder all follow from these files."
+    )
+
+    try:
+        summary = database_updates.manual_rounds()
+    except (OSError, sqlite3.Error, ImportError) as exc:
+        summary = {}
+        st.warning(f"Could not read stored rounds: {exc}")
+    _render_manual_rounds(summary)
+
+    today = dt.date.today()
+    with st.form("manual_round_form"):
+        fields = st.container(horizontal=True)
+        season = fields.number_input(
+            "Season", min_value=1897, max_value=today.year + 1,
+            value=today.year, step=1, format="%d")
+        round_name = fields.text_input(
+            "Round", value="",
+            help="The round as AFL Tables names it: 23, or a final such as EF.")
+        # .csv only: the loader globs *.csv, so anything else would upload
+        # successfully and then be invisible to it -- the worst of both.
+        uploads = st.file_uploader(
+            "Round summary and match files", accept_multiple_files=True,
+            type=["csv"],
+            help="One round summary plus one file per match. They are "
+                 "paired to fixtures by the club names inside them, never "
+                 "by filename, so a misnamed file cannot attach statistics "
+                 "to the wrong match.")
+        buttons = st.container(horizontal=True)
+        check = buttons.form_submit_button(
+            "Check this round", icon=":material/fact_check:")
+        load = buttons.form_submit_button(
+            "Load this round", icon=":material/upload_file:",
+            disabled=active, type="primary")
+
+    if check or load:
+        if not str(round_name).strip():
+            st.error("Enter the round, as AFL Tables names it.")
+        elif not uploads:
+            st.error("Upload the round summary and one file per match.")
+        else:
+            folder = database_updates.upload_round_files(
+                int(season), str(round_name).strip(),
+                [(item.name, item.getvalue()) for item in uploads])
+            if check:
+                # A dry run writes nothing, so it runs inline: the operator
+                # is waiting for its verdict before deciding to load.
+                with st.status("Checking the round...", expanded=True) as box:
+                    status = database_updates.run_manual_round_load(
+                        folder, int(season), str(round_name).strip(),
+                        dry_run=True)
+                    box.update(
+                        label=("Round checked" if status.get("state") == "complete"
+                               else "The round has problems"),
+                        state=("complete" if status.get("state") == "complete"
+                               else "error"))
+                _render_manual_round_status(status)
+                return
+            try:
+                pid = database_updates.start_manual_round_load_background(
+                    folder, int(season), str(round_name).strip())
+            except (OSError, RuntimeError, ValueError) as exc:
+                st.error(f"{type(exc).__name__}: {exc}")
+            else:
+                st.session_state["database_update_notice"] = {
+                    "kind": "success",
+                    "message": (
+                        f"Loading round {round_name}, {season} in the "
+                        f"background (PID {pid}). It takes about a minute — "
+                        "use Refresh status to follow it."
+                    ),
+                }
+                st.rerun()
+
+    _render_manual_round_status(database_updates.read_manual_round_status())
+
+    redundant = [row for row in (summary.get("rounds") or [])
+                 if row.get("upstream_has")]
+    if redundant:
+        with st.expander("Forget a round the upstream dataset now carries"):
+            st.caption(
+                "Dropping a stored round is safe once the rebuild produces "
+                "it: the upstream rows are already the authority, and this "
+                "only removes the hand-entered copy underneath them."
+            )
+            for row in redundant:
+                if st.button(
+                    f"Forget round {row['round']}, {row['season']}",
+                    key=f"forget_{row['season']}_{row['round']}",
+                    disabled=active, icon=":material/delete:",
+                ):
+                    try:
+                        database_updates.forget_manual_round(
+                            row["season"], row["round"])
+                    except (OSError, RuntimeError, sqlite3.Error) as exc:
+                        st.error(f"{type(exc).__name__}: {exc}")
+                    else:
+                        st.session_state["database_update_notice"] = {
+                            "kind": "success",
+                            "message": (
+                                f"Round {row['round']}, {row['season']} is no "
+                                "longer stored by hand."
+                            ),
+                        }
+                        st.rerun()
+
+
 def _render_rising_star_scan(status):
     if not status:
         return
     state = status.get("state")
+    started = status.get("started_at")
     if state == "failed":
         st.error(status.get("error", "The Rising Star check failed."))
+        st.caption(
+            f"Failed: {_display_time(status.get('finished_at'))} - The live "
+            "AFL database was left unchanged."
+        )
         return
-    if state == "starting":
-        st.info("A Rising Star check is starting.")
+    if state in {"starting", "running"}:
+        st.info(
+            f"A Rising Star check is {state} "
+            f"({_elapsed_time(started)} so far). It normally takes a few "
+            "seconds; use **Refresh status** above to see the result."
+        )
         return
     if state != "complete":
-        st.info("A Rising Star check is running.")
         return
 
     result = status.get("result", {})
@@ -288,22 +725,32 @@ def _render_rising_star_scan(status):
             + ", ".join(f"{item['player']} ({item['club']}, round "
                         f"{item['round']})" for item in added)
         )
-        if status.get("promoted"):
-            st.caption(
-                "The AFL database was replaced. Use **Reload updated "
-                "databases** above to pick it up in this session."
-            )
     elif result.get("note"):
         st.info(result["note"])
+    elif status.get("promoted"):
+        # Nothing new was published, but the database was behind what the
+        # source file already said -- a previous run wrote the file and
+        # failed to load it. Saying "no change" here would be wrong.
+        st.success(
+            f"No new nomination was published, but the database was behind "
+            f"the source and has been reloaded up to round "
+            f"{result.get('latest_round', 'unknown')}."
+        )
     else:
         st.info(
-            f"No new {season} nomination has been published since the last "
-            "check."
+            f"Checked: no new {season} nomination has been published since "
+            "the last check."
+        )
+    if status.get("promoted"):
+        st.caption(
+            "The AFL database was replaced. Use **Reload updated databases** "
+            "above to pick it up in this session."
         )
     st.caption(
         f"Finished: {_display_time(status.get('finished_at'))} - "
-        f"Latest round listed: {result.get('latest_round', 'unknown')} - "
-        f"Nominations on file: {result.get('rows', 0)}"
+        f"Took {_elapsed_time(started, status.get('finished_at'))} - "
+        f"Latest round at the source: {result.get('latest_round', 'unknown')} - "
+        f"Triggered by: {status.get('trigger', 'unknown')}"
     )
 
 
@@ -733,6 +1180,11 @@ def admin_page(user):
         "This also runs on a Monday timer, so the button is for picking up "
         "this week's nomination early."
     )
+    try:
+        rising_star_currency = database_updates.rising_star_currency()
+    except (OSError, sqlite3.Error) as exc:
+        rising_star_currency = {"state": "unreadable", "summary": str(exc)}
+    _render_rising_star_currency(rising_star_currency)
     if st.button(
         "Check for new Rising Star nominations", icon=":material/star:",
         disabled=active,
@@ -748,11 +1200,18 @@ def admin_page(user):
                 "kind": "success",
                 "message": (
                     f"Rising Star check started in the background (PID {pid}). "
-                    "Use Refresh update status to follow it."
+                    "It takes a few seconds -- use Refresh status to see what "
+                    "it found."
                 ),
             }
             st.rerun()
     _render_rising_star_scan(rising_star_status)
+
+    with st.expander("Add or amend a Rising Star nomination by hand"):
+        _rising_star_edit_form(user, active)
+        _render_rising_star_edits()
+
+    _render_manual_round_section(active)
 
     with st.expander("Automatic schedule"):
         st.write("Regular scores and statistics: Friday, Saturday, Sunday and Monday at 12:10 am Sydney time.")

@@ -143,6 +143,12 @@ def rising_star_sources(sport_key: str = "afl") -> list[Path]:
                else sorted((base / "csv").glob("rising_star_nominees_*.csv")))
     wikipedia = rising_star_wikipedia_dir(sport_key) / "csv"
     sources.extend(sorted(wikipedia.glob("rising_star_nominees_*.csv")))
+    # Hand-entered nominations, suspensions and vote counts, written by the
+    # Admin page. Last so a reader sees the order edits are applied in;
+    # precedence is still decided per round from the `source` column.
+    manual = reference_dir(sport_key) / "rising_star_manual.csv"
+    if manual.exists():
+        sources.append(manual)
     return sources
 
 

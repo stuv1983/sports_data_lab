@@ -52,6 +52,30 @@ If `SPORTS_DATA_AFL_AWARDS_FETCH_CMD` is configured, it should only fetch or
 refresh source files. Database writes belong to the provided loaders so they
 target the staged database.
 
+## Hand-entered rounds from a remote machine
+
+The Admin page's **Hand-entered round results** section takes the round
+summary and match CSVs through the browser's own file picker, so an
+administrator on a Windows PC selects them in Explorer and they upload to
+this server. The desktop window (`python -m utils.afl.load_round_gui`) is
+for running the loader *on* the machine holding the files; hosted here it
+would try to open a window on the server.
+
+Two server-side requirements:
+
+- the service account needs write access to `data/app/manual_rounds/`,
+  where uploads are staged for the detached load to read;
+- behind a reverse proxy, allow a request body of at least a few megabytes.
+  A round is nine match files of roughly 40 KB plus a summary — well under
+  Streamlit's own 200 MB default, but nginx's `client_max_body_size`
+  defaults to 1 MB, and an upload refused there fails in the browser
+  without reaching the application log.
+
+A round is loaded into a staged copy and promoted only if the loader
+accepts it, so a round with a problem in it cannot leave the live database
+half-written. **Check this round** runs the same validation and writes
+nothing.
+
 ## Operate and diagnose
 
 ```bash
@@ -68,6 +92,11 @@ sudo systemctl start sports-data-lab-db-update@regular.service
 
 # Check for this week's Rising Star nomination without waiting for Monday
 .venv/bin/python -m database_updates rising-star-scan
+
+# Check a round's CSVs without writing, then load them
+.venv/bin/python -m database_updates manual-round-load \
+  --dir /srv/sports_data_lab/data/app/manual_rounds/2026-23 \
+  --season 2026 --round 23 --dry-run
 
 # Inspect the structured last-run result
 .venv/bin/python -m database_updates status

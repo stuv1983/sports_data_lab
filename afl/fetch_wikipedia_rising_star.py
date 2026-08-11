@@ -40,6 +40,7 @@ import hashlib
 import json
 import re
 import sys
+import time
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -66,6 +67,7 @@ CSV_FIELDS = [
     "tackles", "hitouts", "frees_for", "frees_against", "supercoach",
     "afl_fantasy", "unavailable_stats", "is_season_winner", "winner_name",
     "winner_team", "player_url", "source_url", "scraped_at", "source",
+    "ineligible", "ineligible_reason",
 ]
 
 #: Every statistic FootyWire supplies and Wikipedia does not. Recorded in
@@ -169,20 +171,47 @@ def article_title(season: int) -> str:
     return PAGE_TITLE.format(year=int(season))
 
 
-def fetch_html(season: int, timeout: float = 30.0) -> str:
-    """Return the rendered article HTML from the MediaWiki parse API."""
+def fetch_html(season: int, timeout: float = 30.0, retries: int = 4) -> str:
+    """Return the rendered article HTML from the MediaWiki parse API.
+
+    Retries on the responses that mean "later, not never". Wikipedia rate
+    limits anonymous clients, and a backfill that walks thirty seasons will
+    meet a 429 -- without a retry the first one cascades, because every
+    following season fails immediately against a limiter that is still
+    counting. `Retry-After` is honoured where the server sends one.
+    """
     title = article_title(season)
     url = (f"{API}?action=parse&page={urllib.parse.quote(title)}"
            f"&prop=text&format=json&formatversion=2")
     request = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT, "Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read())
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            raise PageNotFound(title) from exc
-        raise
+
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read())
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise PageNotFound(title) from exc
+            last_error = exc
+            if exc.code not in {429, 500, 502, 503, 504} or attempt == retries:
+                raise
+            retry_after = (exc.headers or {}).get("Retry-After")
+            wait = (float(retry_after)
+                    if str(retry_after or "").isdigit() else 5.0 * 2 ** (attempt - 1))
+            print(f"  {title}: HTTP {exc.code}; waiting {wait:.0f}s "
+                  f"(attempt {attempt} of {retries})", file=sys.stderr)
+            time.sleep(wait)
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = exc
+            if attempt == retries:
+                raise
+            time.sleep(5.0 * attempt)
+    else:  # pragma: no cover - the loop either breaks or raises
+        raise RuntimeError(f"{title}: fetch failed: {last_error}")
+
     if "error" in payload:
         code = str(payload["error"].get("code", ""))
         if code in {"missingtitle", "nosuchpageid", "invalidtitle"}:
@@ -191,15 +220,75 @@ def fetch_html(season: int, timeout: float = 30.0) -> str:
     return payload["parse"]["text"]
 
 
+#: Symbols the article puts beside a name to point at its legend.
+#:
+#: These are data, not noise. `*` marks a nominee who is ineligible to win
+#: because they were suspended -- a nomination that can never become a win,
+#: which nothing else in the database records -- and `^` marks the season
+#: winner far more reliably than reading it out of the article's prose.
+MARKERS = "*^†‡§"
+INELIGIBLE_MARKER = "*"
+WINNER_MARKER = "^"
+
+
 def _cell_text(cell) -> str:
-    """Cell text with reference markers and sort keys removed."""
+    """Cell text with citation markers and sort keys removed.
+
+    Legend markers are deliberately left in place; use _split_markers to
+    separate them from the name they annotate.
+    """
     for junk in cell.xpath(".//sup[contains(@class,'reference')]"
                            "|.//style|.//span[@class='sortkey']"):
         junk.getparent().remove(junk)
-    text = clean(" ".join(cell.itertext()))
-    # A dagger or asterisk beside a name is an eligibility footnote, not
-    # part of the name. The 2026 table marks a suspended nominee this way.
-    return clean(re.sub(r"[*†‡]+", "", text))
+    return clean(" ".join(cell.itertext()))
+
+
+def _split_markers(text: str) -> tuple[str, set[str]]:
+    """Separate trailing legend markers from the text they annotate."""
+    found = set(re.findall(f"[{re.escape(MARKERS)}]", text))
+    return clean(re.sub(f"[{re.escape(MARKERS)}]+", "", text)), found
+
+
+def _legend(root) -> dict[str, str]:
+    """The article's own marker key, as ``marker -> meaning``.
+
+    Read from the page rather than hardcoded so the stored reason is the
+    source's own words -- including "NAB Rising Star" for the seasons the
+    award carried a sponsor's name.
+
+    Two renderings, because the article has used both: recent seasons put
+    the key in a two-cell table row, while 2010 and its neighbours write it
+    as a sentence under the table. Missing the second left nine correctly
+    flagged nominations with no stated reason.
+    """
+    legend: dict[str, str] = {}
+    for row in root.xpath("//table//tr"):
+        cells = row.xpath("./th|./td")
+        if len(cells) != 2:
+            continue
+        marker, meaning = _cell_text(cells[0]), _cell_text(cells[1])
+        if len(marker) == 1 and marker in MARKERS and meaning:
+            legend.setdefault(marker, meaning)
+
+    for match in PROSE_LEGEND.finditer(clean(" ".join(root.itertext()))):
+        marker, meaning = match.group(1), clean(match.group(2))
+        if meaning:
+            legend.setdefault(marker, meaning[0].upper() + meaning[1:])
+    return legend
+
+
+#: Prose form of the key: a marker, then its explanation, then a full stop.
+#:
+#: Both bounds are load-bearing. The explanation must begin within a few
+#: characters of the marker, and the whole match must stay inside one
+#: sentence. Without the first bound this matched the asterisk beside a
+#: nominee's name in the table and ran on to the note far below it --
+#: table text contains no full stop to stop at -- storing the entire
+#: nominations table as the reason a player was ineligible.
+PROSE_LEGEND = re.compile(
+    rf"([{re.escape(MARKERS)}])\s*([^.]{{0,30}}?ineligible[^.]{{0,200}}\.)",
+    re.I,
+)
 
 
 def _link_target(cell) -> str:
@@ -220,20 +309,39 @@ def canonical_club(cell) -> str:
     return CLUB_NAMES.get(text.casefold(), text)
 
 
-def _find_nominations_table(root):
-    """Return the wikitable whose header is Round / Player / Club.
+#: Heading wording accepted for each column we need. Seasons up to 2008
+#: head the club column "Team" and later ones "Club"; both mean the
+#: nominee's side.
+COLUMN_HEADINGS = {
+    "round": {"round", "rd"},
+    "player": {"player", "nominee"},
+    "club": {"club", "team"},
+}
 
-    Located by its header rather than by position, because the article also
-    carries eligibility and (in past seasons) voting tables, and their order
-    is not stable across seasons.
+
+def _find_nominations_table(root):
+    """Return the nominations table, its header row, and its column map.
+
+    Columns are located by heading, never by position. The article orders
+    them Round/Player/Club in most seasons but Player/Round/Club in 2016
+    and 2017, and a parser that trusted position read the round number out
+    of the player column and dropped both seasons.
+
+    The table itself is found by its headings for the same reason: the
+    article also carries eligibility and voting tables whose order relative
+    to this one is not stable across seasons.
     """
     for table in root.xpath("//table[contains(@class,'wikitable')]"):
-        rows = table.xpath(".//tr")
-        for index, row in enumerate(rows):
+        for index, row in enumerate(table.xpath(".//tr")):
             headings = [_cell_text(cell).casefold()
                         for cell in row.xpath("./th|./td")]
-            if len(headings) >= 3 and headings[:3] == ["round", "player", "club"]:
-                return table, index
+            columns = {
+                name: next((position for position, heading
+                            in enumerate(headings) if heading in accepted), None)
+                for name, accepted in COLUMN_HEADINGS.items()
+            }
+            if all(position is not None for position in columns.values()):
+                return table, index, columns
     raise ValueError("Could not locate the Round/Player/Club nominations table")
 
 
@@ -266,30 +374,40 @@ def parse_page(html_text: str, season: int, source_url: str | None = None,
         raise RuntimeError("Missing dependency. Run: pip install lxml") from exc
 
     root = lxml_html.fromstring(html_text)
-    table, header_index = _find_nominations_table(root)
+    table, header_index, columns = _find_nominations_table(root)
     source_url = source_url or ARTICLE_URL.format(title=article_title(season))
     scraped_at = scraped_at or dt.datetime.now(dt.timezone.utc).isoformat()
-    winner_name = _winner(root, season)
-    winner_key = normalise_name(winner_name) if winner_name else ""
+    legend = _legend(root)
+    unknown: set[str] = set()
 
     rows: list[dict] = []
     for tr in table.xpath(".//tr")[header_index + 1:]:
         cells = tr.xpath("./th|./td")
-        if len(cells) < 3:
+        if len(cells) <= max(columns.values()):
             continue
-        round_text = _cell_text(cells[0])
+        round_cell = cells[columns["round"]]
+        player_cell = cells[columns["player"]]
+        club_cell = cells[columns["club"]]
+
+        round_text, _ = _split_markers(_cell_text(round_cell))
         match = re.search(r"-?\d+", round_text)
         if match is None:
             continue
         round_number = int(match.group())
-        player = _cell_text(cells[1])
+        player, markers = _split_markers(_cell_text(player_cell))
         if not player:
             continue
-        club = canonical_club(cells[2])
-        player_slug = _link_target(cells[1])
+        unknown |= markers - {INELIGIBLE_MARKER, WINNER_MARKER}
+        club = canonical_club(club_cell)
+        player_slug = _link_target(player_cell)
         name_key = normalise_name(player)
+        ineligible = INELIGIBLE_MARKER in markers
 
         rows.append({
+            "ineligible": int(ineligible),
+            "ineligible_reason": (legend.get(INELIGIBLE_MARKER, "") if ineligible
+                                  else ""),
+            "won_marker": WINNER_MARKER in markers,
             "source_key": hashlib.sha256(
                 f"wikipedia|{season}|{round_number}|{name_key}".encode("utf-8")
             ).hexdigest()[:24],
@@ -300,12 +418,12 @@ def parse_page(html_text: str, season: int, source_url: str | None = None,
             "player_display": player,
             "name_key": name_key,
             "club": club,
-            "team_display": _cell_text(cells[2]),
-            "team_slug": _link_target(cells[2]),
+            "team_display": _cell_text(club_cell),
+            "team_slug": _link_target(club_cell),
             "opponent": "", "opponent_display": "", "opponent_slug": "",
             "unavailable_stats": UNAVAILABLE,
-            "is_season_winner": int(bool(winner_key) and name_key == winner_key),
-            "winner_name": winner_name,
+            "is_season_winner": 0,
+            "winner_name": "",
             "winner_team": "",
             "player_url": (ARTICLE_URL.format(title=player_slug)
                            if player_slug else ""),
@@ -317,6 +435,18 @@ def parse_page(html_text: str, season: int, source_url: str | None = None,
     if not rows:
         raise ValueError(f"{season}: the nominations table held no data rows")
 
+    _apply_winner(rows, root, season)
+    for row in rows:
+        row.pop("won_marker", None)
+
+    if unknown:
+        # Warn rather than raise: one unrecognised marker must not discard
+        # an otherwise complete season, but a new legend symbol that nobody
+        # notices would quietly become data the database does not hold.
+        print(f"WARNING: {season}: unrecognised legend marker(s) "
+              f"{''.join(sorted(unknown))} beside a nominee's name; "
+              f"legend reads {legend}", file=sys.stderr)
+
     seen_rounds = [row["round_number"] for row in rows]
     if len(seen_rounds) != len(set(seen_rounds)):
         raise ValueError(f"{season}: duplicate nomination rounds found")
@@ -324,6 +454,37 @@ def parse_page(html_text: str, season: int, source_url: str | None = None,
     if len(keys) != len(set(keys)):
         raise ValueError(f"{season}: a player appears more than once")
     return rows
+
+
+def _apply_winner(rows: list[dict], root, season: int) -> None:
+    """Mark the season winner, preferring the table's own marker.
+
+    The article marks the winner with `^` and a gold row. That beats
+    reading the winner out of the article's prose: the sentence wording
+    varies by season and a regex over it will eventually match the wrong
+    name, whereas the marker is structural.
+
+    Prose remains the fallback for a season whose table carries no marker,
+    and a season with no winner yet -- every season in progress -- ends
+    with no row marked, which is correct rather than a failure.
+    """
+    marked = [row for row in rows if row.get("won_marker")]
+    if len(marked) == 1:
+        marked[0]["is_season_winner"] = 1
+        winner_name = marked[0]["player"]
+        winner_team = marked[0]["club"]
+    else:
+        winner_name = _winner(root, season)
+        winner_team = ""
+        if winner_name:
+            key = normalise_name(winner_name)
+            matches = [row for row in rows if row["name_key"] == key]
+            if len(matches) == 1:
+                matches[0]["is_season_winner"] = 1
+                winner_team = matches[0]["club"]
+    for row in rows:
+        row["winner_name"] = winner_name
+        row["winner_team"] = winner_team
 
 
 def output_dir() -> Path:
@@ -356,7 +517,27 @@ def read_existing(path: Path) -> list[dict]:
 
 
 def _round_keys(rows) -> set[str]:
+    """Which nominations exist: round and nominee, nothing else."""
     return {f"{row.get('round_number')}|{row.get('name_key')}" for row in rows}
+
+
+def _content_keys(rows) -> set[str]:
+    """What the table says, including facts added long after the nomination.
+
+    Ineligibility and the winner marker are edited into a season's table
+    days or months later. Keyed on identity alone those edits would read as
+    "no change" and never reach the database, so they belong here -- but
+    not in _round_keys, or a nominee gaining an asterisk would be announced
+    as a brand new nomination.
+    """
+    return {
+        "|".join((
+            str(row.get("round_number")), str(row.get("name_key")),
+            str(row.get("club")), str(row.get("ineligible") or 0),
+            str(row.get("ineligible_reason") or ""),
+            str(row.get("is_season_winner") or 0),
+        )) for row in rows
+    }
 
 
 def refresh_season(season: int, folder: Path | None = None,
@@ -377,8 +558,10 @@ def refresh_season(season: int, folder: Path | None = None,
     previous, current = _round_keys(before), _round_keys(rows)
     added = current - previous
     removed = previous - current
-    if added or removed:
+    edited = _content_keys(rows) != _content_keys(before)
+    if edited:
         write_csv(path, rows)
+    ineligible = [row for row in rows if row.get("ineligible")]
     return {
         "season": season,
         "path": str(path),
@@ -386,11 +569,14 @@ def refresh_season(season: int, folder: Path | None = None,
         "previous_rows": len(before),
         "added": len(added),
         "removed": len(removed),
-        "changed": bool(added or removed),
+        "changed": edited,
         "latest_round": max((row["round_number"] for row in rows), default=None),
+        "ineligible": len(ineligible),
+        "winner": next((row["player"] for row in rows
+                        if row.get("is_season_winner")), None),
         "new_nominations": [
             {"round": row["round_number"], "player": row["player"],
-             "club": row["club"]}
+             "club": row["club"], "ineligible": bool(row.get("ineligible"))}
             for row in rows
             if f"{row['round_number']}|{row['name_key']}" in added
         ],
@@ -405,38 +591,79 @@ def default_db() -> str:
     return sport_db("afl", "gridley.db")
 
 
+def _report(result: dict) -> None:
+    summary = (f"{result['season']}: {result['rows']:>2} nominations "
+               f"(latest round {result['latest_round']})")
+    if result.get("ineligible"):
+        summary += f", {result['ineligible']} ineligible"
+    if result.get("winner"):
+        summary += f", won by {result['winner']}"
+    print(summary)
+    for nomination in result["new_nominations"]:
+        flag = "  [ineligible]" if nomination.get("ineligible") else ""
+        print(f"  + round {nomination['round']:>2}  {nomination['player']} "
+              f"({nomination['club']}){flag}")
+    if result["removed"]:
+        print(f"  {result['removed']} row(s) no longer listed")
+    if not result["changed"]:
+        print("  no change since the last fetch")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--season", type=int,
-                        default=dt.date.today().year,
-                        help="season to refresh (default: this year)")
+    this_year = dt.date.today().year
+    parser.add_argument("--season", type=int, default=None,
+                        help="one season to refresh (default: this year)")
+    parser.add_argument("--from", dest="start", type=int, default=None,
+                        help=f"first season of a range (from {FIRST_SEASON})")
+    parser.add_argument("--to", dest="end", type=int, default=None,
+                        help="last season of a range (default: this year)")
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--delay", type=float, default=2.0,
+                        help="seconds between requests in a range (default 2)")
     parser.add_argument("--load-db", action="store_true",
                         help="reload the Rising Star table after fetching")
     parser.add_argument("--db", default=None)
     args = parser.parse_args(argv)
 
-    if args.season < FIRST_SEASON:
-        parser.error(f"the award starts in {FIRST_SEASON}")
-
-    try:
-        result = refresh_season(args.season, args.output_dir, args.timeout)
-    except PageNotFound:
-        print(f"{args.season}: no Wikipedia article yet; nothing to do")
-        return 0
-
-    print(f"{result['season']}: {result['rows']} nominations "
-          f"(latest round {result['latest_round']})")
-    for nomination in result["new_nominations"]:
-        print(f"  + round {nomination['round']:>2}  {nomination['player']} "
-              f"({nomination['club']})")
-    if result["removed"]:
-        print(f"  {result['removed']} row(s) no longer listed")
-    if not result["changed"]:
-        print("  no change since the last fetch")
+    if args.season is not None and (args.start or args.end):
+        parser.error("use --season for one year or --from/--to for a range")
+    if args.season is not None:
+        seasons = [args.season]
+    elif args.start or args.end:
+        seasons = list(range(args.start or FIRST_SEASON, (args.end or this_year) + 1))
     else:
-        print(f"  wrote {result['path']}")
+        seasons = [this_year]
+    if seasons[0] < FIRST_SEASON:
+        parser.error(f"the award starts in {FIRST_SEASON}")
+    if not seasons or seasons[-1] < seasons[0]:
+        parser.error("season range must be ordered")
+    if args.delay < 0.5 and len(seasons) > 1:
+        parser.error("a multi-season fetch needs at least 0.5s between requests")
+
+    changed, missing, failed = 0, [], []
+    for index, season in enumerate(seasons):
+        try:
+            result = refresh_season(season, args.output_dir, args.timeout)
+        except PageNotFound:
+            missing.append(season)
+            print(f"{season}: no Wikipedia article; skipped")
+        except (RuntimeError, ValueError, OSError) as exc:
+            # One malformed season must not abandon the rest of a backfill.
+            failed.append(season)
+            print(f"{season}: FAILED -- {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+        else:
+            _report(result)
+            changed += bool(result["changed"])
+        if index < len(seasons) - 1:
+            time.sleep(args.delay)
+
+    if len(seasons) > 1:
+        print(f"\n{len(seasons)} seasons checked, {changed} written"
+              + (f", {len(missing)} with no article" if missing else "")
+              + (f", {len(failed)} failed" if failed else ""))
 
     if args.load_db:
         from utils.afl import load_rising_star
@@ -444,7 +671,7 @@ def main(argv: list[str] | None = None) -> int:
             db_path=args.db or default_db(), verbose=True)
         if not loaded or not loaded.get("trusted"):
             return 1
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

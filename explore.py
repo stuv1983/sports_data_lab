@@ -359,8 +359,13 @@ def _clean_award_name(value):
 
 def _honour_order(sport_key, label):
     priorities = {
-        "afl": ("norm smith", "all-australian", "brownlow", "gary ayres",
-                "leigh matthews", "aflca", "best and fairest", "medal"),
+        # One "rising star" token covers the award, the nomination and the
+        # ineligible variant: all three contain it, so all three take this
+        # rank and sort next to each other, which is the point. Their order
+        # within the group is the usual count-then-name tie-break.
+        "afl": ("norm smith", "all-australian", "brownlow", "rising star",
+                "gary ayres", "leigh matthews", "aflca", "best and fairest",
+                "medal"),
         "mlb": ("most valuable player", "cy young", "world series mvp",
                 "gold glove", "silver slugger", "rookie of the year",
                 "all-star", "triple crown"),
@@ -481,6 +486,27 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
                     WHERE player_id=? AND match_status IN ('unique','resolved')""",
                 (pid,)):
             honours.setdefault(_clean_award_name(name), set()).add(season)
+
+    # A nomination and the award itself are separate honours, and a player
+    # can hold both in one season -- every winner was nominated first. They
+    # are listed apart so "nominated three times, won once" is legible,
+    # rather than one line that cannot say which season was the win.
+    if "rising_star_nominees" in tables:
+        for season, won, ineligible in _con.execute(
+                """SELECT season, is_season_winner, ineligible
+                     FROM rising_star_nominees
+                    WHERE player_id=? AND match_status IN
+                          ('unique','resolved')""", (pid,)):
+            honours.setdefault("AFL Rising Star nominee", set()).add(season)
+            if won:
+                honours.setdefault("AFL Rising Star", set()).add(season)
+            elif ineligible:
+                # Worth its own line: the nomination stood, but suspension
+                # put the award out of reach. Folding it into the nominee
+                # row would lose the only part that is unusual.
+                honours.setdefault(
+                    "Rising Star nominee, ineligible (suspension)",
+                    set()).add(season)
 
     honour_rows = [
         {"Honour": label, "Times": len(seasons),

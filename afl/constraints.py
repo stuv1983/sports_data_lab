@@ -626,7 +626,9 @@ from .rising_star import (  # noqa: E402, F401
     ensure_rising_star_table,
     rising_star_available,
     rising_star_count,
+    rising_star_ineligible_available,
     rising_star_nominee,
+    rising_star_nominee_ineligible,
     rising_star_nominee_in,
     rising_star_nominee_between,
     rising_star_nominee_for,
@@ -700,4 +702,9 @@ MATCH_BUILDER_NAMES = set(MATCH_BUILDERS)
 LAYER_BUILDERS = {
     **{name: "marquee_events_available" for name in MARQUEE_BUILDER_NAMES},
     **{name: "brownlow_available" for name in BROWNLOW_BUILDER_NAMES},
+    # Finer than the rising_star_available gate above: the nomination layer
+    # loads happily from FootyWire alone, which records no ineligibility,
+    # and a square with no possible answer is worse than no square.
+    "Rising Star nominee ineligible to win (suspension)":
+        "rising_star_ineligible_available",
 }
