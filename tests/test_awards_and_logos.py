@@ -352,5 +352,44 @@ def run():
     print("awards and logos tests: passed")
 
 
+# ------------------------------------------- the "Player contains" boxes
+
+def test_the_contains_boxes_match_on_letters_alone():
+    """The same rule as the player picker and Advanced Search: case,
+    accents and punctuation are interchangeable, so "o'brien" finds the
+    OBrien that AFL Tables strips the apostrophe from."""
+    import pandas as pd
+
+    from afl import awards_page as AP
+
+    players = pd.Series(["Dan OBrien", "Gary Ablett", None])
+    assert AP._name_contains(players, "o'brien").tolist() == \
+        [True, False, False]
+    assert AP._name_contains(players, "ABLETT").tolist() == \
+        [False, True, False]
+
+
+def test_a_bracket_in_the_box_is_a_character_not_a_regex():
+    """`str.contains` reads its argument as a regular expression, so a
+    typed "(" used to crash the tab with a regex error."""
+    import pandas as pd
+
+    from afl import awards_page as AP
+
+    players = pd.Series(["Gary Ablett (Jr)"])
+    assert AP._name_contains(players, "ablett (jr").tolist() == [True]
+
+
+def test_a_term_of_nothing_but_punctuation_matches_nobody():
+    """Folding strips punctuation; an empty pattern would match everybody,
+    the opposite of what typing something meant."""
+    import pandas as pd
+
+    from afl import awards_page as AP
+
+    players = pd.Series(["Gary Ablett"])
+    assert AP._name_contains(players, "%").tolist() == [False]
+
+
 if __name__ == "__main__":
     run()

@@ -210,3 +210,151 @@ finally:
     assert any(button.label == "Load this round" for button in app.button)
     assert any(button.label == "Forget round 23, 2026"
                for button in app.button)
+
+
+# --------------------------------------------------------------------------
+# following a round load while it runs
+
+
+#: Names `_admin_app` replaces on the shared modules, and must put back.
+#: `database_updates` is imported once per session, so a stub left behind
+#: here is a stub every later suite runs against -- which is exactly what
+#: happened, and it took out ten tests in test_database_updates.py.
+_ADMIN_STUBBED = (
+    ("accounts", "FEATURES"), ("accounts", "feature_policies"),
+    ("accounts", "list_users"),
+    ("database_updates", "read_status"),
+    ("database_updates", "read_check_status"),
+    ("database_updates", "read_gridley_scan_status"),
+    ("database_updates", "read_rising_star_status"),
+    ("database_updates", "rising_star_currency"),
+    ("database_updates", "read_manual_round_status"),
+    ("database_updates", "manual_rounds"),
+    ("database_updates", "update_is_active"),
+    ("database_updates", "database_file_status"),
+)
+
+
+def _admin_app(extra_stubs: str = "", running_round: str = "{}"):
+    """Render admin_page against stubbed job statuses, restoring them after."""
+    saved = "\n".join(
+        f'_saved[({module!r}, {name!r})] = getattr(ui.{module}, {name!r})'
+        for module, name in _ADMIN_STUBBED)
+    restored = "\n    ".join(
+        f'setattr(ui.{module}, {name!r}, _saved[({module!r}, {name!r})])'
+        for module, name in _ADMIN_STUBBED)
+    return AppTest.from_string(f'''
+from types import SimpleNamespace
+import accounts_ui as ui
+
+_saved = {{}}
+{saved}
+try:
+    ui.accounts.FEATURES = {{}}
+    ui.accounts.feature_policies = lambda: {{}}
+    ui.accounts.list_users = lambda: []
+    ui.database_updates.read_status = lambda: {{}}
+    ui.database_updates.read_check_status = lambda: {{}}
+    ui.database_updates.read_gridley_scan_status = lambda: {{}}
+    ui.database_updates.read_rising_star_status = lambda: {{}}
+    ui.database_updates.rising_star_currency = lambda: {{
+        "state": "loaded", "season": 2026, "total": 757, "sources": {{}},
+        "days_since_check": 1, "in_season": True, "stale": False,
+    }}
+    ui.database_updates.read_manual_round_status = lambda: {running_round}
+    ui.database_updates.manual_rounds = lambda: {{"rounds": []}}
+    ui.database_updates.update_is_active = lambda: True
+    ui.database_updates.database_file_status = lambda: {{
+        sport: {{"exists": False}} for sport in ("afl", "nba", "mlb", "nfl")
+    }}
+    {extra_stubs}
+    ui.admin_page(SimpleNamespace(id=1, email="a@b.c", is_admin=True))
+finally:
+    {restored}
+''')
+
+
+def test_the_admin_page_groups_its_jobs_by_what_they_touch():
+    """One column of everything is how the round loader got buried."""
+    app = _admin_app()
+    app.run()
+
+    assert not list(app.exception)
+    labels = [tab.label for tab in app.tabs]
+    for expected in ("Databases", "Match data", "Rising Star", "Grids",
+                     "Access", "Schedule"):
+        assert expected in labels, f"{expected} tab is missing"
+
+
+def test_a_running_load_reports_the_phase_it_is_on_not_just_the_seconds():
+    running = ('{"state": "running", "season": 2026, "round": "22", '
+               '"dry_run": False, "started_at": "2026-08-11T19:00:00+10:00", '
+               '"phase": "Deriving matches", "phase_step": 7, '
+               '"phase_total": 11}')
+    app = _admin_app(running_round=running)
+    app.run()
+
+    assert not list(app.exception)
+    # st.progress reports its value as a truncated percentage.
+    bars = [element.value for element in app.get("progress")]
+    assert bars, "a running load shows no progress bar"
+    assert int(100 * 7 / 11) in bars
+
+    metrics = {element.label: element.value for element in app.metric}
+    assert metrics.get("Phase") == "7 / 11"
+    assert "Elapsed" in metrics
+    text = " ".join(str(element.value) for element in app.markdown)
+    assert "Load of round 22, 2026 is running" in text
+
+
+def test_a_job_in_progress_is_announced_above_the_tabs():
+    """Started on one tab, followed from any of them."""
+    running = ('{"state": "running", "season": 2026, "round": "22", '
+               '"started_at": "2026-08-11T19:00:00+10:00"}')
+    app = _admin_app(running_round=running)
+    app.run()
+
+    warnings = " ".join(str(element.value) for element in app.warning)
+    assert "Round load in progress" in warnings
+    assert "disabled until it finishes" in warnings
+
+
+def test_nothing_running_means_no_banner_and_no_progress_bar():
+    app = _admin_app()
+    app.run()
+
+    warnings = " ".join(str(element.value) for element in app.warning)
+    assert "in progress" not in warnings
+
+
+def test_a_load_whose_process_has_gone_is_not_polled_for_ever():
+    """The status file is the only trace a detached job leaves behind."""
+    old = (dt.datetime.now().astimezone() - dt.timedelta(minutes=5)).isoformat()
+    status = {"state": "running", "started_at": old}
+    saved = accounts_ui.database_updates.update_is_active
+    try:
+        accounts_ui.database_updates.update_is_active = lambda: False
+        assert accounts_ui._round_load_stalled(status) is True
+        # Still holding the lock means it is simply slow, not gone.
+        accounts_ui.database_updates.update_is_active = lambda: True
+        assert accounts_ui._round_load_stalled(status) is False
+    finally:
+        accounts_ui.database_updates.update_is_active = saved
+
+
+def test_a_job_that_has_only_just_started_is_never_called_stalled():
+    """The child takes the lock a moment after the parent says 'starting'."""
+    just_now = dt.datetime.now().astimezone().isoformat()
+    saved = accounts_ui.database_updates.update_is_active
+    try:
+        accounts_ui.database_updates.update_is_active = lambda: False
+        assert accounts_ui._round_load_stalled(
+            {"state": "starting", "started_at": just_now}) is False
+    finally:
+        accounts_ui.database_updates.update_is_active = saved
+
+
+def test_a_finished_job_is_never_called_stalled():
+    assert accounts_ui._round_load_stalled({"state": "complete"}) is False
+    assert accounts_ui._round_load_stalled({}) is False
+    assert accounts_ui._round_load_stalled(None) is False

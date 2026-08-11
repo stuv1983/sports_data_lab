@@ -54,6 +54,14 @@ Usage:
     python -m utils.afl.load_round_csv --dir <folder> --season 2026 --round 23
     python -m utils.afl.load_round_csv --apply-only        # after a rebuild
     python -m utils.afl.load_round_csv --forget 2026 23    # once fitzRoy has it
+    python -m utils.afl.load_round_csv --remove 2026 23    # undo the load
+
+``--forget`` and ``--remove`` are not the same thing and the difference
+matters. ``--forget`` is for a round that succeeded: AFL Tables has since
+published it, the rebuilt ``games`` rows are the authority, and only the
+stored copy is redundant -- so ``games`` and ``matches`` are deliberately
+left alone. ``--remove`` is for a round that should not be there at all,
+and takes the whole thing back out.
 """
 from __future__ import annotations
 
@@ -662,7 +670,8 @@ def describe_identities(roster: Roster, resolved: dict,
 
 
 def check_career_totals(con: sqlite3.Connection, season: int, round_name: str,
-                        paired: dict, resolved: dict) -> list[str]:
+                        paired: dict, resolved: dict, *,
+                        before: str | None = None) -> list[str]:
     """Every player's stated career games must be one more than we hold.
 
     AFL Tables counts the match being read, so a player with 174 games in the
@@ -678,12 +687,27 @@ def check_career_totals(con: sqlite3.Connection, season: int, round_name: str,
 
     It also catches a game missing from the database underneath, which is
     the same evidence read from the other direction.
+
+    `before` is the round's first match date, and games are counted up to
+    it. Without one the count falls back to every game that is not this
+    round, which is the same number only while rounds arrive in order --
+    and they need not. A round played later can already be in the database
+    by hand while an earlier one is still missing upstream, and then every
+    player who appears in both is reported as one game ahead of himself:
+    the later game is counted as an earlier one, 366 names are refused at
+    once, and the round that is actually correct will not load.
     """
     counted = {}
-    for player_id, total in con.execute(
+    if before:
+        rows = con.execute(
+            "SELECT player_id, COUNT(*) FROM games WHERE date < ? "
+            "GROUP BY player_id", (before,))
+    else:
+        rows = con.execute(
             "SELECT player_id, COUNT(*) FROM games "
             "WHERE NOT (season = ? AND round = ?) GROUP BY player_id",
-            (season, str(round_name))):
+            (season, str(round_name)))
+    for player_id, total in rows:
         counted[player_id] = total
 
     notes = []
@@ -1207,16 +1231,65 @@ def refresh_player_totals(con: sqlite3.Connection, season: int,
     return updated
 
 
+#: The phases a load moves through, in order.
+#:
+#: Named here rather than inside `load` so a caller can size a progress bar
+#: before starting, and so the admin page and the desktop window describe
+#: the same run in the same words.
+#:
+#: The phases are nothing like equal. Measured on the 2026 database, the
+#: first four take a tenth of a second between them, deriving matches
+#: takes about six, and rebuilding the ladder and club paths -- which
+#: walks all 694,000 games rows in player order -- takes about twenty-two
+#: on its own. A bar that sits on the last phase for most of the run is
+#: therefore working, and the label is what says so.
+LOAD_PHASES = (
+    "Reading the round folder",
+    "Checking scores against the summary",
+    "Identifying players",
+    "Checking career totals",
+    "Storing the round",
+    "Writing the games rows",
+    "Deriving matches",
+    "Restoring crowds and quarter scores",
+    "Rebuilding the ladder and club paths",
+)
+
+
+def _reporter(callback):
+    """Wrap a progress callback so `load` can just name the phase it is on.
+
+    Always returns something callable, so the phases are announced the same
+    way whether or not anybody is listening.
+    """
+    def report(label: str) -> None:
+        if callback is None:
+            return
+        try:
+            step = LOAD_PHASES.index(label) + 1
+        except ValueError:
+            step = 0
+        try:
+            callback(step, len(LOAD_PHASES), label)
+        except Exception:
+            # A progress display is never worth failing a load over.
+            pass
+    return report
+
+
 def apply_stored(con: sqlite3.Connection, db_path: Path, season: int,
-                 round_name: str, *, defer_to_upstream: bool = False) -> dict:
+                 round_name: str, *, defer_to_upstream: bool = False,
+                 report=None) -> dict:
     """Stored rows -> games, players, matches, match_details."""
     from afl import derive_matches
 
+    report = report or _reporter(None)
     if defer_to_upstream and upstream_has(con, season, round_name):
         print(f"  round {round_name} {season}: already in games from the "
               f"upstream build; not re-applied")
         return {"skipped": True}
 
+    report("Writing the games rows")
     created = create_debutants(con, season, round_name)
     for player_id, name in created:
         print(f"  new player {player_id}  {name}")
@@ -1224,8 +1297,10 @@ def apply_stored(con: sqlite3.Connection, db_path: Path, season: int,
     print(f"  wrote {written:,} rows into games")
 
     con.commit()
+    report("Deriving matches")
     derive_matches.run(str(db_path))
 
+    report("Restoring crowds and quarter scores")
     counts = load_club_all_games.link_sources(con)
     print("  link: " + ", ".join(f"{k}={v}" for k, v in counts.items() if v))
     stats = load_club_all_games.apply_details(con)
@@ -1265,7 +1340,18 @@ def report_round(con: sqlite3.Connection, season: int, round_name: str) -> None:
 
 
 def load(db_path: Path, folder: Path, season: int, round_name: str, *,
-         summary: str | None = None, dry_run: bool = False) -> int:
+         summary: str | None = None, dry_run: bool = False,
+         on_progress=None) -> int:
+    """Read a round from CSVs and apply it.
+
+    `on_progress(step, total, label)` is called as each phase begins, for a
+    caller that has somewhere to show it. The admin page writes them into
+    the job's status file so the browser can follow a load it did not
+    start; the CLI passes nothing and prints as it always has.
+    """
+    report = _reporter(on_progress)
+
+    report("Reading the round folder")
     fixtures, games, ignored = read_directory(folder, summary)
     paired, unused, duplicates = pair_games(fixtures, games)
 
@@ -1285,6 +1371,7 @@ def load(db_path: Path, folder: Path, season: int, round_name: str, *,
     for fixture in fixtures:
         describe_fixture_gaps(fixture, found)
 
+    report("Checking scores against the summary")
     notes = []
     for fixture in fixtures:
         notes.extend(check_against_summary(fixture, paired[fixture.clubs]))
@@ -1298,6 +1385,7 @@ def load(db_path: Path, folder: Path, season: int, round_name: str, *,
 
     con = sqlite3.connect(db_path)
     try:
+        report("Identifying players")
         roster = player_lookup(con)
         resolved: dict[tuple[str, str], tuple] = {}
         how: dict[str, int] = {}
@@ -1320,7 +1408,14 @@ def load(db_path: Path, folder: Path, season: int, round_name: str, *,
                             "does not separate them; fix the mapping in "
                             "afltables_player_index before loading")
 
-        careers = check_career_totals(con, season, round_name, paired, resolved)
+        report("Checking career totals")
+        # The first day of the round is the line between "already played"
+        # and "this game or later", and it is the only one that holds when
+        # the database already carries a round played after this one.
+        first_day = min((fixture.match_date for fixture in fixtures
+                         if fixture.match_date), default=None)
+        careers = check_career_totals(con, season, round_name, paired,
+                                      resolved, before=first_day)
         if careers:
             for note in careers:
                 found.not_fixed("career total", note)
@@ -1336,11 +1431,13 @@ def load(db_path: Path, folder: Path, season: int, round_name: str, *,
             print("\n--dry-run: nothing written")
             return 0
 
+        report("Storing the round")
         create_schema(con)
         stats = store(con, season, round_name, fixtures, paired, resolved)
         print(f"\nStored {stats['player_rows']:,} player rows and "
               f"{stats['fixtures']} fixtures")
-        outcome = apply_stored(con, db_path, season, round_name)
+        outcome = apply_stored(con, db_path, season, round_name,
+                               report=report)
         for player_id, name in outcome.get("created", []):
             found.fixed("new player",
                         f"{name} debuted; created as player_id {player_id}")
@@ -1351,6 +1448,7 @@ def load(db_path: Path, folder: Path, season: int, round_name: str, *,
         # hook -- so only the explicit load has to ask for it.
         con.commit()
         print()
+        report("Rebuilding the ladder and club paths")
         from utils.shared import repair_database
         repair_database.run(str(db_path))
 
@@ -1412,6 +1510,256 @@ def forget(db_path: Path, season: int, round_name: str) -> int:
     return 0
 
 
+def _backup(db_path: Path, keep: int = 5) -> Path | None:
+    """Copy the database aside before an irreversible change.
+
+    Same folder and naming as database_updates.py's promote step, so the
+    two kinds of backup rotate together and a reader does not have to know
+    which one made a given file.
+    """
+    import shutil
+
+    if keep <= 0 or not db_path.exists():
+        return None
+    folder = db_path.parent / "backups"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+    backup = folder / f"{db_path.stem}-{stamp}{db_path.suffix}"
+    shutil.copy2(db_path, backup)
+    stored = sorted(folder.glob(f"{db_path.stem}-*{db_path.suffix}"),
+                    key=lambda item: item.stat().st_mtime_ns, reverse=True)
+    for stale in stored[keep:]:
+        stale.unlink(missing_ok=True)
+    return backup
+
+
+def _round_footprint(con: sqlite3.Connection, season: int,
+                     round_name: str) -> dict:
+    """Everything a hand-entered round put in the database."""
+    source_round = (f"R{round_name}" if str(round_name).isdigit()
+                    else round_name)
+    counts = {}
+    for label, sql, params in (
+        ("games", "SELECT COUNT(*) FROM games WHERE season=? AND round=?",
+         (season, str(round_name))),
+        ("manual_round_games",
+         "SELECT COUNT(*) FROM manual_round_games WHERE season=? AND round=?",
+         (season, str(round_name))),
+        ("matches", "SELECT COUNT(*) FROM matches WHERE season=? AND round=?",
+         (season, str(round_name))),
+        ("club_match_sources",
+         "SELECT COUNT(*) FROM club_match_sources WHERE season=? AND round=? "
+         "AND source_game_url IS NULL", (season, source_round)),
+    ):
+        if not table_exists(con, label):
+            counts[label] = 0
+            continue
+        counts[label] = con.execute(sql, params).fetchone()[0]
+    counts["match_details"] = con.execute(
+        "SELECT COUNT(*) FROM match_details WHERE match_id IN "
+        "(SELECT match_id FROM matches WHERE season=? AND round=?)",
+        (season, str(round_name))).fetchone()[0] if table_exists(
+            con, "match_details") else 0
+    return counts
+
+
+def _upstream_owns(con: sqlite3.Connection, season: int,
+                   round_name: str) -> str | None:
+    """Why this round is not safe to remove, or None when it is.
+
+    Removal is for a round that exists only because somebody typed it in.
+    Once AFL Tables carries the round, the rows are the scrape's and this
+    would be deleting real data to no purpose -- `--apply-only` already
+    defers to the rebuild and `--forget` already drops the stored copy.
+    """
+    source_round = (f"R{round_name}" if str(round_name).isdigit()
+                    else round_name)
+    if table_exists(con, "afltables_match_scores"):
+        audited = con.execute(
+            "SELECT COUNT(*) FROM afltables_match_scores "
+            "WHERE season=? AND round=?",
+            (season, str(round_name))).fetchone()[0]
+        if audited:
+            return (f"afltables_match_scores carries {audited} match(es) for "
+                    f"round {round_name}, {season}: AFL Tables has published "
+                    "this round, so it is no longer hand-entered data")
+    if table_exists(con, "club_match_sources"):
+        fetched = con.execute(
+            "SELECT COUNT(*) FROM club_match_sources WHERE season=? AND "
+            "round=? AND source_game_url IS NOT NULL",
+            (season, source_round)).fetchone()[0]
+        if fetched:
+            return (f"club_match_sources holds {fetched} fetched fixture "
+                    f"row(s) for round {round_name}, {season}: the All Games "
+                    "scrape has replaced the hand-entered ones")
+    return None
+
+
+def remove(db_path: Path, season: int, round_name: str, *,
+           dry_run: bool = False, keep_backups: int = 5,
+           force: bool = False) -> int:
+    """Undo a hand-entered round completely -- the inverse of a load.
+
+    `--forget` is the other half of the story and does something quite
+    different: it drops the stored rows once AFL Tables carries the round,
+    deliberately leaving `games` and `matches` alone because by then they
+    are the rebuild's. This removes the round itself, for a round that
+    should never have been entered.
+
+    The order matters, and it is the load's order run backwards:
+
+      1. `games`, `manual_round_games` and the hand-entered fixture rows go.
+      2. `afl.derive_matches` rebuilds `matches` from what is left, which
+         is what actually drops the round's matches -- and, because it
+         replaces the whole table, also blanks every match's crowd and
+         quarter scores.
+      3. `load_club_all_games` puts those back from `club_match_sources`,
+         exactly as `apply_stored` does after a load. Skipping this step
+         is the one way to turn removing nine matches into silently
+         emptying seventeen thousand.
+      4. Orphaned `match_details` rows go. They are keyed on match_id and
+         `derive_matches` hands a freed id to the next new match, so a
+         stale row left here would later attach itself to a different
+         match entirely.
+      5. Career totals are recomputed for everyone who played, and any
+         player the load invented is dropped.
+      6. `repair_database` rebuilds the ladder and the club paths, which
+         `load` runs for the same reason: both are derived from `games`,
+         so a round taken out from under them leaves both a round ahead.
+
+    What is deliberately not touched is what the load did not touch either
+    -- `finals_played`, `best_disposals`, `best_goals` and the obscurity
+    components are all left to the full rebuild, so removing a round puts
+    them back exactly where loading it left them.
+    """
+    from afl import derive_matches
+
+    con = sqlite3.connect(db_path)
+    try:
+        if not table_exists(con, "manual_round_games"):
+            print("Nothing stored: this database has no manual_round_games.")
+            return 1
+        counts = _round_footprint(con, season, round_name)
+        if not any(counts.values()):
+            print(f"Nothing to remove for round {round_name}, {season}.")
+            return 1
+
+        blocked = _upstream_owns(con, season, round_name)
+        if blocked and not force:
+            print(f"Refusing to remove round {round_name}, {season}.")
+            print(f"  {blocked}.")
+            print("  Use --forget to drop the stored copy instead, or "
+                  "--force to remove it anyway.")
+            return 1
+        if blocked:
+            print(f"warning: --force given; {blocked}")
+
+        players = [row[0] for row in con.execute(
+            "SELECT DISTINCT player_id FROM games "
+            "WHERE season=? AND round=? AND player_id IS NOT NULL",
+            (season, str(round_name)))]
+
+        print(f"Round {round_name}, {season} will lose:")
+        for label in ("matches", "match_details", "games",
+                      "manual_round_games", "club_match_sources"):
+            print(f"  {counts[label]:>6,}  {label}")
+        print(f"  {len(players):>6,}  players whose career totals are "
+              f"recomputed")
+        if dry_run:
+            print("\n--dry-run: nothing written")
+            return 0
+    finally:
+        con.close()
+
+    backup = _backup(db_path, keep_backups)
+    if backup:
+        print(f"\nBacked up to {backup}")
+
+    source_round = (f"R{round_name}" if str(round_name).isdigit()
+                    else round_name)
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("DELETE FROM games WHERE season=? AND round=?",
+                    (season, str(round_name)))
+        con.execute(
+            "DELETE FROM manual_round_games WHERE season=? AND round=?",
+            (season, str(round_name)))
+        con.execute(
+            "DELETE FROM club_match_sources WHERE season=? AND round=? "
+            "AND source_game_url IS NULL", (season, source_round))
+        con.commit()
+    finally:
+        con.close()
+
+    # Rebuilds `matches` from `games`, dropping the round's matches and
+    # blanking every match's crowd and quarter scores in the process.
+    derive_matches.run(str(db_path))
+
+    invented: list[tuple] = []
+    con = sqlite3.connect(db_path)
+    try:
+        counts_link = load_club_all_games.link_sources(con)
+        print("  link: " + ", ".join(
+            f"{k}={v}" for k, v in counts_link.items() if v))
+        stats = load_club_all_games.apply_details(con)
+        print("  details: " + ", ".join(
+            f"{k}={v}" for k, v in stats.items() if v))
+        restored = load_club_all_games.mirror_onto_matches(con)
+        print(f"  restored crowd and quarter scores on {restored:,} matches")
+
+        orphans = con.execute(
+            "DELETE FROM match_details WHERE match_id NOT IN "
+            "(SELECT match_id FROM matches)").rowcount
+        if orphans:
+            print(f"  dropped {orphans:,} orphaned match_details row(s)")
+
+        if players:
+            marks = ",".join("?" for _ in players)
+            con.execute(
+                f"""UPDATE players SET
+                      career_games = (SELECT COUNT(*) FROM games g
+                                      WHERE g.player_id = players.player_id),
+                      career_goals = (SELECT COALESCE(SUM(g.goals), 0)
+                                      FROM games g
+                                      WHERE g.player_id = players.player_id),
+                      final_season = (SELECT MAX(g.season) FROM games g
+                                      WHERE g.player_id = players.player_id)
+                    WHERE player_id IN ({marks})""", players)
+            # A player with no games left is one this load invented, since
+            # every other player in the table has at least one.
+            invented = con.execute(
+                f"SELECT player_id, player FROM players WHERE player_id IN "
+                f"({marks}) AND career_games = 0", players).fetchall()
+            for player_id, name in invented:
+                print(f"  dropping player {player_id}  {name} "
+                      "(no games left)")
+            if invented:
+                con.executemany("DELETE FROM players WHERE player_id = ?",
+                                [(player_id,) for player_id, _ in invented])
+            print(f"  recomputed career totals for "
+                  f"{len(players) - len(invented):,} players")
+        con.commit()
+    finally:
+        con.close()
+
+    # The ladder and the club paths are derived from `games`, exactly as
+    # they are after a load, and both are rebuilt wholesale from what is
+    # left rather than adjusted -- so they come back to the state they were
+    # in before the round was ever entered.
+    print()
+    from utils.shared import repair_database
+    repair_database.run(str(db_path))
+
+    print(f"\nRemoved round {round_name}, {season}. "
+          f"Reload it with --dir <folder> --season {season} "
+          f"--round {round_name}.")
+    if invented:
+        print("Obscurity is a percentile over the players who remain; run "
+              "`python -m utils.shared.recompute_obscurity --sport afl` to "
+              "rescore after dropping any.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Load a hand-entered AFL Tables round into the database.")
@@ -1434,12 +1782,23 @@ def main(argv: list[str] | None = None) -> int:
                              "if the upstream build now carries it")
     parser.add_argument("--forget", nargs=2, metavar=("SEASON", "ROUND"),
                         help="drop a stored round once upstream carries it")
+    parser.add_argument("--remove", nargs=2, metavar=("SEASON", "ROUND"),
+                        help="undo a hand-entered round completely: its "
+                             "games, matches, stored rows and fixture rows, "
+                             "with career totals recomputed")
+    parser.add_argument("--keep-backups", type=int, default=5,
+                        help="backups to retain before a --remove "
+                             "(default 5; 0 disables the backup)")
     args = parser.parse_args(argv)
 
     if not args.db.exists():
         parser.error(f"no database at {args.db}")
 
     try:
+        if args.remove:
+            return remove(args.db, int(args.remove[0]), args.remove[1],
+                          dry_run=args.dry_run, force=args.force,
+                          keep_backups=args.keep_backups)
         if args.forget:
             return forget(args.db, int(args.forget[0]), args.forget[1])
         if args.apply_only:

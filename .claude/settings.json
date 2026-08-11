@@ -19,7 +19,16 @@
       "Bash(python -m pytest tests/ -q -p no:cacheprovider --ignore=tests/test_integration.py --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt3\")",
       "Bash(python -c \"import playwright; print\\('playwright ok'\\)\")",
       "Bash(python -c \"import selenium; print\\('selenium ok'\\)\")",
-      "Bash(python -m pytest tests/ -q -p no:cacheprovider --ignore=tests/test_integration.py --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt4\")"
+      "Bash(python -m pytest tests/ -q -p no:cacheprovider --ignore=tests/test_integration.py --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt4\")",
+      "Bash(python -m utils.afl.load_round_csv --remove 2026 23 --dry-run)",
+      "Bash(python -m utils.afl.load_round_csv --remove 2026 22 --dry-run)",
+      "Bash(python -m utils.afl.load_round_csv --db C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/afl-test.db --remove 2026 23 --keep-backups 0)",
+      "Bash(python -m utils.afl.load_round_csv --db C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/afl-test.db --dir C:/sports_data_lab/data/app/manual_rounds/2026-23 --season 2026 --round 23)",
+      "Bash(python -m pytest tests/test_load_round_csv.py -q -p no:cacheprovider --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt6\")",
+      "Bash(python -m pytest tests/ -q -p no:cacheprovider --ignore=tests/test_integration.py --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt7\")",
+      "Bash(rm -f C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/afl-test.db)",
+      "Bash(cp c:/sports_data_lab/data/afl/afl.db C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/afl-t2.db)",
+      "Bash(python -m utils.afl.load_round_csv --db C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/afl-t2.db --remove 2026 23 --keep-backups 0)"
     ]
   }
 }

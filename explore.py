@@ -218,6 +218,33 @@ def home_page(sport, con, draft_ok, awards_ok):
         # Brownlow votes, and the NBA model uses none of them.
         st.write(sport.star_disclaimer)
 
+    _data_notes(sport)
+
+
+def _data_notes(sport) -> None:
+    """The full list of the sport's caveats, grouped by what they are about.
+
+    The season and round cards each show the handful that apply to what is
+    on screen; this is the place a reader comes to when they want the lot,
+    which is why it names the round-numbering rule up front rather than
+    leaving it eleventh in a list.
+    """
+    notes = sport.notes()
+    if notes is None:
+        return
+    with st.expander("Data notes — rounds, ladders and disputed results"):
+        st.warning(notes.ROUND_NUMBERING.text, icon=":material/info:")
+        for topic, items in notes.by_topic().items():
+            listed = [note for note in items
+                      if note is not notes.ROUND_NUMBERING]
+            if not listed:
+                continue
+            st.markdown(f"**{topic}**")
+            for item in listed:
+                seasons = item.seasons
+                st.markdown(f"- {f'**{seasons}** — ' if seasons else ''}"
+                            f"{item.text}")
+
 
 # ------------------------------------------------------------- filters
 

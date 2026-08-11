@@ -14,6 +14,7 @@ score at every quarter break.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import sqlite3
 
 import pandas as pd
@@ -27,6 +28,36 @@ ANY = "Any"
 
 #: club_id -> display name where title-casing gets it wrong.
 _NAME_FIXES = {"gws": "GWS"}
+
+#: Round codes as they are spoken, across every sport that reaches this
+#: page. The codes are what the sources write and what the database stores;
+#: 'PF' and 'LCS' are not what somebody scanning a dropdown is looking for.
+#: No code means two different things in two sports -- 'WC' is a wild card
+#: in both the MLB and the NFL -- so one table serves all of them.
+_ROUND_NAMES = {
+    "EF": "Elimination final", "QF": "Qualifying final",
+    "SF": "Semi final", "PF": "Preliminary final", "GF": "Grand final",
+    "WC": "Wild card", "DS": "Division series",
+    "LCS": "League Championship Series", "WS": "World Series",
+    "R1": "Round 1", "CSF": "Conference semi-finals",
+    "CF": "Conference finals", "F": "Finals", "TB": "Tie-breaker",
+    "DIV": "Divisional", "CON": "Conference championship", "SB": "Super Bowl",
+}
+
+#: Numbered rounds: 'R14' is a round, 'W3' is a week.
+_NUMBERED_ROUND = re.compile(r"^([A-Za-z]*)(\d+)$")
+_NUMBER_WORDS = {"R": "Round", "W": "Week"}
+
+
+def _round_name(code: str) -> str:
+    """'R14' -> 'Round 14', 'PF' -> 'Preliminary final'."""
+    numbered = _NUMBERED_ROUND.match(code)
+    if numbered:
+        prefix, number = numbered.groups()
+        word = _NUMBER_WORDS.get(prefix.upper())
+        if word:
+            return f"{word} {int(number)}"
+    return _ROUND_NAMES.get(code, code)
 
 
 def _label(club_id: str) -> str:
@@ -81,7 +112,7 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
     st.markdown(f"# Past {V.games.capitalize()}")
     st.caption(
         f"Every {V.game} in the database, searchable by {V.club}, opponent, "
-        f"{V.season}, date and {V.venue}."
+        f"{V.season}, round, date and {V.venue}."
     )
 
     if not sport.has_past_games:
@@ -93,6 +124,15 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
         hint = sport.past_games_hint or "Load this sport's club-history rows."
         st.info(f"Past {sport.vocab.games} are not loaded. {hint}")
         return
+
+    # Said here as well as on the cards: this page is where somebody picks
+    # a round number, and a round number means something different from
+    # 2024 on than it does on the AFL's fixture. The round picker names the
+    # AFL's number alongside ours once a season is chosen; this caption
+    # covers the case where none is.
+    notes = sport.notes()
+    if notes is not None:
+        st.caption(f":material/info: {notes.ROUND_NUMBERING.text}")
 
     cov = CH.coverage(con)
     clubs = CH.clubs_with_history(con)
@@ -120,16 +160,57 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
                             key="pg_opponent")
     venue = f3.selectbox(V.venue.capitalize(), [ANY, *venues], key="pg_venue")
 
-    g1, g2 = st.columns([2, 1])
-    lo, hi = g1.select_slider(
-        "Years", options=sorted(seasons),
-        value=(min(seasons), max(seasons)), key="pg_years")
-    scope = g2.selectbox(
+    # Season and round are the two things somebody arrives here already
+    # knowing, so they are pickers rather than something to type or to hunt
+    # for on a slider. The slider stays for the other question this page
+    # answers -- a span of years rather than one of them -- and switches off
+    # while a single season is selected, because two controls both claiming
+    # to set the years is how a search returns nothing for no visible reason.
+    g1, g2, g3 = st.columns(3)
+    season_pick = g1.selectbox(
+        V.season.capitalize(), [ANY, *seasons],
+        format_func=lambda s: f"Any {V.season}" if s == ANY else str(s),
+        key="pg_season")
+
+    one_season = None if season_pick == ANY else season_pick
+    round_choices = [ANY, *CH.rounds_available(con, season=one_season)]
+    # The rounds a season had are not the rounds every season had: 1897
+    # stopped at 14 and had no finals series to speak of. Dropping a
+    # selection the newly chosen season never played beats keeping a filter
+    # that can only return nothing.
+    if st.session_state.get("pg_round") not in round_choices:
+        st.session_state.pop("pg_round", None)
+
+    def _round_choice(code: str) -> str:
+        if code == ANY:
+            return "Any round"
+        name = _round_name(code)
+        official = (notes.official_round(code, one_season)
+                    if notes is not None and one_season else None)
+        return f"{name} · AFL {official}" if official else name
+
+    # A round the source never recorded is not a round the reader can pick,
+    # so say how many matches the filter cannot reach rather than let an
+    # MLB reader read four postseason entries as the whole season.
+    unrounded = CH.matches_without_a_round(con, season=one_season)
+    round_pick = g2.selectbox(
+        "Round", round_choices, format_func=_round_choice, key="pg_round",
+        disabled=len(round_choices) == 1,
+        help=(f"{unrounded:,} {V.games} record no round and are reachable "
+              f"only as 'Any round'." if unrounded else None))
+    scope = g3.selectbox(
         f"{V.game.capitalize()} type", ["all", "home_and_away", "finals"],
         format_func=lambda s: {"all": f"All {V.games}",
                                "home_and_away": "Home and away",
                                "finals": V.postseason.capitalize()}[s],
         key="pg_scope")
+
+    lo, hi = st.select_slider(
+        "Years", options=sorted(seasons),
+        value=(min(seasons), max(seasons)), key="pg_years",
+        disabled=one_season is not None,
+        help=(f"Set the {V.season} above back to any to search a span of "
+              "years." if one_season else None))
 
     with st.expander("More filters"):
         d1, d2, d3 = st.columns(3)
@@ -162,8 +243,6 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
         min_crowd = d3.number_input(
             "Minimum crowd", min_value=0, max_value=130000, value=0,
             step=5000, key="pg_crowd")
-        round_text = d1.text_input(
-            "Round", placeholder="R12, GF, PF…", key="pg_round")
 
     order = st.selectbox(
         "Sort by",
@@ -181,12 +260,14 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
         con,
         club_id=club_id,
         opponent_id=None if opponent == ANY else opponent,
-        season_from=lo, season_to=hi,
+        season=one_season,
+        season_from=None if one_season else lo,
+        season_to=None if one_season else hi,
         venue=None if venue == ANY else venue,
         result=None if (result == ANY or club_id is None) else result,
         team_position=None if (where == ANY or club_id is None) else where,
         scope=scope,
-        round_text=round_text.strip() or None,
+        round_text=None if round_pick == ANY else round_pick,
         min_margin=min_margin or None,
         min_attendance=min_crowd or None,
         order=order, limit=2000,
@@ -245,8 +326,9 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
 
     # -- head to head ----------------------------------------------------
     if club_id and opponent != ANY:
-        rows = CH.head_to_head(con, club_id, opponent, scope=scope,
-                               season_from=lo, season_to=hi)
+        rows = CH.head_to_head(
+            con, club_id, opponent, scope=scope,
+            season_from=one_season or lo, season_to=one_season or hi)
         if rows:
             h = rows[0]
             st.markdown("#### Head to head")

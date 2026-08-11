@@ -119,6 +119,11 @@ class Sport:
     has_club_explorer: bool = False
     has_awards_page: bool = False
     has_past_games: bool = False
+    #: Module holding this sport's data caveats -- how it numbers rounds,
+    #: which results it records differently from the competition's own
+    #: record. Declared per sport because they are inherited from whichever
+    #: source the sport was built from, and only the AFL has any.
+    data_notes_module: str = ""
     #: Optional sport-owned page for venue/ground history and records.
     ground_explorer_module: str = ""
     has_ground_explorer: bool = False
@@ -168,6 +173,20 @@ class Sport:
     def C(self):
         """The sport's constraints module, imported on first use."""
         return importlib.import_module(self.module)
+
+    def notes(self):
+        """The sport's data-notes module, or None when it declares none.
+
+        Imported on use like `C`, so a page can ask any sport for its
+        caveats and get nothing back rather than having to know which
+        sports have them.
+        """
+        if not self.data_notes_module:
+            return None
+        try:
+            return importlib.import_module(self.data_notes_module)
+        except ImportError:
+            return None
 
     def daily_grid_fetcher(self):
         """The callable behind `daily_grid_feed`, or None when unset.

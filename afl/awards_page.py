@@ -22,6 +22,7 @@ import pandas as pd
 import streamlit as st
 
 import components
+import names
 
 #: Link statuses the rest of the codebase treats as resolved.
 TRUSTED = ("from_draft", "unique", "resolved")
@@ -147,6 +148,23 @@ def _clubs_for(con: sqlite3.Connection, slug: str) -> list[str]:
         "ORDER BY club", (slug,))]
 
 
+def _name_contains(series: pd.Series, term: str) -> pd.Series:
+    """Letters-only containment: the search rule the player picker and
+    Advanced Search already apply, so "o'brien" finds OBrien and an accent
+    is no barrier. The bare `str.contains` this replaces also read the
+    typed text as a *regex* -- a "(" in the box crashed the tab.
+
+    A term that folds to nothing (punctuation alone) matches nobody:
+    an empty pattern would match everybody, which is the opposite of
+    what typing something meant.
+    """
+    folded = names.search_key(term)
+    if not folded:
+        return pd.Series(False, index=series.index)
+    return series.fillna("").map(names.search_key).str.contains(
+        folded, regex=False)
+
+
 def _filter_roll(roll: pd.DataFrame, club: str, seasons, name: str
                  ) -> pd.DataFrame:
     """Apply the honour-roll filters, each one optional."""
@@ -157,8 +175,7 @@ def _filter_roll(roll: pd.DataFrame, club: str, seasons, name: str
         lo, hi = seasons
         out = out[(out["Season"] >= lo) & (out["Season"] <= hi)]
     if name.strip() and "Player" in out.columns:
-        out = out[out["Player"].astype(str).str.contains(
-            name.strip(), case=False, na=False)]
+        out = out[_name_contains(out["Player"], name)]
     return out
 
 
@@ -562,8 +579,19 @@ def _rising_star_nominees(sport, con: sqlite3.Connection) -> None:
         where.append(f"{NOMINEE_CLUB} = ?")
         params.append(club)
     if name.strip():
-        where.append("LOWER(COALESCE(matched_player, player)) LIKE LOWER(?)")
-        params.append(f"%{name.strip()}%")
+        # Folded to letters alone, like every other name box: accents,
+        # case and punctuation are interchangeable, and the folded text
+        # cannot contain a LIKE wildcard. Folding to nothing matches
+        # nobody -- an empty pattern would match everybody.
+        folded = names.search_key(name)
+        if folded:
+            con.create_function("search_key", 1, names.search_key,
+                                deterministic=True)
+            where.append(
+                "search_key(COALESCE(matched_player, player)) LIKE ?")
+            params.append(f"%{folded}%")
+        else:
+            where.append("1=0")
 
     frame = pd.read_sql_query(
         f"""SELECT season AS Season, round_number AS Round,
@@ -723,8 +751,7 @@ def _brownlow_voting(sport, con: sqlite3.Connection) -> None:
         con, params=(season,))
     full = frame
     if name.strip():
-        frame = frame[frame["Player"].str.contains(
-            name.strip(), case=False, na=False)]
+        frame = frame[_name_contains(frame["Player"], name)]
     else:
         frame = frame.head(int(top))
 
@@ -812,8 +839,14 @@ def _hall_of_fame(sport, con: sqlite3.Connection) -> None:
         where.append("club = ?")
         params.append(club)
     if name.strip():
-        where.append("name LIKE ?")
-        params.append(f"%{name.strip()}%")
+        folded = names.search_key(name)
+        if folded:
+            con.create_function("search_key", 1, names.search_key,
+                                deterministic=True)
+            where.append("search_key(name) LIKE ?")
+            params.append(f"%{folded}%")
+        else:
+            where.append("1=0")
     clause = (" WHERE " + " AND ".join(where)) if where else ""
 
     frame = pd.read_sql_query(

@@ -25,6 +25,43 @@ def normalise_name(value):
     return value.casefold()
 
 
+def search_key(value):
+    """Case-, accent- and punctuation-blind key for substring search.
+
+    The player picker treats punctuation, spacing and accents as
+    interchangeable so that "acuna" finds Acuña and "o'brien" finds the
+    OBrien that AFL Tables strips the apostrophe from. This is the same
+    rule for SQL: registered as a connection function so a LIKE over
+    ``search_key(player)`` matches by the letters alone.
+
+    NFKD splits an accented letter from its combining mark so the mark can
+    be dropped; a letter with no ASCII equivalent (an "ø" or "đ") is
+    removed with the rest of the non-alphanumerics, same as any stray
+    punctuation.
+    """
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", "", text.casefold())
+
+
+def like_contains(value):
+    """A LIKE pattern that matches `value` anywhere in a column, literally.
+
+    SQLite's LIKE reads ``%`` and ``_`` in the *pattern* as wildcards, so a
+    search box fed straight into ``'%' + term + '%'`` quietly over-matches:
+    an underscore matches any letter and a stray percent sign matches
+    everything. Every query using this pattern must declare the escape
+    character::
+
+        WHERE column LIKE ? ESCAPE '\\'
+    """
+    text = str(value or "")
+    text = (text.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_"))
+    return f"%{text}%"
+
+
 def name_variants(value):
     """
     Extra keys for fuzzier matching: punctuation stripped, and the

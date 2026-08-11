@@ -8,7 +8,6 @@ Wikipedia football-family relationship layer.
 from __future__ import annotations
 
 import re
-import shlex
 from dataclasses import dataclass
 from typing import Any
 
@@ -67,12 +66,7 @@ def _values(params: dict, key: str) -> list[str]:
 def _split_query(query: str):
     base_tokens: list[str] = []
     family_tokens: list[tuple[str, str]] = []
-    try:
-        tokens = shlex.split(query, posix=True)
-    except ValueError as exc:
-        raise QuerySyntaxError(str(exc)) from exc
-
-    for token in tokens:
+    for token in _base.tokenize(query):
         match = _base._TOKEN.fullmatch(token)
         if not match:
             base_tokens.append(token)
@@ -267,7 +261,8 @@ def compile_query(schema, query, con=None):
         constraints.append((sql, params, negate))
         descriptions.append(description)
 
-    base_query = shlex.join(base_tokens) if base_tokens else "sort:obscurity"
+    base_query = (_base.join_tokens(base_tokens) if base_tokens
+                  else "sort:obscurity")
     sql, params, spec = _base.compile_query(schema, base_query, con=con)
     sql, params = _inject(sql, list(params), schema, constraints)
     return sql, params, FamilySearchSpec(spec, descriptions)
@@ -278,7 +273,7 @@ def query_from_params(params: dict) -> str:
     extra: list[str] = []
     for key in sorted(_DRAFT_KEYS | _BROAD_KEYS):
         for value in _values(params, key):
-            extra.append(f"{key}:{shlex.quote(value)}")
+            extra.append(f"{key}:{_base.quote_token(value)}")
     return " ".join(part for part in (query.strip(), " ".join(extra)) if part)
 
 

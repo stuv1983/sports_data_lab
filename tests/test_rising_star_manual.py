@@ -150,6 +150,20 @@ def test_search_shows_enough_to_tell_two_players_apart(tmp_path):
     ]
 
 
+def test_a_typed_wildcard_is_a_character_not_a_pattern(tmp_path):
+    """SQLite's LIKE reads % and _ as wildcards, so before they were
+    escaped "B_iley" matched Bailey ("_" swallowed the "a") and "%%"
+    matched every player in the table."""
+    db = tmp_path / "afl.db"
+    _db(db, PLAYERS, GAMES)
+    con = sqlite3.connect(db)
+    try:
+        assert M.search_players(con, "%%") == []
+        assert M.search_players(con, "B_iley") == []
+    finally:
+        con.close()
+
+
 def test_search_needs_something_to_search_for(tmp_path):
     db = tmp_path / "afl.db"
     _db(db, PLAYERS, GAMES)

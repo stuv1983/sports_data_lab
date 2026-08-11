@@ -120,6 +120,48 @@ def logo_html(path, height=64, alt="") -> str:
             f"style='height:{height}px;width:auto;max-width:100%;'/>")
 
 
+# ----------------------------------------------------------- data notes
+
+def season_notes(sport, season, heading="About this season's data") -> None:
+    """Show the caveats that apply to one season, if the sport has any.
+
+    Silent for a sport with no notes module and for a season nothing
+    applies to, so any card can call it without first asking whether there
+    is anything to say.
+    """
+    notes = sport.notes()
+    if notes is None or season is None:
+        return
+    applicable = notes.for_season(season)
+    if not applicable:
+        return
+    with st.expander(f"{heading} ({len(applicable)})"):
+        for note in applicable:
+            st.markdown(f"**{note.topic}** — {note.text}")
+
+
+def round_caveat(sport, season, round_value) -> None:
+    """Name the AFL's own number for a round, where it differs from ours.
+
+    The single most confusing thing in the database: from 2024 our Round 23
+    is the AFL's Round 22. It is said on the round card and the match card
+    because that is where somebody reads a round number and compares it
+    with a fixture.
+    """
+    notes = sport.notes()
+    if notes is None or season is None:
+        return
+    note = notes.round_numbering_note(season)
+    if note is None:
+        return
+    official = notes.official_round(round_value, season)
+    if official:
+        st.caption(f":material/info: The AFL's own fixture calls this "
+                   f"**{official}**. {note.text}")
+    else:
+        st.caption(f":material/info: {note.text}")
+
+
 # ------------------------------------------------------------- champions
 
 @st.cache_data(show_spinner=False)
@@ -387,6 +429,8 @@ def season_overview(sport, con, season, club=None, nested=False) -> None:
                 standings, standings[club_column].tolist(), sport, con,
                 key=f"overlay_season_standings_{season}", nested=nested)
 
+    season_notes(sport, season)
+
     awards = _season_awards(sport.key, season, revision, con)
     if not awards.empty:
         if club and "Club" in awards.columns:
@@ -475,6 +519,7 @@ def round_overview(sport, con, season, round_value, nested=False) -> None:
     season, key = int(season), _round_key(round_value)
     label = f"Round {key}" if key.isdigit() else key
     st.markdown(f"### {season} · {label}")
+    round_caveat(sport, season, key)
     revision = _revision(sport.db)
     results = _round_results(season, key, revision, con)
     votes = _round_votes(season, key, revision, con)
@@ -1370,6 +1415,8 @@ def match_overview(sport, con, match, nested=False) -> None:
                 f"{html.escape(value)}</div>"
                 f"<div class='count-label'>{label}</div>",
                 unsafe_allow_html=True)
+
+    round_caveat(sport, season, round_value)
 
     import components
     components.card_links(

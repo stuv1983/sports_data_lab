@@ -71,6 +71,20 @@ def normalise_name(value: object) -> str:
     return project_normalise(str(value or ""))
 
 
+def like_contains(value: object) -> str:
+    """A LIKE pattern matching `value` anywhere, with wildcards escaped.
+
+    Defined here rather than imported from `names` because this module also
+    runs standalone; kept to the same behaviour. Queries using it must add
+    ``ESCAPE '\\'``.
+    """
+    text = str(value or "")
+    text = (text.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_"))
+    return f"%{text}%"
+
+
 def default_path() -> Path:
     try:
         from data_paths import reference_dir
@@ -195,13 +209,14 @@ def search_players(con: sqlite3.Connection, term: str,
     term = str(term or "").strip()
     if len(term) < 2:
         return []
-    pattern = f"%{normalise_name(term)}%"
+    pattern = like_contains(normalise_name(term))
     rows = con.execute(
         "SELECT player_id, player, debut_season, final_season, career_games, "
         "COALESCE(clubs_now, clubs_hist, '') FROM players "
-        "WHERE name_key LIKE ? OR LOWER(player) LIKE LOWER(?) "
+        "WHERE name_key LIKE ? ESCAPE '\\' "
+        "OR LOWER(player) LIKE LOWER(?) ESCAPE '\\' "
         "ORDER BY career_games DESC LIMIT ?",
-        (pattern, f"%{term}%", limit),
+        (pattern, like_contains(term), limit),
     ).fetchall()
     return [{
         "player_id": row[0], "player": row[1], "debut_season": row[2],
@@ -221,8 +236,10 @@ def nominations_for(con: sqlite3.Connection, season: int | None = None,
         where.append("season = ?")
         params.append(int(season))
     if term.strip():
-        where.append("(name_key LIKE ? OR LOWER(player) LIKE LOWER(?))")
-        params.extend([f"%{normalise_name(term)}%", f"%{term.strip()}%"])
+        where.append("(name_key LIKE ? ESCAPE '\\' "
+                     "OR LOWER(player) LIKE LOWER(?) ESCAPE '\\')")
+        params.extend([like_contains(normalise_name(term)),
+                       like_contains(term.strip())])
     rows = con.execute(
         "SELECT season, round_number, player, club, source, ineligible, "
         "votes, player_id, match_status FROM rising_star_nominees "

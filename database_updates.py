@@ -1136,6 +1136,29 @@ def run_manual_round_load(folder: str | Path, season: int, round_name: str, *,
         "round": round_name, "dry_run": dry_run, "folder": str(folder),
         "started_at": started.isoformat(), "database": str(live),
     }
+    # A load runs detached and takes about a minute, so the browser has no
+    # way of knowing where it is up to except through this file. Every
+    # phase is written as it begins: two of our own either side, and the
+    # loader's in between. A dry run has neither of ours -- no copy, no
+    # promote -- and the loader stops at the checks, so its total is the
+    # phases before anything would be written; a fixed count would leave
+    # the bar finishing at four of ten.
+    if dry_run:
+        total_phases = load_round_csv.LOAD_PHASES.index("Storing the round")
+    else:
+        total_phases = len(load_round_csv.LOAD_PHASES) + 2
+
+    def phase(step: int, label: str) -> None:
+        status.update({
+            "phase": label, "phase_step": step, "phase_total": total_phases,
+            "phase_at": dt.datetime.now().astimezone().isoformat(),
+        })
+        _write_json(MANUAL_ROUND_STATUS_PATH, status, best_effort=True)
+
+    def on_progress(step: int, _total: int, label: str) -> None:
+        phase(step + (0 if dry_run else 1), label)
+
+    status.update({"phase_total": total_phases})
     if not dry_run:
         _acquire_lock()
     _write_json(MANUAL_ROUND_STATUS_PATH, status, best_effort=True)
@@ -1149,6 +1172,7 @@ def run_manual_round_load(folder: str | Path, season: int, round_name: str, *,
 
         target = live
         if not dry_run:
+            phase(1, "Copying the database")
             staging.unlink(missing_ok=True)
             shutil.copy2(live, staging)
             target = staging
@@ -1158,11 +1182,12 @@ def run_manual_round_load(folder: str | Path, season: int, round_name: str, *,
         # fixture, which names resolved to which player, what it refused.
         with redirect_stdout(report), redirect_stderr(report):
             load_round_csv.load(target, folder, int(season), str(round_name),
-                                dry_run=dry_run)
+                                dry_run=dry_run, on_progress=on_progress)
 
         promoted = False
         backup = None
         if not dry_run:
+            phase(total_phases, "Replacing the live database")
             backup = _backup_and_promote("afl", staging)
             promoted = True
         status.update({

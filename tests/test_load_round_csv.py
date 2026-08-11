@@ -697,3 +697,202 @@ def test_a_folder_with_nothing_in_it_is_reported_not_raised(tmp_path):
 
     assert G.describe(tmp_path)[0] == "no .csv files in this folder"
     assert G.describe(tmp_path / "nowhere")[0] == "that folder does not exist"
+
+
+# --------------------------------------------------------------------------
+# taking a round back out
+
+
+def _loaded_db(tmp_path, *, published=False, fetched=False):
+    """A database holding one hand-entered round and one published one.
+
+    Small on purpose: these tests are about which rows `remove` decides to
+    touch, not about the rebuild it delegates to.
+    """
+    path = tmp_path / "afl.db"
+    con = sqlite3.connect(path)
+    con.executescript(
+        """
+        CREATE TABLE games (player_id INTEGER, season INTEGER, round TEXT,
+                            goals REAL, match_id INTEGER);
+        CREATE TABLE manual_round_games (season INTEGER, round TEXT,
+                            player_id INTEGER, source_file TEXT);
+        CREATE TABLE matches (match_id INTEGER, season INTEGER, round TEXT);
+        CREATE TABLE match_details (match_id INTEGER);
+        CREATE TABLE club_match_sources (season INTEGER, round TEXT,
+                            source_game_url TEXT);
+        CREATE TABLE afltables_match_scores (season INTEGER, round TEXT);
+        CREATE TABLE players (player_id INTEGER PRIMARY KEY, player TEXT,
+                            career_games INTEGER, career_goals REAL,
+                            final_season INTEGER);
+        INSERT INTO games VALUES (1, 2026, '23', 2, 900), (2, 2026, '23', 1, 900),
+                                 (1, 2026, '22', 3, 800);
+        INSERT INTO manual_round_games VALUES (2026, '23', 1, 'rd23.csv'),
+                                              (2026, '23', 2, 'rd23.csv');
+        INSERT INTO matches VALUES (900, 2026, '23'), (800, 2026, '22');
+        INSERT INTO match_details VALUES (900), (800);
+        INSERT INTO club_match_sources VALUES (2026, 'R23', NULL),
+                                              (2026, 'R22', 'https://afltables');
+        INSERT INTO players VALUES (1, 'A Player', 2, 5, 2026),
+                                   (2, 'B Player', 1, 1, 2026);
+        """)
+    if published:
+        con.execute("INSERT INTO afltables_match_scores VALUES (2026, '23')")
+    if fetched:
+        con.execute("INSERT INTO club_match_sources VALUES "
+                    "(2026, 'R23', 'https://afltables/r23')")
+    con.commit()
+    con.close()
+    return path
+
+
+def test_the_footprint_counts_every_table_the_load_wrote(tmp_path):
+    con = sqlite3.connect(_loaded_db(tmp_path))
+    counts = L._round_footprint(con, 2026, "23")
+    assert counts == {"games": 2, "manual_round_games": 2, "matches": 1,
+                      "club_match_sources": 1, "match_details": 1}
+    # The published round beside it is not part of the hand-entered one.
+    assert L._round_footprint(con, 2026, "22")["games"] == 1
+    con.close()
+
+
+def test_a_round_the_source_has_since_published_is_not_removed(tmp_path):
+    """Those rows are the scrape's. --forget is the tool for that, not this.
+
+    Removing here would delete real data to no purpose, so it takes an
+    explicit --force rather than happening because the round number matched.
+    """
+    path = _loaded_db(tmp_path, published=True)
+    assert L.remove(path, 2026, "23") == 1
+
+    con = sqlite3.connect(path)
+    assert con.execute("SELECT COUNT(*) FROM games WHERE round='23'"
+                       ).fetchone()[0] == 2
+    con.close()
+
+
+def test_a_round_the_scrape_has_replaced_is_not_removed(tmp_path):
+    """A fetched source_game_url means the All Games scrape owns the row."""
+    path = _loaded_db(tmp_path, fetched=True)
+    assert L.remove(path, 2026, "23") == 1
+    assert "fetched fixture" in (
+        L._upstream_owns(sqlite3.connect(path), 2026, "23") or "")
+
+
+def test_a_hand_entered_round_is_removable(tmp_path):
+    con = sqlite3.connect(_loaded_db(tmp_path))
+    assert L._upstream_owns(con, 2026, "23") is None
+    con.close()
+
+
+def test_a_dry_run_writes_nothing(tmp_path):
+    path = _loaded_db(tmp_path)
+    assert L.remove(path, 2026, "23", dry_run=True, keep_backups=0) == 0
+
+    con = sqlite3.connect(path)
+    for table, column in (("games", "round"), ("manual_round_games", "round"),
+                          ("matches", "round")):
+        assert con.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE {column}='23'"
+        ).fetchone()[0] > 0, f"{table} was written during a dry run"
+    con.close()
+
+
+def test_a_round_that_was_never_loaded_is_not_a_silent_success(tmp_path):
+    assert L.remove(_loaded_db(tmp_path), 2026, "19", dry_run=True) == 1
+
+
+def test_a_backup_is_taken_before_anything_is_deleted(tmp_path):
+    path = _loaded_db(tmp_path)
+    backup = L._backup(path, keep=3)
+    assert backup is not None and backup.exists()
+    assert backup.parent == path.parent / "backups"
+    assert backup.stat().st_size == path.stat().st_size
+
+
+def test_older_backups_are_rotated_out(tmp_path):
+    """Same folder and retention as the nightly promote step uses."""
+    path = _loaded_db(tmp_path)
+    folder = path.parent / "backups"
+    folder.mkdir()
+    for day in range(1, 5):
+        stale = folder / f"afl-2026010{day}-000000.db"
+        stale.write_bytes(b"old")
+        _os.utime(stale, (day, day))
+
+    kept = L._backup(path, keep=3)
+    remaining = sorted(folder.glob("afl-*.db"))
+    assert len(remaining) == 3
+    assert kept in remaining
+    # The oldest go first, newest kept.
+    assert folder / "afl-20260101-000000.db" not in remaining
+
+
+def test_a_backup_can_be_declined(tmp_path):
+    assert L._backup(_loaded_db(tmp_path), keep=0) is None
+
+
+# --------------------------------------------------------------------------
+# a round loaded out of order
+
+
+@pytest.fixture
+def out_of_order():
+    """114 games before round 22, and a round 23 already entered by hand.
+
+    The real shape this hit: round 23 was entered while round 22 was still
+    missing upstream, so the database held a game played *after* the round
+    being loaded.
+    """
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE games (player_id INTEGER, season INTEGER, "
+                "round TEXT, date TEXT)")
+    con.executemany(
+        "INSERT INTO games VALUES (?, ?, ?, ?)",
+        [(770, 2025, str(n), f"2025-{(n % 12) + 1:02d}-01")
+         for n in range(1, 115)])
+    # The round after the one being loaded, already in the database.
+    con.execute("INSERT INTO games VALUES (770, 2026, '23', '2026-08-08')")
+    con.commit()
+    return con
+
+
+def test_a_later_round_already_held_is_not_counted_as_an_earlier_game(
+        out_of_order):
+    """The failure that refused 366 of 414 players on a correct round.
+
+    Counting "every game that is not this round" quietly includes the
+    round played the following week, so every player in both looks one
+    game ahead of himself and the whole round is refused.
+    """
+    player = _one_player("Daicos, Nick", "115 (80-0-35)")
+    resolved = {("Collingwood", "Daicos, Nick"): (770, "Nick Daicos", "index")}
+
+    # Counting up to the round's first day is the right question.
+    assert L.check_career_totals(
+        out_of_order, 2026, "22", player, resolved,
+        before="2026-08-01") == []
+
+    # Without it, the round-23 game is miscounted and the load is refused.
+    notes = L.check_career_totals(out_of_order, 2026, "22", player, resolved)
+    assert len(notes) == 1
+    assert "holds 115 earlier game(s)" in notes[0]
+
+
+def test_counting_up_to_a_date_still_catches_the_wrong_namesake(out_of_order):
+    """The check must keep failing what it was built to fail."""
+    notes = L.check_career_totals(
+        out_of_order, 2026, "22", _one_player("Daicos, Nick", "46 (20-0-26)"),
+        {("Collingwood", "Daicos, Nick"): (770, "Nick Daicos", "index")},
+        before="2026-08-01")
+    assert len(notes) == 1
+    assert "career game 46" in notes[0] and "holds 114" in notes[0]
+
+
+def test_counting_up_to_a_date_still_catches_a_false_debut(out_of_order):
+    notes = L.check_career_totals(
+        out_of_order, 2026, "22", _one_player("Someone, Else", "175 (90-0-85)"),
+        {("Collingwood", "Someone, Else"): (None, "Else Someone", "debut")},
+        before="2026-08-01")
+    assert len(notes) == 1
+    assert "no player of that name" in notes[0]

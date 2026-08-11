@@ -123,6 +123,7 @@ SPORT = Sport(
     has_awards_page=True,
     awards_page_module="afl.awards_page",
     has_past_games=True,
+    data_notes_module="afl.data_notes",
     ground_explorer_module="afl.ground_explorer",
     has_ground_explorer=True,
     has_draftguru_player_cards=True,

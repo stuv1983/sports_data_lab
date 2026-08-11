@@ -10,6 +10,7 @@ import streamlit as st
 
 import components
 import core
+import db_pool
 import query_filters_family as Q
 
 
@@ -60,6 +61,68 @@ EXAMPLES = [
 
 def _examples(sport):
     return list(sport.search_examples) or EXAMPLES
+
+
+def _apply_suggestion(state_key, query, term, name):
+    """Swap the misspelling for the clicked name, before the form renders.
+
+    Runs as the button's on_click callback, which Streamlit fires before
+    the rerun -- the one moment the form's text can be set without
+    fighting the widget that owns it. The rewritten query then compiles
+    on the very rerun the click caused: one tap, corrected search.
+    """
+    st.session_state[state_key] = Q.replace_name_term(query, term, name)
+
+
+def _suggestion_stars(sport, revision, matches) -> dict:
+    """Obscurity stars for each suggested player, keyed by id.
+
+    Two Gary Abletts are told apart by span and clubs already; the stars
+    say at a glance which namesake is the household name and which is the
+    long tail.
+    """
+    s = sport.schema
+    marks = ",".join("?" for _ in matches)
+    con = db_pool.get_con(sport.db, revision)
+    return {
+        pid: core.stars_text(obscurity)
+        for pid, obscurity in con.execute(
+            f"SELECT {s.player_id}, {s.obscurity} FROM {s.players} "
+            f"WHERE {s.player_id} IN ({marks})",
+            [pid for pid, _, _ in matches])
+    }
+
+
+def _suggest_close_names(sport, query, state_key, revision):
+    """Did-you-mean for a name filter that found nobody.
+
+    The matcher is the player picker's own: strict substring tiers first
+    and a similarity scan only when none of them hit, so what comes back
+    is the closest real spellings, each with the career span, games,
+    clubs and obscurity stars that tell two namesakes apart. Each is a
+    button that rewrites the query and searches again. Shown only when
+    the *name* is what failed -- a name the database does contain means
+    the other filters did the excluding, and repeating it back would be
+    noise.
+    """
+    import ui_widgets
+
+    for term in Q.name_terms(query):
+        matches = ui_widgets.player_matches(term, sport, revision, limit=4)
+        if not matches:
+            continue
+        typed = ui_widgets._player_search_key(term)
+        if any(typed in ui_widgets._player_search_key(name)
+               for _, name, _ in matches):
+            continue
+        stars = _suggestion_stars(sport, revision, matches)
+        st.markdown(f"Nobody is spelled **{term}**. Closest names:")
+        for pid, name, label in matches:
+            st.button(
+                f"{label}  ·  {stars.get(pid, '—')}",
+                key=sport.k(f"dym_{term}_{pid}"),
+                on_click=_apply_suggestion,
+                args=(state_key, query, term, name))
 
 
 def search_page(sport, con):
@@ -148,6 +211,7 @@ def search_page(sport, con):
 
     if frame.empty:
         st.info("No players match every filter.")
+        _suggest_close_names(sport, query, state_key, revision)
     else:
         if "ObscurityRaw" in frame.columns:
             frame["Rating"] = frame["ObscurityRaw"].map(core.stars_text)

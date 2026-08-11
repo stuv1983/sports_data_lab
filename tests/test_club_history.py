@@ -334,6 +334,79 @@ def test_availability_probe_is_false_without_the_table():
     assert H.club_history_available(con) is False
 
 
+# ----------------------------------------------------- rounds available
+
+def test_rounds_are_listed_in_playing_order_not_alphabetical_order():
+    """R10 after R2, and the final last.
+
+    Sorted as text this reads R1, R10, R2, R3, R4, GF -- which is the bug
+    a round picker exists to avoid.
+    """
+    con = fixture()
+    con.executemany(
+        f"INSERT INTO club_match_sources VALUES "
+        f"({','.join('?' * len(COLUMNS))})",
+        _match("g8", 2000, "R10", "2000-06-10", "alpha", "gamma",
+               60, 55, "Home Oval", 8000))
+    assert H.rounds_available(con) == ["R1", "R2", "R3", "R4", "R10", "GF"]
+
+
+def test_a_finals_code_is_placed_by_when_it_was_played():
+    """Nothing in the label says a grand final comes after a semi final.
+
+    Alphabetically 'GF' sorts before 'SF'; only the position each held in
+    its own season says otherwise.
+    """
+    con = fixture()
+    con.executemany(
+        f"INSERT INTO club_match_sources VALUES "
+        f"({','.join('?' * len(COLUMNS))})",
+        _match("g8", 2000, "SF", "2000-08-25", "alpha", "gamma",
+               60, 55, "Neutral Oval", 30000, is_final=1))
+    assert H.rounds_available(con)[-2:] == ["SF", "GF"]
+
+
+def test_rounds_can_be_narrowed_to_one_season():
+    con = fixture()
+    assert H.rounds_available(con, season=2000) == [
+        "R1", "R2", "R3", "R4", "GF"]
+    # 2001's other match is the ambiguous one, which the trust boundary
+    # drops here exactly as it drops it everywhere else.
+    assert H.rounds_available(con, season=2001) == ["R1"]
+
+
+def test_rounds_can_be_narrowed_to_a_span_of_seasons():
+    con = fixture()
+    assert H.rounds_available(con, season_from=2001) == ["R1"]
+    assert H.rounds_available(con, season_to=1999) == []
+
+
+def test_a_season_that_records_no_round_offers_nothing_to_pick():
+    """The MLB and NBA shape: a round for the postseason and nothing else."""
+    con = fixture()
+    con.executemany(
+        f"INSERT INTO club_match_sources VALUES "
+        f"({','.join('?' * len(COLUMNS))})",
+        _match("g8", 2002, None, "2002-04-01", "alpha", "gamma",
+               60, 55, "Home Oval", 8000))
+    assert H.rounds_available(con, season=2002) == []
+    assert H.matches_without_a_round(con, season=2002) == 1
+    assert H.matches_without_a_round(con, season=2000) == 0
+
+
+def test_matches_without_a_round_counts_matches_not_rows():
+    con = fixture()
+    con.executemany(
+        f"INSERT INTO club_match_sources VALUES "
+        f"({','.join('?' * len(COLUMNS))})",
+        _match("g8", 2002, None, "2002-04-01", "alpha", "gamma",
+               60, 55, "Home Oval", 8000)
+        + _match("g9", 2002, None, "2002-04-08", "beta", "gamma",
+                 60, 55, "Away Oval", 8000))
+    # Four source rows, two matches.
+    assert H.matches_without_a_round(con) == 2
+
+
 # ============================================================ live data
 
 def live():

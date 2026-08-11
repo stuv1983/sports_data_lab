@@ -14,6 +14,7 @@ import shlex
 from typing import Any
 
 import core
+import names
 
 
 class QuerySyntaxError(ValueError):
@@ -104,11 +105,90 @@ def _has_values(con, table: str, column: str) -> bool:
 _PHYSICAL_COLUMNS = {"height": "height_cm", "weight": "weight_kg"}
 
 
-def _parse(query: str) -> tuple[list[tuple[str, str, str]], QuerySpec]:
+def tokenize(query: str) -> list[str]:
+    """Split a query like shlex.split, with double quotes the only quoting.
+
+    Every documented example quotes phrases with double quotes, and a
+    single quote is how half the surnames in the database are spelled --
+    `name:o'brien` used to die with "No closing quotation" instead of
+    finding anybody.
+    """
+    lex = shlex.shlex(query, posix=True)
+    lex.whitespace_split = True
+    lex.commenters = ""
+    lex.quotes = '"'
     try:
-        raw_tokens = shlex.split(query, posix=True)
+        return list(lex)
     except ValueError as exc:
         raise QuerySyntaxError(str(exc)) from exc
+
+
+def quote_token(token: str) -> str:
+    """The inverse of `tokenize` for one token: double quotes when needed.
+
+    shlex.quote wraps in *single* quotes, which `tokenize` reads as letters
+    of the value -- re-joining `club:"New York Yankees"` through it handed
+    the parser a token starting with a literal apostrophe.
+    """
+    if token and not re.search(r'[\s"\\]', token):
+        return token
+    escaped = token.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def join_tokens(tokens) -> str:
+    """Join tokens into a query string that `tokenize` reads back intact."""
+    return " ".join(quote_token(token) for token in tokens)
+
+
+def name_terms(query: str) -> list[str]:
+    """The value of every name:/player: token in a query, or nothing.
+
+    For the search page's did-you-mean: an empty result with a name filter
+    in it is usually a misspelled name, and the page can only offer close
+    spellings if it can see what was typed. Parse errors return nothing --
+    the page is already showing them as errors.
+    """
+    try:
+        tokens = tokenize(query)
+    except QuerySyntaxError:
+        return []
+    terms = []
+    for raw in tokens:
+        match = _TOKEN.fullmatch(raw)
+        if (match and match.group(2) == ":"
+                and match.group(1).lower() in {"name", "player"}
+                and match.group(3).strip()):
+            terms.append(match.group(3).strip())
+    return terms
+
+
+def replace_name_term(query: str, term: str, name: str) -> str:
+    """The query with a name:/player: value swapped for a real name.
+
+    Behind the search page's did-you-mean buttons: only the token whose
+    value is the misspelling changes, every other filter rides along
+    untouched. A query that does not parse comes back unchanged -- the
+    page is already showing it as an error.
+    """
+    try:
+        tokens = tokenize(query)
+    except QuerySyntaxError:
+        return query
+    out = []
+    for raw in tokens:
+        match = _TOKEN.fullmatch(raw)
+        if (match and match.group(2) == ":"
+                and match.group(1).lower() in {"name", "player"}
+                and match.group(3).strip() == term):
+            out.append(f"{match.group(1)}:{quote_token(name)}")
+        else:
+            out.append(quote_token(raw))
+    return " ".join(out)
+
+
+def _parse(query: str) -> tuple[list[tuple[str, str, str]], QuerySpec]:
+    raw_tokens = tokenize(query)
 
     spec = QuerySpec()
     tokens: list[tuple[str, str, str]] = []
@@ -204,8 +284,31 @@ def compile_query(schema, query: str, con=None):
             player_where.append(fragment)
             params.extend(bound)
         elif key in {"name", "player"}:
-            player_where.append(f"LOWER(p.{s.player}) LIKE ?")
-            params.append(f"%{value.lower()}%")
+            # Matched on letters alone, the way the player picker already
+            # does: `name:acuna` has to find Acuña, and `name:o'brien` the
+            # OBrien that AFL Tables strips the apostrophe from. SQLite's
+            # LOWER and LIKE fold ASCII only, so the folding runs in
+            # Python, registered on the connection the query executes on.
+            # Wildcards in the typed text are escaped so "o_brien" is a
+            # name, not a pattern.
+            folded = names.search_key(value)
+            if not folded:
+                # Folding strips punctuation, so a query of nothing but
+                # punctuation would leave an empty pattern -- which LIKE
+                # reads as "match everybody".
+                raise QuerySyntaxError(
+                    f"A name needs at least one letter or digit, "
+                    f"got {value!r}")
+            if con is not None:
+                con.create_function("search_key", 1, names.search_key,
+                                    deterministic=True)
+                player_where.append(
+                    f"search_key(p.{s.player}) LIKE ? ESCAPE '\\'")
+                params.append(names.like_contains(folded))
+            else:
+                player_where.append(
+                    f"LOWER(p.{s.player}) LIKE ? ESCAPE '\\'")
+                params.append(names.like_contains(value.lower()))
         elif key == "club":
             club_all.append(value)
         elif key == "club_any":
@@ -260,9 +363,9 @@ def compile_query(schema, query: str, con=None):
                 f"p.{s.player_id} IN (SELECT dl.player_id FROM draft d JOIN draft_links dl "
                 "ON dl.draft_rowid=d.rowid "
                 "WHERE dl.match_status IN ('unique','resolved') "
-                "AND LOWER(d.club) LIKE ?)"
+                "AND LOWER(d.club) LIKE ? ESCAPE '\\')"
             )
-            params.append(f"%{value.lower()}%")
+            params.append(names.like_contains(value.lower()))
         elif key.startswith("game."):
             stat = key.split(".", 1)[1]
             if stat not in stats:
@@ -428,7 +531,7 @@ def query_from_params(query_params: dict) -> str:
     }
     for source, target in mapping.items():
         for value in values(source):
-            tokens.append(f"{target}:{shlex.quote(value)}")
+            tokens.append(f"{target}:{quote_token(value)}")
 
     booleans = {"captain": "captain", "postseason": "postseason"}
     for source, target in booleans.items():

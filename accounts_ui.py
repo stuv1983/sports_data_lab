@@ -349,6 +349,97 @@ def _render_rising_star_currency(currency):
         )
 
 
+def _render_manual_round_progress(status, kind, label):
+    """Where a running load is up to, in phases rather than in seconds.
+
+    The job runs detached, so the only thing the browser knows about it is
+    what the status file says. It names every phase as it begins, which is
+    what turns "it is running" into "rebuilding the ladder, ten of eleven".
+    The phases are nowhere near equal -- the last one is about two thirds
+    of the minute -- so a bar that rests there is working rather than
+    stuck, and the label is what distinguishes the two.
+    """
+    step = status.get("phase_step") or 0
+    total = status.get("phase_total") or 0
+    phase = status.get("phase") or "Starting"
+    elapsed = _elapsed_time(status.get("started_at"))
+
+    with st.container(border=True):
+        st.markdown(f"**{kind} of {label} is running**")
+        if total:
+            st.progress(min(step / total, 1.0),
+                        text=f"{phase} — step {step} of {total}")
+        else:
+            st.progress(0.0, text="Starting")
+        detail = st.columns(3)
+        detail[0].metric("Elapsed", elapsed, border=True)
+        detail[1].metric("Phase", f"{step} / {total}" if total else "—",
+                         border=True)
+        detail[2].metric(
+            "Typical", "about 1 min" if not status.get("dry_run")
+            else "a few seconds", border=True)
+        st.caption(
+            "This page follows the job by itself; there is no need to "
+            "refresh. Nothing reaches the live database until every phase "
+            "has passed."
+        )
+
+
+def _elapsed_seconds(started_at) -> int | None:
+    """Seconds since a status timestamp, or None if it cannot be read."""
+    if not started_at:
+        return None
+    try:
+        started = dt.datetime.fromisoformat(str(started_at))
+        if started.tzinfo is None:
+            started = started.astimezone()
+        return max(0, int(
+            (dt.datetime.now().astimezone() - started).total_seconds()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _round_load_stalled(status) -> bool:
+    """Whether a job that says it is running has actually gone.
+
+    The status file is the only evidence a detached job leaves, so a
+    process killed mid-load leaves 'running' behind for ever. The lock is
+    the second opinion -- but it is taken by the child a moment after the
+    parent writes 'starting', so a job is only called stalled once it has
+    had long enough to take it.
+    """
+    if (status or {}).get("state") not in {"starting", "running"}:
+        return False
+    elapsed = _elapsed_seconds(status.get("started_at"))
+    if elapsed is None or elapsed < 30:
+        return False
+    return not database_updates.update_is_active()
+
+
+@st.fragment(run_every=2)
+def _live_manual_round_status():
+    """Poll the running load, then hand back to the ordinary page.
+
+    Rendered only while a job is actually running, and its last act is to
+    rerun the whole app -- which drops this fragment and shows the finished
+    report. Without that the page would keep polling a job that ended, and
+    a job that died would be polled until the tab was closed.
+    """
+    status = database_updates.read_manual_round_status()
+    if _round_load_stalled(status):
+        st.error(
+            "The load stopped unexpectedly and its process is no longer "
+            "running. Nothing was written to the live database — the round "
+            "is applied to a staged copy and promoted only on success.",
+            icon=":material/error:")
+        _render_manual_round_status({**status, "state": "failed",
+                                     "error": "the process is gone"})
+        return
+    _render_manual_round_status(status)
+    if (status or {}).get("state") not in {"starting", "running"}:
+        st.rerun(scope="app")
+
+
 def _render_manual_round_status(status):
     """The loader's own report, which is what the operator actually needs.
 
@@ -362,9 +453,7 @@ def _render_manual_round_status(status):
     kind = "Check" if status.get("dry_run") else "Load"
     label = f"round {status.get('round')}, {status.get('season')}"
     if state in {"starting", "running"}:
-        st.info(f"{kind} of {label} is {state} "
-                f"({_elapsed_time(status.get('started_at'))} so far). "
-                "Applying a round takes about a minute.")
+        _render_manual_round_progress(status, kind, label)
     elif state == "failed":
         st.error(f"{kind} of {label} failed: {status.get('error')}")
         st.caption("Nothing was written to the live database.")
@@ -660,7 +749,14 @@ def _render_manual_round_section(active):
                 }
                 st.rerun()
 
-    _render_manual_round_status(database_updates.read_manual_round_status())
+    # Poll only while there is something to poll. When the fragment sees
+    # the job finish it reruns the app, which lands here on the other
+    # branch and shows the loader's report.
+    running = database_updates.read_manual_round_status()
+    if (running or {}).get("state") in {"starting", "running"}:
+        _live_manual_round_status()
+    else:
+        _render_manual_round_status(running)
 
     redundant = [row for row in (summary.get("rounds") or [])
                  if row.get("upstream_has")]
@@ -822,12 +918,115 @@ def account_page(user):
 
 
 def admin_page(user):
-    st.markdown("# Access administration")
-    st.caption("Admins always retain access. Choose members, selected accounts, or admins only for each feature.")
+    """One page, grouped by what a thing is rather than when it was added.
+
+    It had grown into a single column holding access control, four kinds
+    of database job and a schedule, so finding the round loader meant
+    scrolling past everything else and the running-job banner scrolled
+    away from the button that started it. The jobs are now grouped by the
+    data they touch, and the statuses every tab needs are read once here.
+    """
+    st.markdown("# Administration")
+
+    notice = st.session_state.pop("database_update_notice", None)
+    if notice:
+        getattr(st, notice.get("kind", "info"))(notice.get("message", ""))
+
+    status = database_updates.read_status()
+    check_status = database_updates.read_check_status()
+    gridley_status = database_updates.read_gridley_scan_status()
+    rising_star_status = database_updates.read_rising_star_status()
+    round_status = database_updates.read_manual_round_status()
+    state = status.get("state", "unknown") if status else "unknown"
+
+    def running(job):
+        return (job or {}).get("state") in {"starting", "running"}
+
+    # Every job takes the same lock, so any one of them running has to
+    # disable all the buttons. Watching only the main update's status left
+    # them enabled during a Gridley scan, and clicking one produced "a
+    # database update is already running" instead of a disabled control.
+    active = (
+        (state in {"starting", "running"} or running(gridley_status)
+         or running(rising_star_status) or running(round_status))
+        and database_updates.update_is_active()
+    )
+
+    _admin_banner(active, state, status, gridley_status, rising_star_status,
+                  round_status)
+
+    tabs = st.tabs([
+        "Databases", "Match data", "Rising Star", "Grids", "Access",
+        "Schedule",
+    ])
+    with tabs[0]:
+        _admin_databases_tab(user, status, check_status, state, active)
+    with tabs[1]:
+        _render_manual_round_section(active)
+    with tabs[2]:
+        _admin_rising_star_tab(user, rising_star_status, active)
+    with tabs[3]:
+        _admin_grids_tab(gridley_status, active)
+    with tabs[4]:
+        _admin_access_tab(user)
+    with tabs[5]:
+        _admin_schedule_tab()
+
+
+def _admin_banner(active, state, status, gridley_status, rising_star_status,
+                  round_status) -> None:
+    """What is running right now, above the tabs.
+
+    A job started on one tab is followed from whichever tab the operator
+    happens to be on, because the thing they want to know -- is it safe to
+    start another one -- is not a property of the tab they are looking at.
+    """
+    if not active:
+        return
+    for label, job in (("Database update", status),
+                       ("Round load", round_status),
+                       ("Gridley scan", gridley_status),
+                       ("Rising Star check", rising_star_status)):
+        if (job or {}).get("state") in {"starting", "running"}:
+            st.warning(
+                f"**{label} in progress** — started "
+                f"{_elapsed_time(job.get('started_at'))} ago. Every other "
+                "database job is disabled until it finishes.",
+                icon=":material/hourglass_top:")
+            return
+    st.warning("A database job is in progress.",
+               icon=":material/hourglass_top:")
+
+
+def _admin_schedule_tab() -> None:
+    st.markdown("#### Automatic schedule")
+    st.caption("Every job below also has a button on its own tab, for "
+               "picking something up early rather than waiting for a timer.")
+    st.dataframe([
+        {"Job": "Scores and statistics",
+         "Runs": "Fri, Sat, Sun, Mon at 12:10 am Sydney"},
+        {"Job": "Gridley board scan", "Runs": "Daily at 6:30 am Sydney"},
+        {"Job": "Rising Star nominations", "Runs": "Monday at 8:00 am Sydney"},
+        {"Job": "Brownlow and awards",
+         "Runs": "1:00 am the Tuesday after Brownlow night "
+                 "(22 September in 2026)"},
+        {"Job": "Grand Final and final awards",
+         "Runs": "1:00 am the Sunday after the last Saturday in September "
+                 "(27 September in 2026)"},
+    ], width="stretch", hide_index=True)
+    st.caption(
+        "Ubuntu systemd timers run missed starts after downtime and the "
+        "update lock prevents overlapping jobs."
+    )
+
+
+def _admin_access_tab(user):
     policies = accounts.feature_policies()
     users = accounts.list_users()
 
-    st.markdown("### Feature access")
+    st.markdown("#### Feature access")
+    st.caption("Admins always retain access. Choose members, selected "
+               "accounts, or admins only for each feature.")
     for feature, (label, _default) in accounts.FEATURES.items():
         current = policies.get(feature, _default)
         col1, col2 = st.columns([2, 3])
@@ -857,7 +1056,7 @@ def admin_page(user):
                         user.id, feature, member.id, member.id in picked_ids)
                 st.rerun()
 
-    st.markdown("### Members")
+    st.markdown("#### Members")
     for member in users:
         with st.expander(f"{member.display_name} · {member.email}"):
             c1, c2, c3 = st.columns([2, 2, 1])
@@ -865,47 +1064,24 @@ def admin_page(user):
                 "Role", ["member", "admin"],
                 index=0 if member.role == "member" else 1,
                 key=f"user_role_{member.id}")
-            active = c2.checkbox("Active", value=member.active,
-                                 key=f"user_active_{member.id}")
+            member_active = c2.checkbox("Active", value=member.active,
+                                        key=f"user_active_{member.id}")
             if c3.button("Update", key=f"user_update_{member.id}"):
                 try:
                     accounts.set_user_access(
-                        user.id, member.id, role=role, active=active)
+                        user.id, member.id, role=role, active=member_active)
                 except accounts.AccountError as exc:
                     st.error(str(exc))
                 else:
                     st.success("Access updated.")
                     st.rerun()
 
-    st.markdown("### Database operations")
+
+def _admin_databases_tab(user, status, check_status, state, active):
     st.caption(
         "Refresh, validate and inspect AFL, NBA, MLB and NFL data. Updates run "
         "in the background against staging files, so the app keeps serving the "
         "last validated database until each replacement is ready."
-    )
-
-    notice = st.session_state.pop("database_update_notice", None)
-    if notice:
-        getattr(st, notice.get("kind", "info"))(notice.get("message", ""))
-
-    status = database_updates.read_status()
-    check_status = database_updates.read_check_status()
-    gridley_status = database_updates.read_gridley_scan_status()
-    rising_star_status = database_updates.read_rising_star_status()
-    state = status.get("state", "unknown") if status else "unknown"
-    gridley_state = (gridley_status.get("state", "unknown")
-                     if gridley_status else "unknown")
-    rising_star_state = (rising_star_status.get("state", "unknown")
-                         if rising_star_status else "unknown")
-    # Both jobs take the same lock, so both have to count here. Watching
-    # only the main update's status left every button enabled while a
-    # Gridley scan was running, and clicking one produced "a database
-    # update is already running" instead of a disabled control.
-    active = (
-        (state in {"starting", "running"}
-         or gridley_state in {"starting", "running"}
-         or rising_star_state in {"starting", "running"})
-        and database_updates.update_is_active()
     )
     if status:
         completed_steps = status.get(
@@ -1141,6 +1317,8 @@ def admin_page(user):
 
     _render_database_check(check_status)
 
+
+def _admin_grids_tab(gridley_status, active):
     st.markdown("#### Gridley game scan")
     st.caption(
         "Checks Gridley's public daily AFL board feed from the newest saved "
@@ -1172,6 +1350,8 @@ def admin_page(user):
             st.rerun()
     _render_gridley_scan(gridley_status)
 
+
+def _admin_rising_star_tab(user, rising_star_status, active):
     st.markdown("#### AFL Rising Star nominations")
     st.caption(
         "Reads this season's nominations from Wikipedia, which publishes the "
@@ -1210,16 +1390,3 @@ def admin_page(user):
     with st.expander("Add or amend a Rising Star nomination by hand"):
         _rising_star_edit_form(user, active)
         _render_rising_star_edits()
-
-    _render_manual_round_section(active)
-
-    with st.expander("Automatic schedule"):
-        st.write("Regular scores and statistics: Friday, Saturday, Sunday and Monday at 12:10 am Sydney time.")
-        st.write("Gridley board scan: every day at 6:30 am Sydney time.")
-        st.write("Rising Star nominations: Monday at 8:00 am Sydney time.")
-        st.write("Brownlow and awards: 1:00 am on the Tuesday after Brownlow night (22 September in 2026).")
-        st.write("Grand Final and final awards: 1:00 am on the Sunday after the last Saturday in September (27 September in 2026).")
-        st.caption(
-            "Ubuntu systemd timers run missed starts after downtime and the "
-            "update lock prevents overlapping jobs."
-        )

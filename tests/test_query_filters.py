@@ -188,5 +188,93 @@ def test_a_sport_without_physicals_says_so_instead_of_matching_nobody():
         Q.compile_query(schema, "height>=195", con=con)
 
 
+# ------------------------------------------------------------ name search
+#
+# The name filter matches on letters alone -- case, accents and punctuation
+# are interchangeable, the same rule the player picker applies -- and typed
+# text never becomes a LIKE wildcard. Before that, "name:a_pha" matched
+# Alpha One ("_" matched the "l"), "name:%" matched everybody, and
+# "name:o'brien" died in shlex with "No closing quotation".
+
+def test_a_name_search_still_finds_its_player():
+    con, schema = fixture()
+    sql, params, _ = Q.compile_query(schema, "name:alpha", con=con)
+    assert [row[0] for row in con.execute(sql, params)] == ["Alpha One"]
+
+
+@pytest.mark.parametrize("query", ["name:a_pha", "name:al%ne"])
+def test_a_typed_wildcard_is_a_character_not_a_pattern(query):
+    con, schema = fixture()
+    sql, params, _ = Q.compile_query(schema, query, con=con)
+    assert con.execute(sql, params).fetchall() == []
+
+
+def test_a_search_of_nothing_but_punctuation_is_refused():
+    """Folding strips punctuation, and an empty LIKE pattern would read as
+    "match everybody" -- the exact over-match the folding exists to stop."""
+    con, schema = fixture()
+    with pytest.raises(Q.QuerySyntaxError):
+        Q.compile_query(schema, "name:%", con=con)
+
+
+def test_a_straight_apostrophe_is_a_letter_of_the_name_not_a_quote():
+    """`name:o'brien` used to die in shlex with "No closing quotation":
+    posix mode reads a single quote as opening a quotation. Double quotes
+    are the only quoting the examples teach, so they are the only quoting
+    the parser accepts -- and the apostrophe then matches the OBrien that
+    AFL Tables strips it from."""
+    con, schema = fixture()
+    con.execute(
+        "INSERT INTO players VALUES "
+        "(3, 'Jim OBrien', 1990, 2000, 100, 50, 5, 'A', 60)")
+    sql, params, _ = Q.compile_query(schema, "name:o'brien", con=con)
+    assert [row[0] for row in con.execute(sql, params)] == ["Jim OBrien"]
+
+
+def test_double_quotes_still_group_a_two_word_value():
+    con, schema = fixture()
+    sql, params, _ = Q.compile_query(schema, 'name:"alpha one"', con=con)
+    assert [row[0] for row in con.execute(sql, params)] == ["Alpha One"]
+
+
+def test_an_accented_name_is_found_by_its_plain_spelling():
+    """SQLite's LOWER and LIKE fold ASCII only, so "acuna" could never
+    reach "Acuña" in SQL -- 218 MLB names carry a diacritic."""
+    con, schema = fixture()
+    con.execute(
+        "INSERT INTO players VALUES "
+        "(3, 'Ronald Acuña', 2018, 2026, 900, 0, 20, 'A', 30)")
+    for query in ("name:acuna", "name:acuña", "name:Acuña"):
+        sql, params, _ = Q.compile_query(schema, query, con=con)
+        assert [row[0] for row in con.execute(sql, params)] == \
+            ["Ronald Acuña"], query
+
+
+def test_a_clicked_suggestion_replaces_only_the_misspelled_name():
+    """The did-you-mean buttons rewrite the query: the name token takes
+    the clicked spelling, every other filter rides along untouched."""
+    rewritten = Q.replace_name_term(
+        'club:"St Kilda" name:"gary abblett" games>=100',
+        "gary abblett", "Gary Ablett")
+    assert Q.name_terms(rewritten) == ["Gary Ablett"]
+    tokens = Q.tokenize(rewritten)
+    assert "club:St Kilda" in tokens
+    assert "games>=100" in tokens
+
+
+def test_a_query_that_does_not_parse_is_returned_unchanged():
+    assert Q.replace_name_term('name:"unclosed', "x", "y") == 'name:"unclosed'
+
+
+def test_name_terms_reads_what_the_did_you_mean_needs():
+    """The search page offers close spellings only for the name tokens,
+    and a query that does not parse is already an error box."""
+    assert Q.name_terms('club:A name:"gary ablet" games>=100') == \
+        ["gary ablet"]
+    assert Q.name_terms("player:smith name:jones") == ["smith", "jones"]
+    assert Q.name_terms("games>=100") == []
+    assert Q.name_terms('name:"unclosed') == []
+
+
 if __name__ == "__main__":
     run()
