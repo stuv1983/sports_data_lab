@@ -94,6 +94,39 @@ def _logo_index(sport_key, revision, _con) -> dict:
         for value in row or ():
             if value:
                 index.setdefault(str(value).lower(), str(path))
+
+    # Era and defunct names, straight out of the games table: a 1954 card
+    # says Footscray and a 1990 card says Brisbane Bears, names the clubs
+    # table does not hold. Each maps to its own era badge where the folder
+    # has one (Footscray's colours, the Bears), and otherwise to the badge
+    # of the club it became -- Kangaroos to North Melbourne's, South
+    # Melbourne to Sydney's. A defunct club with no file and no successor
+    # (Fitzroy, University) simply stays absent.
+    import sports as sports_registry
+
+    schema = sports_registry.get(sport_key).schema
+    hist = getattr(schema, "club_hist", "")
+    now = getattr(schema, "club_now", "")
+    games = getattr(schema, "games", "")
+    pairs = []
+    if hist and now and games and _has_table(_con, games):
+        try:
+            pairs = _con.execute(
+                f"SELECT DISTINCT {hist}, {now} FROM {games}").fetchall()
+        except sqlite3.Error:
+            pairs = []
+    unindexed = {str(name) for pair in pairs for name in pair
+                 if name and str(name).lower() not in index}
+    era = CL.era_logo_files(unindexed, CL.logo_dir(sport_key),
+                            exclude=set(found.values()))
+    for h, n in pairs:
+        for name, became in ((n, None), (h, n)):
+            if not name or str(name).lower() in index:
+                continue
+            path = era.get(str(name)) or (
+                index.get(str(became).lower()) if became else None)
+            if path:
+                index[str(name).lower()] = str(path)
     return index
 
 

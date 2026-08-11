@@ -691,7 +691,11 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
     clubs_hist = p[6] or ""
     debut, final = p[1], p[2]
     career_games = p[3] or 0
-    n_clubs = len(clubs_hist.split("|")) if clubs_hist else 0
+    # One entry per club, named as the club was at the time: "Kangaroos|
+    # North Melbourne" is one club that renamed itself mid-career, and
+    # counting or listing it twice reads as a two-club journeyman.
+    clubs_shown = sport.collapse_club_path(clubs_hist)
+    n_clubs = len(clubs_shown.split("|")) if clubs_shown else 0
 
     # Trusted captain appointments, shown in the bio column when a sport
     # has them. Gated on the constraints module declaring the layer rather
@@ -744,7 +748,7 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
     span = (f"{debut}–{final}" if debut and final
             else str(debut or final or ""))
     subtitle = " · ".join(
-        part for part in (span, clubs_hist.replace("|", ", ")) if part)
+        part for part in (span, clubs_shown.replace("|", ", ")) if part)
 
     with st.container(border=True):
         st.markdown(
@@ -956,7 +960,7 @@ def _compare_players(sport, con, player_picker):
     hl, hr = st.columns(2)
     for col, p in ((hl, a), (hr, b)):
         col.markdown(f"### {p.player}")
-        col.caption(f"{p.span} · {p.clubs}")
+        col.caption(f"{p.span} · {sport.collapse_club_path(p.clubs)}")
         m1, m2, m3 = col.columns(3)
         m1.metric(V.games.capitalize(), f"{p.career_games:,}")
         m2.metric(V.score.capitalize(), f"{p.career_score:,}")

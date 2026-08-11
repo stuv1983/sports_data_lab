@@ -86,27 +86,31 @@ def quick_player_options(sport_key, db, revision, limit=QUICK_PLAYER_LIMIT):
     selectbox can: it filters options already in the browser, with no
     round trip. That only works for options the browser has, hence the cap.
     """
-    s = sports.get(sport_key).schema
+    sport = sports.get(sport_key)
+    s = sport.schema
     rows = db_pool.get_con(db, revision).execute(
         f"SELECT {s.player_id}, {s.player}, {s.debut_season}, "
         f"{s.final_season}, {s.career_games}, {s.clubs_hist} "
         f"FROM {s.players} WHERE {_HAS_NAME.format(player=s.player)} "
         f"ORDER BY COALESCE({s.career_games}, 0) DESC, {s.player} "
         f"LIMIT ?", (limit,)).fetchall()
-    return [(pid, nm, _player_label(nm, d, f, g, cl))
+    return [(pid, nm,
+             _player_label(nm, d, f, g, sport.collapse_club_path(cl)))
             for pid, nm, d, f, g, cl in rows]
 
 
 @st.cache_data(show_spinner=False)
 def player_options(sport_key, db, revision):
     """Every player, with an unambiguous label and a search-only name key."""
-    s = sports.get(sport_key).schema
+    sport = sports.get(sport_key)
+    s = sport.schema
     rows = db_pool.get_con(db, revision).execute(
         f"SELECT {s.player_id}, {s.player}, {s.debut_season}, "
         f"{s.final_season}, {s.career_games}, {s.clubs_hist} "
         f"FROM {s.players} WHERE {_HAS_NAME.format(player=s.player)} "
         f"ORDER BY {s.player}").fetchall()
-    return [(pid, nm, _player_label(nm, d, f, g, cl),
+    return [(pid, nm,
+             _player_label(nm, d, f, g, sport.collapse_club_path(cl)),
              _player_search_key(nm))
             for pid, nm, d, f, g, cl in rows]
 

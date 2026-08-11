@@ -56,8 +56,15 @@ def _queue_click(event_key: str, table_key: str, action: str,
         }
 
 
-def _club_actions(value):
-    """Turn a club-history cell into one button or a menu of club buttons."""
+def _club_actions(value, sport=None):
+    """Turn a club-history cell into one button or a menu of club buttons.
+
+    Era names collapse to one entry per club first: "Kangaroos, North
+    Melbourne" is one club under two names, and a menu offering both reads
+    as two. The club the reader gets is named as it was at the time --
+    `Sport.collapse_clubs` keeps a lone era name and uses the current name
+    only where the cell spans a rename.
+    """
     if value is None or (not isinstance(value, (list, tuple, set))
                          and pd.isna(value)):
         return ""
@@ -66,12 +73,14 @@ def _club_actions(value):
         return ""
     values = [part.strip() for part in text.replace("|", ",").split(",")]
     values = [part for part in values if part]
+    if sport is not None:
+        values = sport.collapse_clubs(values)
     return values if len(values) > 1 else values[0]
 
 
-def _club_action_column(series):
+def _club_action_column(series, sport=None):
     """Keep Arrow types uniform when any row needs a multi-club menu."""
-    values = series.map(_club_actions)
+    values = series.map(lambda value: _club_actions(value, sport))
     if any(isinstance(value, list) for value in values):
         return values.map(
             lambda value: value if isinstance(value, list)
@@ -135,7 +144,7 @@ def _entity_columns(df, *, player=False, season=True, clubs=True) -> dict:
 
 def _select(df, key, dataframe_kwargs,
             action_columns: Mapping[str, str] | None = None,
-            add_open: bool = False):
+            add_open: bool = False, sport=None):
     """Draw a table and return the entity action that was clicked.
 
     Streamlit dataframe selections persist after a dialog is dismissed. That
@@ -169,7 +178,7 @@ def _select(df, key, dataframe_kwargs,
         if column not in frame.columns:
             continue
         if action == "club":
-            frame[column] = _club_action_column(frame[column])
+            frame[column] = _club_action_column(frame[column], sport)
         elif action == "season":
             frame[column] = _season_action_column(frame[column])
         else:
@@ -386,7 +395,7 @@ def clickable_player_table(df, player_ids: Sequence, sport, con, key: str,
     """
     event = _select(
         df, key, dataframe_kwargs,
-        action_columns=_entity_columns(df, player=True),
+        action_columns=_entity_columns(df, player=True), sport=sport,
     )
     if event is None:
         return
@@ -448,7 +457,7 @@ def clickable_match_table(df, matches: Sequence, key: str,
         df, key, dataframe_kwargs,
         action_columns=_entity_columns(df) if sport is not None and con is not None
         else {},
-        add_open=True,
+        add_open=True, sport=sport,
     )
     if event is None:
         return
@@ -473,7 +482,7 @@ def clickable_game_table(df, sport, con, key: str, stat=None,
     """
     event = _select(
         df, key, dataframe_kwargs,
-        action_columns=_entity_columns(df), add_open=True,
+        action_columns=_entity_columns(df), add_open=True, sport=sport,
     )
     if event is None:
         return
@@ -500,7 +509,7 @@ def clickable_season_table(df, seasons: Sequence, sport, con, key: str,
     """
     event = _select(
         df, key, dataframe_kwargs,
-        action_columns=_entity_columns(df, clubs=True),
+        action_columns=_entity_columns(df, clubs=True), sport=sport,
     )
     if event is None:
         return
@@ -522,7 +531,8 @@ def clickable_round_table(df, seasons: Sequence, sport, con, key: str,
     """Render a summary whose Round cells open results and voting detail."""
     round_column = next((c for c in ("Round", "Rnd", "Rd") if c in df), None)
     actions = {round_column: "round"} if round_column else {}
-    event = _select(df, key, dataframe_kwargs, action_columns=actions)
+    event = _select(df, key, dataframe_kwargs, action_columns=actions,
+                    sport=sport)
     if event is None:
         return
     row = event["row"]
@@ -535,7 +545,7 @@ def clickable_entity_table(df, sport, con, key: str, nested: bool = False,
                            **dataframe_kwargs):
     """Render a table where any season, round, venue or club cell opens."""
     event = _select(df, key, dataframe_kwargs,
-                    action_columns=_entity_columns(df))
+                    action_columns=_entity_columns(df), sport=sport)
     if event is not None:
         _handle_entity_event(event, df, sport, con, nested=nested)
 
@@ -548,7 +558,8 @@ def clickable_club_table(df, clubs: Sequence, sport, con, key: str,
     """Render `df` and open a club overview when its club name is clicked."""
     action_column = df.columns[0] if len(df.columns) else None
     actions = {action_column: "club"} if action_column is not None else {}
-    event = _select(df, key, dataframe_kwargs, action_columns=actions)
+    event = _select(df, key, dataframe_kwargs, action_columns=actions,
+                    sport=sport)
     if event is None:
         return
     row = event["row"]

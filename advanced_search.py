@@ -217,7 +217,11 @@ def search_page(sport, con):
             frame["Rating"] = frame["ObscurityRaw"].map(core.stars_text)
             frame = frame.drop(columns=["ObscurityRaw"])
         if "Teams" in frame.columns:
-            frame["Teams"] = frame["Teams"].fillna("").str.replace(
+            # One entry per club, named as the club was at the time --
+            # "Kangaroos, North Melbourne" is one club that renamed
+            # itself, not a two-club career.
+            frame["Teams"] = frame["Teams"].fillna("").map(
+                sport.collapse_club_path).str.replace(
                 "|", ", ", regex=False
             )
         st.caption(f"{len(frame):,} result{'s' if len(frame) != 1 else ''} shown.")
