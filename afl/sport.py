@@ -50,6 +50,17 @@ SCHEMA = core.Schema(
     career_score="career_goals",
     game_score="goals",
     is_final="is_final",
+    #: A box score reads left to right the way AFL Tables prints one --
+    #: possession first, then scoring, then the contest -- which is a
+    #: different order from STATS above, where the most-asked-for square
+    #: comes first.
+    box_score=(
+        "kicks", "handballs", "disposals", "marks", "goals", "behinds",
+        "tackles", "hitouts", "goal_assists", "inside50s", "clearances",
+        "rebounds", "contested", "uncontested", "contested_marks",
+        "marks_i50", "one_percenters", "bounces", "clangers", "frees_for",
+        "frees_against", "brownlow",
+    ),
     stats=STATS,
     clubs=CLUBS,
     club_lineage=CLUB_LINEAGE,

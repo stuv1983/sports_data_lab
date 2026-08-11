@@ -3,7 +3,23 @@
     "allow": [
       "PowerShell(cd c:\\\\sports_data_lab; $env:PYTHONPATH=\"c:\\\\sports_data_lab\"; python \"C:\\\\Users\\\\stuar\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--sports-data-lab\\\\ef5d8205-68cd-44b7-80f3-b5e8afec3701\\\\scratchpad\\\\render_card.py\" 2>&1 | Select-String -NotMatch \"ScriptRunContext\")",
       "PowerShell($scratch = \"C:\\\\Users\\\\stuar\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--sports-data-lab\\\\ef5d8205-68cd-44b7-80f3-b5e8afec3701\\\\scratchpad\"; cd c:\\\\sports_data_lab; python -m pytest tests/test_wikipedia_rising_star.py tests/test_player_cards.py -q -p no:cacheprovider --basetemp=\"$scratch\\\\pytest\" 2>&1 | Select-Object -Last 25)",
-      "PowerShell($scratch = \"C:\\\\Users\\\\stuar\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--sports-data-lab\\\\ef5d8205-68cd-44b7-80f3-b5e8afec3701\\\\scratchpad\"; cd c:\\\\sports_data_lab; python -m pytest tests -q -p no:cacheprovider --basetemp=\"$scratch\\\\pytest\" 2>&1 | Select-Object -Last 12)"
+      "PowerShell($scratch = \"C:\\\\Users\\\\stuar\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--sports-data-lab\\\\ef5d8205-68cd-44b7-80f3-b5e8afec3701\\\\scratchpad\"; cd c:\\\\sports_data_lab; python -m pytest tests -q -p no:cacheprovider --basetemp=\"$scratch\\\\pytest\" 2>&1 | Select-Object -Last 12)",
+      "Bash(python -c ' *)",
+      "Bash(python -m pytest tests/test_components.py tests/test_awards_and_logos.py tests/test_sport_capabilities.py tests/test_player_cards.py tests/test_nba_schema.py tests/test_core_regressions.py -q)",
+      "Bash(python -m pytest \"tests/test_sport_capabilities.py::test_every_search_example_actually_compiles\" -q)",
+      "Bash(git stash *)",
+      "Bash(python -m pytest tests/test_sport_capabilities.py tests/test_nba_schema.py -q)",
+      "Bash(python -m pytest tests/ -q -p no:cacheprovider --ignore=tests/test_integration.py)",
+      "Bash(python -m pytest tests/ -q -p no:cacheprovider --ignore=tests/test_integration.py --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt\")",
+      "Bash(python -m pytest tests/test_match_card.py -q -p no:cacheprovider --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt\")",
+      "Bash(python -m pytest tests/test_wikipedia_rising_star.py -q -p no:cacheprovider --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt\")",
+      "Bash(python -m pytest tests/test_player_cards.py::test_dustin_martin_card_has_titles_draft_votes_and_major_honours -q -p no:cacheprovider --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt\")",
+      "Bash(python -m pytest tests/test_player_cards.py -q -p no:cacheprovider --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt\")",
+      "Bash(python -m pytest tests/ -q -p no:cacheprovider --ignore=tests/test_integration.py --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt2\")",
+      "Bash(python -m pytest tests/ -q -p no:cacheprovider --ignore=tests/test_integration.py --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt3\")",
+      "Bash(python -c \"import playwright; print\\('playwright ok'\\)\")",
+      "Bash(python -c \"import selenium; print\\('selenium ok'\\)\")",
+      "Bash(python -m pytest tests/ -q -p no:cacheprovider --ignore=tests/test_integration.py --basetemp=\"C:/Users/stuar/AppData/Local/Temp/claude/c--sports-data-lab/37a72a64-85f8-4f53-b451-a4e1b0f11d6d/scratchpad/pt4\")"
     ]
   }
 }

@@ -7,12 +7,15 @@ can offer the same thing without a fourth copy of the same twelve lines,
 and so a future overlay kind only has to be added once.
 
 There are seven kinds now: player, match, individual game, season, round,
-venue and club. A table
-opens the overlay
-for whatever its rows *are*: player, season and club names are action cells,
-while matches and individual games have an Open action. A row naming both a
-player and a season makes its subject clickable, so an award roll opens the
-player while a season record opens the season.
+venue and club. A table opens the overlay for whatever its rows *are*:
+player, season and club names are action cells, while matches and
+individual games have an Open action. A row naming both a player and a
+season makes its subject clickable, so an award roll opens the player
+while a season record opens the season.
+
+The bodies themselves live in overlays.py, one function per kind. This
+module decides *which* card a click means and keeps the history stack; it
+draws none of them.
 
 One navigable dialog
 --------------------
@@ -24,7 +27,7 @@ their actions replace the dialog body, and Back restores the previous card.
 
 from __future__ import annotations
 
-from typing import Callable, Mapping, Sequence
+from typing import Mapping, Sequence
 
 import pandas as pd
 import streamlit as st
@@ -274,10 +277,7 @@ def _details_dialog(sport, con):
             nested=True,
         )
     elif kind == "match":
-        render_body = current.get("render_body") or _default_match_body
-        match = current["match"]
-        render_body(match)
-        _match_links(sport, con, match)
+        overlays.match_overview(sport, con, current["match"], nested=True)
 
 
 def player_button(label: str, sport, con, pid, key: str,
@@ -406,77 +406,43 @@ def clickable_player_table(df, player_ids: Sequence, sport, con, key: str,
 
 # ---------------------------------------------------------------- match
 
-def _default_match_body(match) -> None:
-    """Fallback dialog body when the caller has no richer renderer.
+def _match_label(match) -> str:
+    """`'Adelaide vs Richmond'` for the dialog's breadcrumb.
 
-    Works off `afl.club_history.Match`'s public fields, which any
-    club_history-backed sport already produces via `search_matches`.
+    The breadcrumb is how a reader retraces a path several cards deep, and
+    every match used to label itself '2026 match', so a trail through three
+    of them read the same three times.
     """
-    home = getattr(match, "club_id", None)
-    away = getattr(match, "opponent_id", None)
-    st.markdown(f"### {home} vs {away}" if home and away else "### Match")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Season", getattr(match, "season", "—"))
-    c2.metric("Round", getattr(match, "round", "—"))
-    c3.metric("Score", getattr(match, "score", "—"))
-    st.write(f"**Venue:** {getattr(match, 'venue', '—')}")
-    date = getattr(match, "match_date", None)
-    if date:
-        st.write(f"**Date:** {date}")
-    attendance = getattr(match, "attendance", None)
-    if attendance:
-        st.write(f"**Crowd:** {attendance:,}")
-    result = getattr(match, "result", None)
-    if result:
-        st.write(f"**Result:** {result}")
+    def field(*names):
+        for name in names:
+            if isinstance(match, Mapping):
+                value = match.get(name)
+            else:
+                value = getattr(match, name, None)
+            if value is not None and str(value).strip():
+                return str(value).replace("_", " ").title()
+        return ""
 
-
-def _match_links(sport, con, match) -> None:
-    """Entity navigation shown under either rich match renderer."""
-    links = []
-    for value in (getattr(match, "club_id", None),
-                  getattr(match, "opponent_id", None)):
-        if value and value not in links:
-            links.append(value)
-    with st.container(horizontal=True):
-        season = getattr(match, "season", None)
-        if season is not None:
-            if st.button(str(season), icon=":material/calendar_month:",
-                         key="match_link_season"):
-                _open_card({"kind": "season", "season": season,
-                            "label": str(season)}, sport, con, nested=True)
-            round_value = getattr(match, "round", None)
-            if round_value is not None and st.button(
-                    f"R{round_value}" if str(round_value).isdigit()
-                    else str(round_value), icon=":material/event:",
-                    key="match_link_round"):
-                _open_card({"kind": "round", "season": season,
-                            "round": round_value,
-                            "label": f"{season} R{round_value}"},
-                           sport, con, nested=True)
-        venue = getattr(match, "venue", None)
-        if venue and st.button(str(venue), icon=":material/stadium:",
-                               key="match_link_venue"):
-            _open_card({"kind": "venue", "venue": venue, "label": venue},
-                       sport, con, nested=True)
-        for position, club in enumerate(links):
-            label = str(club).replace("_", " ").title()
-            if st.button(label, icon=":material/shield:",
-                         key=f"match_link_club_{position}"):
-                _open_card({"kind": "club", "club": club, "label": label},
-                           sport, con, nested=True)
+    home = field("club_id", "Home", "Club", "For")
+    away = field("opponent_id", "Away", "Opponent")
+    if home and away:
+        return f"{home} vs {away}"
+    season = field("season", "Season")
+    return f"{season} match".strip() or "Match"
 
 
 def clickable_match_table(df, matches: Sequence, key: str,
                           sport=None, con=None,
                           nested: bool = False,
-                          render_body: Callable | None = None,
                           **dataframe_kwargs):
     """Render `df` and open a match dialog from its Open action.
 
     `matches` must align with `df`'s rows position-for-position, same
-    convention as `clickable_player_table`. `render_body(match)` draws the
-    dialog's contents; the default shows the fields every Match carries.
+    convention as `clickable_player_table`. Each entry is anything that
+    names the match -- a `club_history.Match`, or a mapping carrying its
+    id -- and the card is built from the database rather than from the
+    columns the table happened to show, so every page that opens a match
+    opens the same one.
     """
     event = _select(
         df, key, dataframe_kwargs,
@@ -490,8 +456,7 @@ def clickable_match_table(df, matches: Sequence, key: str,
     if not _handle_entity_event(event, df, sport, con, nested=nested):
         match = matches[row]
         _open_card({"kind": "match", "match": match,
-                    "render_body": render_body,
-                    "label": f"{getattr(match, 'season', '')} match".strip()},
+                    "label": _match_label(match)},
                    sport, con, nested=nested)
 
 

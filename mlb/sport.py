@@ -23,6 +23,11 @@ SCHEMA = core.Schema(
     career_postseason="postseason_played",
     game_score="home_runs",
     is_final="is_postseason",
+    #: Lahman's finest grain is a player's season with one club, so there
+    #: is no per-match table and no box score to build from `games`. The
+    #: match card falls back to the Retrosheet result row, which does carry
+    #: the score, the venue and the crowd.
+    matches="",
     stats=STATS,
     clubs=mlb_reference.teams(),
     club_lineage=mlb_reference.club_lineage(),

@@ -31,6 +31,10 @@ SCHEMA = core.Schema(
     club_lineage=nba_reference.club_lineage(),
     venue_aliases=nba_reference.venue_aliases(),
     required_player_cols=("name_key", "career_minutes"),
+    #: The NBA schedule dates a match in `date`; `match_date` is the AFL
+    #: build's name for the same thing.
+    match_date="date",
+    match_facts=(("season_label", "Season"), ("phase", "Phase")),
     rebuild_cmd="python -m nba.build_nba_db",
     solve_cols=(
         ("p.player", "Player"),

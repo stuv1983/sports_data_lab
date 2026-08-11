@@ -551,6 +551,110 @@ hr {{ border-color: var(--line); }}
   letter-spacing: .03em;
 }}
 
+/* Match scorecard. The two sides sit either side of the score so the
+   reader sees who played whom and by how much in one glance, which is the
+   first thing anyone asks of a result. Sized in clamp() rather than fixed
+   points because this renders inside a dialog on a phone as often as on a
+   desktop. */
+.scoreboard {{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(.5rem, 3vw, 1.75rem);
+  flex-wrap: nowrap;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--amber);
+  padding: .9rem .6rem 1rem .6rem;
+  margin-bottom: .9rem;
+}}
+.score-side {{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .4rem;
+  flex: 1 1 0;
+  min-width: 0;
+}}
+.score-side img {{ object-fit: contain; }}
+.score-club {{
+  font-family: 'Oswald', sans-serif;
+  font-weight: 500;
+  font-size: clamp(.7rem, 2.6vw, .95rem);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--chalk);
+  text-align: center;
+  line-height: 1.15;
+}}
+.score-role {{
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: .58rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}}
+.score-value {{
+  font-family: 'Oswald', sans-serif;
+  font-size: clamp(2rem, 9vw, 3.4rem);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--muted);
+}}
+.score-value.is-winner {{ color: var(--amber); }}
+.score-detail {{
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: .66rem;
+  color: var(--muted);
+  text-align: center;
+  margin-top: .2rem;
+}}
+.score-verdict {{
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: .68rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: center;
+  margin: -.5rem 0 1rem 0;
+}}
+.score-verdict b {{ color: var(--chalk); font-weight: 600; }}
+
+/* One statistic, both sides, as a mirrored bar. Reads as "who had more of
+   this", which a pair of numbers in a table does not. */
+.statbar {{
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: .74rem;
+  padding: .18rem 0;
+}}
+.statbar-name {{
+  flex: 0 1 7.5rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: .6rem;
+  letter-spacing: .06em;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}}
+.statbar-num {{ flex: 0 0 2.8rem; color: var(--chalk); }}
+.statbar-num.left {{ text-align: right; }}
+.statbar-num.right {{ text-align: left; }}
+.statbar-track {{
+  flex: 1 1 0;
+  height: .5rem;
+  background: var(--line);
+  min-width: 0;
+  display: flex;
+}}
+.statbar-track.left {{ justify-content: flex-end; }}
+.statbar-fill {{ height: 100%; background: var(--amber); opacity: .55; }}
+.statbar-fill.is-more {{ opacity: 1; }}
+
 /* Mobile layout fixes to prevent st.columns from wrapping to a vertical
    stack. .st-key-grid_board is the class Streamlit puts on the keyed
    container in 15_Play_Grids.py, so this really does wrap the board. */

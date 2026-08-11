@@ -43,6 +43,37 @@ SCHEMA = core.Schema(
     weight="weight",
     college="college_name",
     draft_year="draft_year",
+    #: nflverse names the schedule table's key game_id and puts the venue
+    #: in `stadium`; there is no attendance column at all, so the card
+    #: shows no crowd rather than a blank one.
+    match_key="game_id",
+    games_match_key="game_id",
+    games_home_flag="",
+    games_side_key="team",
+    match_venue="stadium",
+    match_date="gameday",
+    match_round="week",
+    match_attendance="",
+    #: The schedule carries the conditions and the market, which is most of
+    #: what makes one NFL game different from another.
+    match_facts=(
+        ("gametime", "Kick-off"), ("overtime", "Overtime"),
+        ("roof", "Roof"), ("surface", "Surface"),
+        ("temp", "Temperature (°F)"), ("wind", "Wind (mph)"),
+        ("home_coach", "Home coach"), ("away_coach", "Away coach"),
+        ("home_qb_name", "Home QB"), ("away_qb_name", "Away QB"),
+        ("referee", "Referee"), ("spread_line", "Spread"),
+        ("total_line", "Total line"), ("div_game", "Divisional"),
+    ),
+    #: nfl_reference.stats() leads with touchdowns because that is the
+    #: headline career figure; a box score reads by phase of play instead.
+    box_score=(
+        "completions", "attempts", "passing_yards", "passing_tds",
+        "passing_interceptions", "carries", "rushing_yards", "rushing_tds",
+        "receptions", "targets", "receiving_yards", "receiving_tds",
+        "touchdowns", "def_tackles_solo", "def_sacks", "def_interceptions",
+        "fg_made", "special_teams_tds", "fantasy_points",
+    ),
     stats=STATS,
     clubs=CLUBS,
     club_lineage=nfl_reference.club_lineage(),

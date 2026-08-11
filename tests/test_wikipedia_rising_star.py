@@ -506,6 +506,85 @@ awards_page._rising_star_nominees(sports.AFL, con)
     # Ineligibility is legible in the table, not only in the metric.
     assert table["Status"].isin(
         ["", "Won the award", "Ineligible (suspension)"]).all()
+    # Every nomination there is, not one season of them: the tab opens on
+    # all seasons and all rounds, so the table is as long as the count.
+    assert len(table) == int(metrics["Nominations"].replace(",", ""))
+    assert table["Season"].nunique() > 1
+    # The whole-table questions the filtered list cannot answer.
+    assert "Club" in labels
+    headers = [expander.label for expander in app.expander]
+    assert any("Nominations by club" in header for header in headers)
+    assert any("more than once" in header for header in headers)
+    assert any("Every winner" in header for header in headers)
+
+
+def _nominee_db() -> sqlite3.Connection:
+    """A nominee whose club the source failed to render, plus his games."""
+    con = sqlite3.connect(":memory:")
+    con.executescript(
+        """
+        CREATE TABLE rising_star_nominees (
+            season INTEGER, round_number INTEGER, player TEXT,
+            matched_player TEXT, club TEXT, opponent TEXT,
+            is_season_winner INTEGER DEFAULT 0, ineligible INTEGER DEFAULT 0,
+            player_id INTEGER, match_status TEXT);
+        CREATE TABLE games (
+            player_id INTEGER, player TEXT, season INTEGER, round TEXT,
+            club_hist TEXT);
+        INSERT INTO rising_star_nominees VALUES
+            (1997, 19, 'Michael Gardiner', 'Michael Gardiner',
+             '$nomination.team.mascot', 'St Kilda', 0, 0, 1056, 'unique'),
+            (1993, 3, 'Scott West', 'Scott West', 'Western Bulldogs',
+             'Carlton', 0, 0, 2000, 'unique');
+        INSERT INTO games VALUES
+            (1056, 'Michael Gardiner', 1997, '18', 'West Coast'),
+            (1056, 'Michael Gardiner', 1997, '20', 'West Coast'),
+            (2000, 'Scott West', 1993, '3', 'Footscray');
+        """)
+    return con
+
+
+def test_a_leaked_template_token_never_reaches_the_club_picker():
+    """FootyWire published '$nomination.team.mascot' as somebody's club.
+
+    The player's own game rows know better, and are the authority the page
+    reads from -- so the placeholder never appears as a club anyone can
+    filter by, and no nomination is dropped to hide it.
+    """
+    from afl.awards_page import NOMINEE_CLUB, TRUSTED_NOMINEE
+
+    con = _nominee_db()
+    clubs = [row[0] for row in con.execute(
+        f"SELECT {NOMINEE_CLUB} FROM rising_star_nominees n "
+        f"WHERE {TRUSTED_NOMINEE} ORDER BY season")]
+    assert clubs == ["Footscray", "West Coast"]
+
+
+def test_a_club_is_named_as_it_was_called_that_season():
+    """Scott West was nominated by Footscray, whatever the source calls it.
+
+    Same convention as the Brownlow honour roll one tab over: a 1993 row
+    says Footscray, because that is the club that nominated him.
+    """
+    from afl.awards_page import NOMINEE_CLUB
+
+    con = _nominee_db()
+    club = con.execute(
+        f"SELECT {NOMINEE_CLUB} FROM rising_star_nominees n "
+        "WHERE season = 1993").fetchone()[0]
+    assert club == "Footscray"
+
+
+def test_nominations_that_resolve_to_nobody_are_not_offered_as_a_player():
+    from afl.awards_page import TRUSTED_NOMINEE
+
+    con = _nominee_db()
+    con.execute("INSERT INTO rising_star_nominees (season, round_number, "
+                "player, club, player_id, match_status) VALUES "
+                "(1999, 5, 'Two People At Once', 'Carlton', NULL, 'ambiguous')")
+    shown = con.execute("SELECT COUNT(*) FROM rising_star_nominees n "
+                        f"WHERE {TRUSTED_NOMINEE}").fetchone()[0]
+    assert shown == 2
 
 
 def main() -> None:

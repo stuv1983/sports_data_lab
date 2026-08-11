@@ -84,6 +84,51 @@ class Schema:
     is_final: str = "is_final"              # NBA: is_playoff
     result: str = "result"
 
+    # -- matches ------------------------------------------------------
+    # One row per match, as against `games`, which is one row per player
+    # per match. A sport that has no such table leaves `matches` empty and
+    # the match card falls back to the result row a results page already
+    # holds -- the MLB's finest grain is a player's season, so there is no
+    # box score for it to find and pretending otherwise would invent one.
+    matches: str = "matches"
+    match_key: str = "match_id"             # NFL: game_id
+    #: The `games` column that joins to `match_key`. Named separately
+    #: because the NFL calls it game_id on both tables while the AFL and
+    #: NBA call it match_id, and one name for two tables is a coincidence
+    #: rather than a rule.
+    games_match_key: str = "match_id"       # NFL: game_id
+    #: How a `games` row says which side it was on. The flag is read first
+    #: where the build writes one; otherwise the named column is compared
+    #: against the match's home team, which is why it has to be the column
+    #: spelled the way the match table spells a club -- nflverse's games
+    #: carry both 'Atlanta Falcons' and 'ATL', and only 'ATL' matches.
+    games_home_flag: str = "is_home"        # NFL: none
+    games_side_key: str = "club_hist"       # NFL: team
+    match_home_team: str = "home_team"
+    match_away_team: str = "away_team"
+    match_home_score: str = "home_score"
+    match_away_score: str = "away_score"
+    match_venue: str = "venue"              # NFL: stadium
+    match_date: str = "match_date"          # NBA: date, NFL: gameday
+    match_round: str = "round"              # NFL: week
+    #: Empty where the source records no attendance, which is not the same
+    #: as a match nobody attended.
+    match_attendance: str = "attendance"
+
+    #: Extra match columns worth a line of their own, as (column, label).
+    #: Everything else the row carries is still shown, in the card's
+    #: catch-all expander; this is only what earns a place above the fold.
+    match_facts: Sequence[tuple] = ()
+
+    #: Stats the box score leads with, most interesting first. Defaults to
+    #: `stats`, which every sport already orders that way; set it only
+    #: where the box score wants a different order from the constraint
+    #: engine's.
+    box_score: Sequence[str] = ()
+
+    def box_score_stats(self) -> list:
+        return list(self.box_score or self.stats)
+
     # Vocabulary lists the generic builders validate against.
     stats: Sequence[str] = ()
     clubs: Sequence[str] = ()
