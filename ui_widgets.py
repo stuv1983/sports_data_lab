@@ -95,7 +95,7 @@ _HAS_NAME = "{player} IS NOT NULL AND TRIM({player}) <> ''"
 QUICK_PLAYER_LIMIT = 4000
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def quick_player_options(sport_key, db, revision, limit=QUICK_PLAYER_LIMIT):
     """The most-played players, for the browser to filter through live.
 
@@ -103,6 +103,10 @@ def quick_player_options(sport_key, db, revision, limit=QUICK_PLAYER_LIMIT):
     search box cannot show matches while the user is still typing. A
     selectbox can: it filters options already in the browser, with no
     round trip. That only works for options the browser has, hence the cap.
+
+    cache_resource, not cache_data: cache_data pickles its value on every
+    hit, and Play Grids asks for these 4,000 rows from nine pickers per
+    rerun. The value is a tuple of tuples -- treat it as read-only.
     """
     sport = sports.get(sport_key)
     s = sport.schema
@@ -112,14 +116,20 @@ def quick_player_options(sport_key, db, revision, limit=QUICK_PLAYER_LIMIT):
         f"FROM {s.players} WHERE {_HAS_NAME.format(player=s.player)} "
         f"ORDER BY COALESCE({s.career_games}, 0) DESC, {s.player} "
         f"LIMIT ?", (limit,)).fetchall()
-    return [(pid, nm,
-             _player_label(nm, d, f, g, sport.collapse_club_path(cl)))
-            for pid, nm, d, f, g, cl in rows]
+    return tuple((pid, nm,
+                  _player_label(nm, d, f, g, sport.collapse_club_path(cl)))
+                 for pid, nm, d, f, g, cl in rows)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def player_options(sport_key, db, revision):
-    """Every player, with an unambiguous label and a search-only name key."""
+    """Every player, with an unambiguous label and a search-only name key.
+
+    cache_resource for the same reason as quick_player_options: this is
+    the 25,000-row list player_matches scans per keystroke commit, and
+    paying a pickle round-trip per scan dwarfed the scan itself. The
+    value is a tuple of tuples -- treat it as read-only.
+    """
     sport = sports.get(sport_key)
     s = sport.schema
     rows = db_pool.get_con(db, revision).execute(
@@ -127,10 +137,10 @@ def player_options(sport_key, db, revision):
         f"{s.final_season}, {s.career_games}, {s.clubs_hist} "
         f"FROM {s.players} WHERE {_HAS_NAME.format(player=s.player)} "
         f"ORDER BY {s.player}").fetchall()
-    return [(pid, nm,
-             _player_label(nm, d, f, g, sport.collapse_club_path(cl)),
-             _player_search_key(nm))
-            for pid, nm, d, f, g, cl in rows]
+    return tuple((pid, nm,
+                  _player_label(nm, d, f, g, sport.collapse_club_path(cl)),
+                  _player_search_key(nm))
+                 for pid, nm, d, f, g, cl in rows)
 
 
 def _player_label(name, debut, final, games, clubs):

@@ -1,4 +1,6 @@
 import datetime
+import html
+import random
 
 import streamlit as st
 import pandas as pd
@@ -7,7 +9,6 @@ import core
 import ui_widgets
 import components
 import sports
-import random
 
 SPORT = st.session_state.SPORT
 con = st.session_state.con
@@ -159,8 +160,6 @@ def _fetch_daily_board(sport_key, date):
 
 def _auto_grid():
     """Create a supported 3x3 board whose nine cells all have an answer."""
-    import random
-
     played_for = C.BUILDERS["Played for club"][0]
     career_min = C.BUILDERS["150+ / X+ career games"][0]
     played_between = C.BUILDERS["Played between seasons"][0]
@@ -330,8 +329,13 @@ if source == DAILY and CAN_FETCH_DAILY:
         show_report(picked, mode)
 
 elif source == "Saved grid":
-    saved = accounts.list_saved_grids(AUTH_USER.id, SPORT.key)
-    if not saved:
+    # The page can be opened anonymously when an administrator loosens the
+    # grid_solver audience, so AUTH_USER is not guaranteed here.
+    saved = (accounts.list_saved_grids(AUTH_USER.id, SPORT.key)
+             if AUTH_USER else [])
+    if AUTH_USER is None:
+        st.sidebar.info("Log in to open your saved grids.")
+    elif not saved:
         st.sidebar.info("You have no saved grids for this sport yet.")
     else:
         by_id = {item["id"]: item for item in saved}
@@ -382,7 +386,6 @@ elif source in ("Past grid", "Random supported grid") and LIBRARY:
                                                   if r.grid.complete]
         if st.sidebar.button("Shuffle", key=SPORT.k("gridshuffle")) \
                 or SPORT.k("randgrid") not in st.session_state:
-            import random
             st.session_state[SPORT.k("randgrid")] = (
                 random.choice(pool).grid.number if pool else None)
         chosen = st.session_state.get(SPORT.k("randgrid"))
@@ -470,17 +473,20 @@ elif source == "Build my own":
     st.session_state.pop("loaded", None)
 
 with st.sidebar.expander("Save this grid", expanded=False):
-    save_name = st.text_input("Grid name", key=SPORT.k("save_grid_name"),
-                              placeholder="Friday challenge")
-    if st.button("Save grid", key=SPORT.k("save_grid_button"),
-                 type="primary", width="stretch"):
-        try:
-            accounts.save_grid(
-                AUTH_USER.id, SPORT.key, save_name, rows_def, cols_def)
-        except (accounts.AccountError, PermissionError) as exc:
-            st.error(str(exc))
-        else:
-            st.success("Grid saved. Open it from Grid source → Saved grid.")
+    if AUTH_USER is None:
+        st.caption("Log in to save grids.")
+    else:
+        save_name = st.text_input("Grid name", key=SPORT.k("save_grid_name"),
+                                  placeholder="Friday challenge")
+        if st.button("Save grid", key=SPORT.k("save_grid_button"),
+                     type="primary", width="stretch"):
+            try:
+                accounts.save_grid(
+                    AUTH_USER.id, SPORT.key, save_name, rows_def, cols_def)
+            except (accounts.AccountError, PermissionError) as exc:
+                st.error(str(exc))
+            else:
+                st.success("Grid saved. Open it from Grid source → Saved grid.")
 
 st.sidebar.markdown("---")
 order = st.sidebar.radio("Rank by",
@@ -552,9 +558,6 @@ def square_for(r, c):
                    order)
 
 
-_grid_signature = repr((SPORT.key, rows_def, cols_def))
-
-
 # The first square with both axes defined opens automatically, so the page
 # never lands on an empty results panel.
 if "cell" not in st.session_state or st.session_state.cell is None:
@@ -562,16 +565,25 @@ if "cell" not in st.session_state or st.session_state.cell is None:
         ((r, c) for r in range(3) for c in range(3)
          if len(constraints_for(r, c)) == 2), None)
 
+def _axis_html(label):
+    """Escape an axis label before it enters unsafe_allow_html markup.
+
+    Labels carry data-sourced text -- player names from scraped imports,
+    free-typed teammate names -- so only the newline-to-<br> is ours.
+    """
+    return html.escape(str(label)).replace(chr(10), "<br>")
+
+
 header = st.columns([1.1, 1, 1, 1])
 for i, (label, _) in enumerate(cols_def):
     header[i + 1].markdown(
-        f"<div class='axis'>{label.replace(chr(10), '<br>')}</div>",
+        f"<div class='axis'>{_axis_html(label)}</div>",
         unsafe_allow_html=True)
 
 for r in range(3):
     row = st.columns([1.1, 1, 1, 1])
     row[0].markdown(
-        f"<div class='axis'>{rows_def[r][0].replace(chr(10), '<br>')}</div>",
+        f"<div class='axis'>{_axis_html(rows_def[r][0])}</div>",
         unsafe_allow_html=True)
     for c in range(3):
         sq = square_for(r, c)
@@ -608,7 +620,7 @@ for r in range(3):
             span = SCHEMA.career_span(sq.best)
             face = (
                 f"<div class='square{' is-open' if open_here else ''}'>"
-                f"<div class='square-name'>{sq.best_name}</div>"
+                f"<div class='square-name'>{html.escape(str(sq.best_name))}</div>"
                 + (f"<div class='square-meta'>{span}</div>" if span else "")
                 + f"<div>{core.stars_html(sq.obscurity)}</div>"
                 f"<div class='square-meta'>{sq.eligible:,} eligible</div>"
@@ -675,22 +687,28 @@ if st.session_state.cell:
             lambda o: core.stars_text(o, lo=obs_lo, hi=obs_hi))
         df = df.drop(columns=[obscurity_header])
 
+        # NULL, never 0: a career with no recorded games count shows a
+        # dash rather than formatting None and crashing the card.
+        games_text = (f"{best[3]:,}" if isinstance(best[3], (int, float))
+                      else "—")
         card1, card2, card3 = st.columns(3)
         card1.markdown(
             f"<div class='card'><div class='card-label'>Best answer</div>"
-            f"<div class='card-value'>{best_name}</div>"
+            f"<div class='card-value'>{html.escape(str(best_name))}</div>"
             f"<div class='card-sub'>{best[1]}–{best[2]} · "
-            f"{best[3]:,} {V.games}</div></div>", unsafe_allow_html=True)
+            f"{games_text} {V.games}</div></div>", unsafe_allow_html=True)
         with card1:
             components.player_button(
                 f"Open {best_name}", SPORT, con, pids[0],
                 key=SPORT.k("best_answer", r, c), key_prefix="gridbest")
+        obsc_sub = (f"obscurity {best_obsc:.1f} / 100 database-wide"
+                    if isinstance(best_obsc, (int, float))
+                    else "obscurity unrecorded")
         card2.markdown(
             f"<div class='card'><div class='card-label'>Rarity for this "
             f"square</div><div class='card-value'>"
             f"{core.stars_html(best_obsc, lo=obs_lo, hi=obs_hi)}</div>"
-            f"<div class='card-sub'>obscurity {best_obsc:.1f} / 100 "
-            f"database-wide</div>"
+            f"<div class='card-sub'>{obsc_sub}</div>"
             f"</div>", unsafe_allow_html=True)
         card3.markdown(
             f"<div class='card'><div class='card-label'>Eligible players"

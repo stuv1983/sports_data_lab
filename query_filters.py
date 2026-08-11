@@ -118,6 +118,27 @@ def _require_draft(con) -> None:
         raise QuerySyntaxError("Draft data is not loaded")
 
 
+def _club_identities(schema, value: str) -> list | None:
+    """Canonical identities for a typed club name, or None when unknown.
+
+    Case-insensitive against the sport's club list and every era name its
+    lineages mention, so ``club:"brisbane lions"`` expands to the Bears and
+    Fitzroy exactly the way the grid square for the same question does,
+    while ``club:Fitzroy`` stays Fitzroy — lineage is one-directional.
+    Resolving in Python keeps the SQL an exact, indexable IN; the old
+    ``LOWER(col)=LOWER(?)`` both scanned the games table per token and
+    silently disagreed with the constraint engine about what a club means.
+    """
+    known = {str(club).casefold(): str(club) for club in schema.clubs}
+    for lineage in schema.club_lineage.values():
+        for name in lineage:
+            known.setdefault(str(name).casefold(), str(name))
+    canonical = known.get(value.strip().casefold())
+    if canonical is None:
+        return None
+    return schema.club_identities(canonical)
+
+
 def tokenize(query: str) -> list[str]:
     """Split a query like shlex.split, with double quotes the only quoting.
 
@@ -235,6 +256,7 @@ def compile_query(schema, query: str, con=None):
     tokens, spec = _parse(query)
     s = schema
     stats = set(s.stats)
+    rate_stats = set(getattr(s, "rate_stats", ()) or ())
     player_where: list[str] = []
     params: list[Any] = []
     club_all: list[str] = []
@@ -423,6 +445,10 @@ def compile_query(schema, query: str, con=None):
             stat = key.split(".", 1)[1]
             if stat not in stats:
                 raise QuerySyntaxError(f"Unknown season statistic: {stat}")
+            if stat in rate_stats:
+                raise QuerySyntaxError(
+                    f"{stat} is a rate and cannot be summed across a season; "
+                    f"use avg.{stat} or game.{stat}")
             fragment, bound = _comparison(f"SUM(ss.{stat})", operator, value)
             season_conditions.append(fragment)
             season_params.extend(bound)
@@ -431,7 +457,16 @@ def compile_query(schema, query: str, con=None):
             if stat not in stats:
                 raise QuerySyntaxError(f"Unknown average statistic: {stat}")
             fragment, bound = _comparison(f"AVG(av.{stat})", operator, value)
-            avg_conditions.append(fragment)
+            # The games floor counts games where the stat was recorded --
+            # COUNT(column) skips NULLs the same way AVG does -- so a
+            # career straddling a stat's first recorded season is judged
+            # on the same games the average is computed over. COUNT(*)
+            # counted unrecorded games toward the floor, which is the one
+            # place the NULL-never-zero rule used to slip. Per-stat, so
+            # two avg. filters over different eras each get their own.
+            avg_conditions.append(
+                f"COUNT(av.{stat}) >= "
+                f"{int(core.Generic.SEASON_AVG_MIN_GAMES)} AND {fragment}")
             avg_params.extend(bound)
         elif key.startswith("career."):
             stat = key.split(".", 1)[1]
@@ -439,6 +474,10 @@ def compile_query(schema, query: str, con=None):
                 fragment, bound = _comparison(f"p.{s.career_games}", operator, value)
                 player_where.append(fragment)
                 params.extend(bound)
+            elif stat in rate_stats:
+                raise QuerySyntaxError(
+                    f"{stat} is a rate and cannot be summed across a career; "
+                    f"use avg.{stat} or game.{stat}")
             elif stat in stats:
                 fragment, bound = _comparison(f"SUM(cr.{stat})", operator, value)
                 career_conditions.append(fragment)
@@ -449,25 +488,56 @@ def compile_query(schema, query: str, con=None):
             raise QuerySyntaxError(f"Unknown search field: {key}")
 
     for club in club_all:
-        player_where.append(
-            f"p.{s.player_id} IN (SELECT ca.{s.player_id} FROM {s.games} ca "
-            f"WHERE (LOWER(ca.{s.club_now})=LOWER(?) "
-            f"OR LOWER(ca.{s.club_hist})=LOWER(?)))"
-        )
-        params.extend([club, club])
+        names_list = _club_identities(s, club)
+        if names_list:
+            # UNION rather than OR, same as core.played_for: it lets SQLite
+            # use the separate club_now/club_hist indexes instead of
+            # scanning the games table once per club token.
+            marks = ",".join("?" for _ in names_list)
+            player_where.append(
+                f"p.{s.player_id} IN ("
+                f"SELECT ca.{s.player_id} FROM {s.games} ca "
+                f"WHERE ca.{s.club_now} IN ({marks}) "
+                f"UNION "
+                f"SELECT ca.{s.player_id} FROM {s.games} ca "
+                f"WHERE ca.{s.club_hist} IN ({marks}))"
+            )
+            params.extend([*names_list, *names_list])
+        else:
+            # A name the sport does not know: keep the forgiving
+            # case-insensitive scan rather than answering nothing.
+            player_where.append(
+                f"p.{s.player_id} IN (SELECT ca.{s.player_id} FROM {s.games} ca "
+                f"WHERE (LOWER(ca.{s.club_now})=LOWER(?) "
+                f"OR LOWER(ca.{s.club_hist})=LOWER(?)))"
+            )
+            params.extend([club, club])
 
     if club_any:
-        marks = []
+        # Pure OR of memberships, so every resolved identity pools into one
+        # IN list; only unrecognised names fall back to the LOWER() scan.
+        any_names: list[str] = []
+        unresolved: list[str] = []
         for club in club_any:
-            marks.append(
-                f"LOWER(co.{s.club_now})=LOWER(?) OR "
-                f"LOWER(co.{s.club_hist})=LOWER(?)"
-            )
+            names_list = _club_identities(s, club)
+            if names_list:
+                any_names.extend(names_list)
+            else:
+                unresolved.append(club)
+        conditions = []
+        if any_names:
+            marks = ",".join("?" for _ in any_names)
+            conditions.append(f"co.{s.club_now} IN ({marks})")
+            conditions.append(f"co.{s.club_hist} IN ({marks})")
+            params.extend([*any_names, *any_names])
+        for club in unresolved:
+            conditions.append(f"LOWER(co.{s.club_now})=LOWER(?)")
+            conditions.append(f"LOWER(co.{s.club_hist})=LOWER(?)")
             params.extend([club, club])
         player_where.append(
             f"p.{s.player_id} IN (SELECT co.{s.player_id} FROM {s.games} co "
             f"WHERE ("
-            + " OR ".join(f"({mark})" for mark in marks) + "))"
+            + " OR ".join(conditions) + "))"
         )
 
     if game_conditions:
@@ -487,13 +557,13 @@ def compile_query(schema, query: str, con=None):
         params.extend(season_params)
 
     if avg_conditions:
+        # The floor rides inside each condition (COUNT of the recorded
+        # games for that stat), read from core so a season average means
+        # the same thing in a query as it does in a grid square.
         player_where.append(
             f"p.{s.player_id} IN (SELECT av.{s.player_id} FROM {s.games} av "
             f"GROUP BY av.{s.player_id}, av.{s.season} "
-            # Read from core rather than repeated here: a season average
-            # means the same thing in a query as it does in a grid square,
-            # and two copies of the floor is how they stop meaning that.
-            f"HAVING COUNT(*) >= {core.Generic.SEASON_AVG_MIN_GAMES} AND "
+            f"HAVING "
             + " AND ".join(avg_conditions) + ")"
         )
         params.extend(avg_params)

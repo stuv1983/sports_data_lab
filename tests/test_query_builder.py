@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The query builder's promise is that nothing a reader supplies becomes
 SQL text: identifiers must come from discovery, values ride as bound
-parameters, and the visual mode's WHERE string is vetted. These tests hold
+parameters, and the visual mode's structured tree is compiled server-side
+rather than its browser-built WHERE string being trusted. These tests hold
 that promise with no database and no browser -- everything here is the
 pure string-plus-params layer the page composes."""
 
@@ -154,7 +155,75 @@ def test_the_tree_config_is_generated_from_discovery_not_hardcoded():
     assert "weird name" not in fields
 
 
-def test_a_component_where_clause_with_a_separator_is_hostile():
-    assert QB.vet_where("games > 100 AND club = 'Fitzroy'")
+def _rule(field, operator, *values):
+    return {"type": "rule", "properties": {
+        "field": field, "operator": operator, "value": list(values)}}
+
+
+def _group(conjunction, *children, negate=False):
+    return {"type": "group",
+            "properties": {"conjunction": conjunction, "not": negate},
+            "children1": list(children)}
+
+
+def test_the_tree_is_compiled_server_side_with_every_value_bound():
+    """The component's own SQL string is never executed; its structured
+    tree is walked here, and even a hostile value stays a parameter."""
+    bag = QB.ParamBag()
+    tree = _group("AND",
+                  _rule("games", "greater_or_equal", 100),
+                  _rule("club", "equal", "x'; DROP TABLE players; --"))
+    clause = QB.compile_tree_node(tree, {"games", "club"}, bag)
+    assert clause == '("games" >= :p0 AND "club" = :p1)'
+    assert bag.values == {"p0": 100, "p1": "x'; DROP TABLE players; --"}
+
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE players (player TEXT, club TEXT, games INT)")
+    con.execute("INSERT INTO players VALUES ('A', 'Fitzroy', 150)")
+    # The clause runs, binds, and the hostile text matched nothing.
+    assert con.execute(f"SELECT * FROM players WHERE {clause}",
+                       bag.values).fetchall() == []
+
+
+def test_tree_operators_cover_ranges_lists_likes_and_negation():
+    bag = QB.ParamBag()
+    tree = _group("OR",
+                  _rule("games", "between", 50, 100),
+                  _rule("club", "select_any_in", ["Fitzroy", "Carlton"]),
+                  _rule("player", "starts_with", "100%"),
+                  _group("AND", _rule("club", "is_null"), negate=True))
+    clause = QB.compile_tree_node(tree, {"games", "club", "player"}, bag)
+    assert '"games" BETWEEN :p0 AND :p1' in clause
+    assert '"club" IN (:p2, :p3)' in clause
+    assert "ESCAPE" in clause and bag.values["p4"] == "100\\%%"
+    assert 'NOT ("club" IS NULL)' in clause
+
+
+def test_a_tree_field_outside_discovery_is_refused_not_quoted():
     with pytest.raises(ValueError):
-        QB.vet_where("1=1; DROP TABLE players")
+        QB.compile_tree_node(
+            _group("AND", _rule("games) FROM sqlite_master --", "equal", 1)),
+            {"games"}, QB.ParamBag())
+
+
+def test_an_operator_the_walker_does_not_know_is_refused():
+    """An unknown operator must become a red box, never a pass-through."""
+    with pytest.raises(ValueError):
+        QB.compile_tree_node(
+            _group("AND", _rule("games", "proximity", 1)),
+            {"games"}, QB.ParamBag())
+    with pytest.raises(ValueError):
+        QB.compile_tree_node(
+            {"type": "group",
+             "properties": {"conjunction": "AND; DROP TABLE players"},
+             "children1": [_rule("games", "equal", 1)]},
+            {"games"}, QB.ParamBag())
+
+
+def test_a_half_built_tree_filters_nothing_instead_of_erroring():
+    bag = QB.ParamBag()
+    incomplete = _group("AND",
+                        {"type": "rule", "properties": {"field": "games"}},
+                        _rule("games", "equal", None))
+    assert QB.compile_tree_node(incomplete, {"games"}, bag) is None
+    assert bag.values == {}

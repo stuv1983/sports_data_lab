@@ -27,14 +27,36 @@ their actions replace the dialog body, and Back restores the previous card.
 
 from __future__ import annotations
 
+import os
 from typing import Mapping, Sequence
 
 import pandas as pd
 import streamlit as st
 
 import core
+import db_pool
 import explore
 import overlays
+
+
+def _fresh_con(sport, con):
+    """The calling thread's own connection, never one captured earlier.
+
+    A dialog is a fragment: its reruns re-execute the dialog body with the
+    arguments captured when it first opened, on whatever thread the
+    fragment run lands on -- while the session's full reruns keep using
+    the thread-local handle db_pool manages. Re-resolving here keeps every
+    dialog rerun on its own thread's connection, which is the exact
+    cross-thread sharing db_pool.py exists to prevent.
+    """
+    try:
+        stat = os.stat(sport.db)
+    except (OSError, TypeError, AttributeError):
+        return con
+    # Same revision shape as app.py's db_revision, so this resolves to the
+    # very handle the full rerun already opened on this thread.
+    return db_pool.get_con(
+        sport.db, (str(sport.db), stat.st_mtime_ns, stat.st_size))
 
 
 #: A ButtonColumn callback runs before Streamlit reruns the script. It leaves
@@ -246,6 +268,7 @@ def _open_card(card: dict, sport, con, *, nested: bool) -> None:
 @st.dialog("Details", width="large", on_dismiss=_clear_overlay)
 def _details_dialog(sport, con):
     """Render the current card and keep a back-stack inside one dialog."""
+    con = _fresh_con(sport, con)
     stack = st.session_state.get(_STACK, [])
     if not stack:
         return
@@ -354,9 +377,12 @@ def player_results_table(frame, sport, con, key: str, nested: bool = False):
 
     Returns the frame as displayed, for a caller offering a download.
     """
-    shown = frame.copy()
+    # convert_dtypes keeps NULLable integers integer (real <NA> holes)
+    # instead of floating the column into 123.0/NaN.
+    shown = frame.convert_dtypes()
     if "ObscurityRaw" in shown.columns:
-        shown["Rating"] = shown["ObscurityRaw"].map(core.stars_text)
+        shown["Rating"] = shown["ObscurityRaw"].map(
+            lambda o: core.stars_text(None if pd.isna(o) else float(o)))
         shown = shown.drop(columns=["ObscurityRaw"])
     if "Teams" in shown.columns:
         # One entry per club, named as the club was at the time:

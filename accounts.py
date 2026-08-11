@@ -7,6 +7,7 @@ those rebuilds and must never grant write access to sports statistics.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -63,8 +64,34 @@ def _connect(path=DB_PATH):
     return con
 
 
+@contextmanager
+def _db(path=DB_PATH):
+    """One transaction on a connection that is actually closed afterwards.
+
+    ``with sqlite3.connect(...) as con`` commits or rolls back but never
+    closes -- every such block here used to leave the handle to the garbage
+    collector, and this module is called a dozen times per Streamlit rerun.
+    """
+    con = _connect(path)
+    try:
+        with con:
+            yield con
+    finally:
+        con.close()
+
+
+#: Paths whose schema this process has already ensured. The DDL is
+#: idempotent, but running a five-table executescript plus the token
+#: migration on every get_user/can_access call -- several per rerun -- is
+#: pure waste after the first time.
+_SCHEMA_READY: set = set()
+
+
 def ensure_schema(path=DB_PATH):
-    with _connect(path) as con:
+    resolved = Path(path).resolve()
+    if resolved in _SCHEMA_READY:
+        return
+    with _db(path) as con:
         con.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
@@ -170,6 +197,7 @@ def ensure_schema(path=DB_PATH):
             "INSERT OR IGNORE INTO feature_access(feature, audience) VALUES (?, ?)",
             [(key, default) for key, (_, default) in FEATURES.items()],
         )
+    _SCHEMA_READY.add(resolved)
 
 
 def _now():
@@ -220,6 +248,21 @@ def _password_matches(password, encoded):
         return hmac.compare_digest(actual, expected)
     except (TypeError, ValueError):
         return False
+
+
+_DUMMY_DIGEST = None
+
+
+def _dummy_digest():
+    """A real scrypt digest to verify against when no account exists.
+
+    Computed once, lazily -- scrypt is deliberately slow, and paying it at
+    import would tax every process that merely imports this module.
+    """
+    global _DUMMY_DIGEST
+    if _DUMMY_DIGEST is None:
+        _DUMMY_DIGEST = _password_digest(secrets.token_urlsafe(16))
+    return _DUMMY_DIGEST
 
 
 def _user(row):
@@ -276,6 +319,7 @@ def _mock_email(email, link):
         f.write(msg)
 
 def verify_email(token, path=DB_PATH):
+    ensure_schema(path)
     con = _connect(path)
     try:
         con.execute("BEGIN IMMEDIATE")
@@ -341,13 +385,14 @@ def resend_verification(email, path=DB_PATH):
             "WHERE id=?",
             (_verification_digest(token), _now(), row["id"]),
         )
-        send_validation_email(email, token)
         con.commit()
     except Exception:
         con.rollback()
         raise
     finally:
         con.close()
+    # Sent outside the write transaction; see register().
+    send_validation_email(email, token)
 
 
 def register(display_name, email, password, path=DB_PATH):
@@ -374,30 +419,43 @@ def register(display_name, email, password, path=DB_PATH):
             (email, display_name, _password_digest(password), role, _now(),
              _verification_digest(token), _now()),
         )
-        send_validation_email(email, token)
         con.commit()
-        return get_user(cur.lastrowid, path), role == "admin"
     except sqlite3.IntegrityError as exc:
         con.rollback()
         raise AccountError("An account already exists for that email address.") from exc
     finally:
         con.close()
+    # After the commit, never inside it: an SMTP round trip can take
+    # seconds, and BEGIN IMMEDIATE holds the accounts write lock the whole
+    # time. A failed send is recoverable via "Resend verification email".
+    send_validation_email(email, token)
+    return get_user(cur.lastrowid, path), role == "admin"
 
 
 def authenticate(email, password, path=DB_PATH):
+    """Check credentials first, and only then mention verification.
+
+    The unverified-account message used to be raised before the password
+    was checked, which let anyone probe which addresses hold an account
+    here -- the exact enumeration resend_verification() is written to
+    prevent. A missing account burns a real scrypt verification so the
+    two failures also take the same time.
+    """
     try:
         email = _normalise_email(email)
     except AccountError:
         return None
     ensure_schema(path)
-    with _connect(path) as con:
+    with _db(path) as con:
         row = con.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
         if not row:
+            _password_matches(password, _dummy_digest())
             return None
-        if "email_verified" in row.keys() and row["email_verified"] == 0:
-            raise AccountError("Please check your email to verify your account before logging in.")
         if not _password_matches(password, row["password_digest"]) or not row["active"]:
             return None
+        if "email_verified" in row.keys() and row["email_verified"] == 0:
+            # Only a caller who already proved the password learns this.
+            raise AccountError("Please check your email to verify your account before logging in.")
         con.execute("UPDATE users SET last_login_at=? WHERE id=?", (_now(), row["id"]))
         return _user(row)
 
@@ -406,21 +464,21 @@ def get_user(user_id, path=DB_PATH):
     if user_id is None:
         return None
     ensure_schema(path)
-    with _connect(path) as con:
+    with _db(path) as con:
         return _user(con.execute(
             "SELECT * FROM users WHERE id=? AND active=1", (int(user_id),)).fetchone())
 
 
 def feature_policies(path=DB_PATH):
     ensure_schema(path)
-    with _connect(path) as con:
+    with _db(path) as con:
         return dict(con.execute("SELECT feature, audience FROM feature_access"))
 
 
 def can_access(user, feature, path=DB_PATH):
     """Re-read roles and grants from SQLite; UI state is not authorization."""
     ensure_schema(path)
-    with _connect(path) as con:
+    with _db(path) as con:
         row = con.execute(
             "SELECT audience FROM feature_access WHERE feature=?", (feature,)).fetchone()
         audience = row[0] if row else FEATURES.get(feature, (None, "admin"))[1]
@@ -439,7 +497,7 @@ def can_access(user, feature, path=DB_PATH):
     if audience == "member":
         return True
     if audience == "selected":
-        with _connect(path) as con:
+        with _db(path) as con:
             return con.execute(
                 "SELECT 1 FROM feature_grants WHERE feature=? AND user_id=?",
                 (feature, current.id)).fetchone() is not None
@@ -448,7 +506,7 @@ def can_access(user, feature, path=DB_PATH):
 
 def list_users(path=DB_PATH):
     ensure_schema(path)
-    with _connect(path) as con:
+    with _db(path) as con:
         return [_user(row) for row in con.execute(
             "SELECT * FROM users ORDER BY display_name COLLATE NOCASE, email")]
 
@@ -462,7 +520,7 @@ def _require_admin(actor_id, con):
 
 def set_user_access(actor_id, user_id, *, role=None, active=None, path=DB_PATH):
     ensure_schema(path)
-    with _connect(path) as con:
+    with _db(path) as con:
         _require_admin(actor_id, con)
         target = con.execute("SELECT role, active FROM users WHERE id=?", (user_id,)).fetchone()
         if target is None:
@@ -484,7 +542,7 @@ def set_feature_policy(actor_id, feature, audience, path=DB_PATH):
     if feature not in FEATURES or audience not in AUDIENCES:
         raise AccountError("Unknown feature access setting.")
     ensure_schema(path)
-    with _connect(path) as con:
+    with _db(path) as con:
         _require_admin(actor_id, con)
         con.execute(
             "INSERT INTO feature_access(feature, audience) VALUES (?, ?) "
@@ -495,7 +553,7 @@ def set_feature_policy(actor_id, feature, audience, path=DB_PATH):
 
 def feature_grants(feature, path=DB_PATH):
     ensure_schema(path)
-    with _connect(path) as con:
+    with _db(path) as con:
         return {row[0] for row in con.execute(
             "SELECT user_id FROM feature_grants WHERE feature=?", (feature,))}
 
@@ -504,7 +562,7 @@ def set_feature_grant(actor_id, feature, user_id, granted, path=DB_PATH):
     if feature not in FEATURES:
         raise AccountError("Unknown feature.")
     ensure_schema(path)
-    with _connect(path) as con:
+    with _db(path) as con:
         _require_admin(actor_id, con)
         if granted:
             con.execute("INSERT OR IGNORE INTO feature_grants VALUES (?, ?)",
@@ -538,7 +596,7 @@ def save_grid(user_id, sport_key, name, rows, cols, path=DB_PATH):
     definition = json.dumps({"rows": _axis_payload(rows), "cols": _axis_payload(cols)},
                             separators=(",", ":"))
     now = _now()
-    with _connect(path) as con:
+    with _db(path) as con:
         con.execute("""
             INSERT INTO saved_grids(user_id, sport_key, name, definition_json,
                                     created_at, updated_at)
@@ -552,7 +610,7 @@ def save_grid(user_id, sport_key, name, rows, cols, path=DB_PATH):
 def list_saved_grids(user_id, sport_key, path=DB_PATH):
     if get_user(user_id, path) is None:
         return []
-    with _connect(path) as con:
+    with _db(path) as con:
         return [dict(row) for row in con.execute(
             "SELECT id, name, created_at, updated_at FROM saved_grids "
             "WHERE user_id=? AND sport_key=? ORDER BY updated_at DESC, name",
@@ -571,7 +629,7 @@ def _grid_definition(definition_json):
 def load_grid(user_id, grid_id, path=DB_PATH):
     if get_user(user_id, path) is None:
         raise PermissionError("Sign in to open grids.")
-    with _connect(path) as con:
+    with _db(path) as con:
         row = con.execute(
             "SELECT definition_json FROM saved_grids WHERE id=? AND user_id=?",
             (grid_id, user_id)).fetchone()
@@ -596,7 +654,7 @@ def list_playable_grids(sport_key, user_id=None, path=DB_PATH):
     """Published grids for a sport, plus the viewer's own if signed in."""
     ensure_schema(path)
     viewer = get_user(user_id, path)
-    with _connect(path) as con:
+    with _db(path) as con:
         return [dict(row) for row in con.execute(
             "SELECT g.id, g.name, g.created_at, g.updated_at "
             + _PLAYABLE_GRID + " AND g.sport_key=? "
@@ -608,7 +666,7 @@ def load_playable_grid(grid_id, user_id=None, path=DB_PATH):
     """Open a grid the viewer is allowed to play. See :data:`_PLAYABLE_GRID`."""
     ensure_schema(path)
     viewer = get_user(user_id, path)
-    with _connect(path) as con:
+    with _db(path) as con:
         row = con.execute(
             "SELECT g.definition_json " + _PLAYABLE_GRID + " AND g.id=?",
             (viewer.id if viewer else None, grid_id)).fetchone()
@@ -620,13 +678,13 @@ def load_playable_grid(grid_id, user_id=None, path=DB_PATH):
 def delete_grid(user_id, grid_id, path=DB_PATH):
     if get_user(user_id, path) is None:
         raise PermissionError("Sign in to delete grids.")
-    with _connect(path) as con:
+    with _db(path) as con:
         con.execute("DELETE FROM saved_grids WHERE id=? AND user_id=?",
                     (grid_id, user_id))
 
 def log_game_stat(user_id, game_type, score, path=DB_PATH):
     ensure_schema(path)
-    with _connect(path) as con:
+    with _db(path) as con:
         con.execute(
             "INSERT INTO game_stats(user_id, game_type, score, played_at) VALUES (?, ?, ?, ?)",
             (user_id, game_type, score, _now())
@@ -634,7 +692,7 @@ def log_game_stat(user_id, game_type, score, path=DB_PATH):
 
 def get_user_stats(user_id, path=DB_PATH):
     ensure_schema(path)
-    with _connect(path) as con:
+    with _db(path) as con:
         cur = con.execute(
             "SELECT game_type, COUNT(*) as games_played, MAX(score) as top_score, AVG(score) as avg_score "
             "FROM game_stats WHERE user_id=? GROUP BY game_type",
@@ -656,7 +714,7 @@ def get_leaderboard(game_type, path=DB_PATH, limit=50):
     plays often occupy every place on a board headed "Top Score".
     """
     ensure_schema(path)
-    with _connect(path) as con:
+    with _db(path) as con:
         cur = con.execute(
             """
             SELECT u.display_name, s.score, s.played_at

@@ -119,6 +119,11 @@ class Sport:
     obscurity_population: str = ""
     #: Optional imported club catalogue shown after the standard layers.
     club_data_table: str = ""
+    #: An awards table keyed directly by player_id (the Lahman shape),
+    #: read by the player card. Distinct from the Draftguru awards layer,
+    #: which links through person_links and is declared by
+    #: has_draftguru_player_cards instead.
+    native_awards_table: str = ""
     #: Optional broad-family availability probe on the constraints module.
     family_probe: str = ""
     #: What one row of the `games` table actually is, when it is not a
@@ -316,7 +321,10 @@ class Sport:
     def exists(self):
         try:
             con = self.connect()
-            con.execute(f"SELECT 1 FROM {self.schema.players} LIMIT 1")
+            try:
+                con.execute(f"SELECT 1 FROM {self.schema.players} LIMIT 1")
+            finally:
+                con.close()
             return True
         except sqlite3.OperationalError:
             return False

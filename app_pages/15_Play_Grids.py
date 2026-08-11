@@ -1,3 +1,4 @@
+import html
 import json
 import sqlite3
 
@@ -24,10 +25,13 @@ st.caption("Select a saved grid to play. You have 9 guesses, and a player can on
 
 def render_grid_selection():
     sources = ["Saved Grids"]
-    if SPORT.key == "afl":
-        sources.append("Past Grids (Gridley)")
-    
-    default_source = "Past Grids (Gridley)" if "Past Grids (Gridley)" in sources else "Saved Grids"
+    # A capability, not a sport key: any sport that declares a captured
+    # grid library gets the source, under its own puzzle's name.
+    past_label = f"Past Grids ({V.grid_source})"
+    if SPORT.grid_library:
+        sources.append(past_label)
+
+    default_source = past_label if past_label in sources else "Saved Grids"
     source = st.pills("Grid source", sources, key=SPORT.k("play_source"), label_visibility="collapsed", default=default_source)
     if not source:
         source = default_source
@@ -124,13 +128,14 @@ def _get_newest_grid_cached(sport_key, db_revision):
     manual_capture boards that are the bulk of the library, so the page
     auto-loaded nothing whenever the newest board was a manual capture.
     """
-    if sport_key != "afl":
-        return None
     try:
         import db_pool
         import sports
         from afl import historic_grids as HG
         local_sport = sports.get(sport_key)
+        # Only a sport that declares a captured library has the table.
+        if not local_sport.grid_library:
+            return None
         # The sport's own resolved path, never a bare "afl.db": the database
         # lives at data/afl/afl.db, so the literal name opened an empty file
         # in the working directory and auto-loading silently found nothing.
@@ -237,7 +242,7 @@ with st.container(key="grid_board"):
             if answered:
                 face = (
                     f"<div class='square{' is-open' if open_here else ''}'>"
-                    f"<div class='square-name'>{answered['name']}</div>"
+                    f"<div class='square-name'>{html.escape(str(answered['name']))}</div>"
                     "<div class='square-meta'>correct</div></div>"
                 )
                 action = "selected"

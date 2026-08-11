@@ -13,6 +13,10 @@ _key = st.session_state.get("sport", sports.DEFAULT)
 _pre = sports.get(_key)
 st.set_page_config(page_title=f"Sports Data Lab — {_pre.label.replace(' Data Lab', '')}", page_icon=branding.page_icon(_pre), layout="wide", initial_sidebar_state="expanded")
 
+# Before the verify handler below: a verification link opened on a fresh
+# install must find the users table, not "no such table".
+accounts.ensure_schema()
+
 # Consume the token, then drop it from the URL. Left in place it is checked
 # again on every later rerun, and the second check always fails -- successful
 # verification clears the token -- so the first click a reader made anywhere
@@ -39,8 +43,12 @@ if not SPORT.exists():
     st.stop()
 
 def db_revision(db):
+    # The path rides in the revision so every cache keyed on it -- result
+    # frames, picker options -- is distinct per database file, not merely
+    # per (mtime, size) coincidence. Every revision helper in the app
+    # returns this same shape; db_pool keys on (db, revision) either way.
     stat = os.stat(db)
-    return stat.st_mtime_ns, stat.st_size
+    return str(db), stat.st_mtime_ns, stat.st_size
 
 try:
     DB_REVISION = db_revision(SPORT.db)
@@ -59,7 +67,23 @@ except RuntimeError as e:
 st.session_state.DB_REVISION = DB_REVISION
 st.session_state.con = con
 
-LAYERS = SPORT.layers(con)
+
+@st.cache_data(show_spinner=False)
+def _cached_layers(sport_key, revision):
+    """Layer probes cost a handful of queries; run them once per revision."""
+    sport = sports.get(sport_key)
+    return sport.layers(db_pool.get_con(sport.db, revision))
+
+
+@st.cache_data(show_spinner=False)
+def _cached_status(sport_key, revision):
+    """The sidebar's status rows COUNT(*) the games table -- once, not per rerun."""
+    sport = sports.get(sport_key)
+    status_con = db_pool.get_con(sport.db, revision)
+    return sport.status(status_con), list(sport.missing_layer_hints(status_con))
+
+
+LAYERS = _cached_layers(SPORT.key, DB_REVISION)
 st.session_state.DRAFT_OK = LAYERS.draft
 st.session_state.AWARDS_OK = LAYERS.awards
 st.session_state.CLUB_DATA_OK = LAYERS.club_data
@@ -69,9 +93,10 @@ st.session_state.AVAILABLE = LAYERS.builders
 st.sidebar.markdown(f"<div class='brand'>{SPORT.label}</div><div class='brand-sub'>SEARCH · EXPLORE · PLAY</div>", unsafe_allow_html=True)
 
 with st.sidebar.expander("Database status", expanded=False):
-    lines = "<br>".join(f"{label}: <b>{value}</b>" for label, value in SPORT.status(con))
+    _status_rows, _layer_hints = _cached_status(SPORT.key, DB_REVISION)
+    lines = "<br>".join(f"{label}: <b>{value}</b>" for label, value in _status_rows)
     st.markdown(f"<div class='status-row'>{lines}</div>", unsafe_allow_html=True)
-    for _label, hint in SPORT.missing_layer_hints(con):
+    for _label, hint in _layer_hints:
         st.caption(hint)
     if SPORT.has_club_explorer and not LAYERS.club_data and SPORT.club_data_hint:
         st.caption(SPORT.club_data_hint)
@@ -86,7 +111,6 @@ st.markdown(theme.css(PALETTE), unsafe_allow_html=True)
 # the reader actually chose.
 branding.apply(st, SPORT, theme_color=PALETTE.get("board", ""))
 
-accounts.ensure_schema()
 AUTH_USER = accounts.get_user(st.session_state.get("auth_user_id"))
 
 with st.sidebar.expander(f"Account · {AUTH_USER.display_name}" if AUTH_USER else "Join or log in", expanded=False):

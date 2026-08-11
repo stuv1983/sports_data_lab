@@ -111,12 +111,55 @@ career_home_runs_min = _G.career_score_min
 career_home_runs_max = _G.career_score_max
 career_home_runs_between = _G.career_score_between
 
-career_stat_total_min = _G.career_stat_total_min
 CAREER_AVG_MIN_GAMES = _G.CAREER_AVG_MIN_GAMES
 SEASON_AVG_MIN_GAMES = _G.SEASON_AVG_MIN_GAMES
 
-home_runs_at_multiple_clubs = _G.score_at_multiple_clubs
-games_at_multiple_clubs = _G.games_at_multiple_clubs
+
+def career_stat_total_min(stat, n):
+    """Accumulated `n` or more of `stat` across a regular-season career.
+
+    Not the generic builder: that sums every row, and this sport's rows
+    include postseason lines. A career total here means the regular season
+    -- the same convention career_home_runs is built with -- so a player
+    at 2,996 hits plus a long October must not clear career.hits>=3000.
+    """
+    if stat not in SCHEMA.stats:
+        raise ValueError(f"unknown statistic: {stat!r}")
+    return (f"""SELECT {SCHEMA.player_id} FROM {SCHEMA.games}
+                WHERE {SCHEMA.is_final} = 0 AND {stat} IS NOT NULL
+                GROUP BY {SCHEMA.player_id} HAVING SUM({stat}) >= ?""", [n])
+
+
+def home_runs_at_multiple_clubs(score=30, clubs=2):
+    """`score`+ regular-season home runs for each of `clubs` franchises."""
+    return (f"""SELECT {SCHEMA.player_id} FROM (
+                  SELECT {SCHEMA.player_id}, {SCHEMA.club_now},
+                         SUM({SCHEMA.game_score}) AS agg
+                  FROM {SCHEMA.games} WHERE {SCHEMA.is_final} = 0
+                  GROUP BY {SCHEMA.player_id}, {SCHEMA.club_now}
+                  HAVING agg >= ?
+                ) GROUP BY {SCHEMA.player_id} HAVING COUNT(*) >= ?""",
+            [score, clubs])
+
+
+def games_at_multiple_clubs(games=500, clubs=2):
+    """`games`+ regular-season games for each of `clubs` franchises.
+
+    The generic builder COUNT(*)s rows, which on this season-grain table
+    counted *seasons* under a label that says games -- "50+ games at two
+    clubs" was unsatisfiable, since nobody has fifty season-rows with one
+    franchise. A row's `games` column is how many games it stands for.
+    """
+    return (f"""SELECT {SCHEMA.player_id} FROM (
+                  SELECT {SCHEMA.player_id}, {SCHEMA.club_now},
+                         SUM(games) AS n
+                  FROM {SCHEMA.games} WHERE {SCHEMA.is_final} = 0
+                  GROUP BY {SCHEMA.player_id}, {SCHEMA.club_now}
+                  HAVING n >= ?
+                ) GROUP BY {SCHEMA.player_id} HAVING COUNT(*) >= ?""",
+            [games, clubs])
+
+
 played_with_id = _G.played_with_id
 
 played_in_season_range = _G.played_in_season_range

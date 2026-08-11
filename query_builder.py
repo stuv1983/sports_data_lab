@@ -21,10 +21,12 @@ Three independent walls, so no single mistake is fatal:
 1. Identifiers (table, column, sort) can only enter SQL if discovery
    returned them from the database's own catalogue, and they are always
    double-quoted. Nothing the reader types is ever an identifier.
-2. Values never enter SQL text in the filter panel: every comparison is a
-   named placeholder bound at execution. The visual builder's WHERE string
-   is compiled by the component from structured choices, is vetted for
-   statement separators, and runs behind wall 3 regardless.
+2. Values never enter SQL text, in either mode: every comparison is a
+   named placeholder bound at execution. The visual builder's own compiled
+   WHERE string is *never executed* — a component's return value is just a
+   websocket message a hostile client can set to anything — so this page
+   compiles the component's structured condition tree itself, through the
+   same identifier gate and parameter bag the filter panel uses.
 3. The connection is read-only at the file level (`mode=ro` in the SQLite
    URL), so even a hostile WHERE clause could only read.
 """
@@ -32,6 +34,7 @@ Three independent walls, so no single mistake is fatal:
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import re
 import sqlite3
@@ -119,9 +122,11 @@ def _require_known(name: str, known, what: str) -> str:
 
 def _db_revision(db: str) -> tuple:
     """A value that changes when the database file is replaced, used to
-    invalidate every schema/profile/result cache after a rebuild."""
+    invalidate every schema/profile/result cache after a rebuild. Carries
+    the path, same shape as app.py's db_revision, so no two files can
+    share a key on a (mtime, size) coincidence."""
     stat = os.stat(db)
-    return stat.st_mtime_ns, stat.st_size
+    return str(db), stat.st_mtime_ns, stat.st_size
 
 
 # -------------------------------------------------------------- connection
@@ -312,17 +317,108 @@ def condition_tree_config(cols, profiles: dict) -> dict:
     return {"fields": fields}
 
 
-def vet_where(clause: str) -> str:
-    """Belt-and-braces check on the component-compiled WHERE string.
+#: Tree operators that map one-for-one onto a SQL comparison.
+_TREE_BINARY_OPS = {
+    "equal": "=", "not_equal": "<>",
+    "less": "<", "less_or_equal": "<=",
+    "greater": ">", "greater_or_equal": ">=",
+    "select_equals": "=", "select_not_equals": "<>",
+}
 
-    The clause is built by the tree component from structured choices, the
-    connection cannot write, and the SQLite driver refuses multi-statement
-    strings -- but a statement separator has no business in a WHERE clause,
-    so its appearance is treated as hostile rather than passed along.
+
+def _tree_children(node: dict) -> list:
+    """A group's children, whichever container shape the component used."""
+    children = node.get("children1") or []
+    if isinstance(children, dict):
+        return list(children.values())
+    return list(children)
+
+
+def _tree_scalar(operator: str, values: list, position: int = 0):
+    """One bound-parameter-safe scalar from a rule's value list."""
+    if position >= len(values):
+        raise ValueError(f"{operator} needs a value")
+    value = values[position]
+    if isinstance(value, (dict, list, tuple)):
+        raise ValueError(f"Unsupported value shape for {operator}")
+    return value
+
+
+def compile_tree_node(node, known_columns, bag: ParamBag) -> str | None:
+    """Compile one node of the component's condition tree to safe SQL.
+
+    This walks the *structured* tree the component exports, not the SQL
+    string it compiles in the browser: the string is a component return
+    value, and a component return value is attacker-controlled. Every
+    field name is checked against discovery, every value becomes a bound
+    parameter, and an operator this walker does not know is a red box
+    rather than a pass-through.
+
+    Returns None for a node with nothing to say yet — an empty group, or a
+    rule the reader is still filling in — so a half-built tree filters
+    nothing instead of erroring on every keystroke.
     """
-    if ";" in clause:
-        raise ValueError("Statement separator in WHERE clause.")
-    return clause
+    kind = node.get("type") if isinstance(node, dict) else None
+    if kind in ("group", "rule_group"):
+        parts = [sql for child in _tree_children(node)
+                 if (sql := compile_tree_node(child, known_columns, bag))]
+        if not parts:
+            return None
+        properties = node.get("properties") or {}
+        conjunction = str(properties.get("conjunction") or "AND").upper()
+        if conjunction not in ("AND", "OR"):
+            raise ValueError(f"Bad conjunction: {conjunction!r}")
+        joined = "(" + f" {conjunction} ".join(parts) + ")"
+        return f"NOT {joined}" if properties.get("not") else joined
+    if kind != "rule":
+        raise ValueError(f"Unsupported tree node type: {kind!r}")
+
+    properties = node.get("properties") or {}
+    field, operator = properties.get("field"), properties.get("operator")
+    if not field or not operator:
+        return None                       # rule still being built
+    _require_known(field, known_columns, "column")
+    column = _quote_ident(field)
+    values = list(properties.get("value") or [])
+
+    if operator in _TREE_BINARY_OPS:
+        if not values or values[0] is None:
+            return None
+        value = _tree_scalar(operator, values)
+        return f"{column} {_TREE_BINARY_OPS[operator]} {bag.add(value)}"
+    if operator in ("between", "not_between"):
+        if len(values) < 2 or values[0] is None or values[1] is None:
+            return None
+        clause = (f"{column} BETWEEN {bag.add(_tree_scalar(operator, values, 0))} "
+                  f"AND {bag.add(_tree_scalar(operator, values, 1))}")
+        return f"NOT ({clause})" if operator == "not_between" else clause
+    if operator in ("select_any_in", "select_not_any_in", "multiselect_equals"):
+        chosen = values[0] if values and isinstance(values[0], list) else values
+        chosen = [v for v in chosen
+                  if not isinstance(v, (dict, list, tuple)) and v is not None]
+        if not chosen:
+            return None
+        marks = ", ".join(bag.add(v) for v in chosen)
+        clause = f"{column} IN ({marks})"
+        return f"NOT ({clause})" if operator == "select_not_any_in" else clause
+    if operator in ("like", "not_like", "starts_with", "ends_with"):
+        if not values or values[0] is None:
+            return None
+        text = str(_tree_scalar(operator, values))
+        escaped = (text.replace("\\", "\\\\")
+                       .replace("%", "\\%")
+                       .replace("_", "\\_"))
+        pattern = {"like": f"%{escaped}%", "not_like": f"%{escaped}%",
+                   "starts_with": f"{escaped}%",
+                   "ends_with": f"%{escaped}"}[operator]
+        clause = f"{column} LIKE {bag.add(pattern)} ESCAPE '\\'"
+        return f"NOT ({clause})" if operator == "not_like" else clause
+    if operator in ("is_null", "is_not_null"):
+        return f"{column} IS {'NOT ' if operator == 'is_not_null' else ''}NULL"
+    if operator in ("is_empty", "is_not_empty"):
+        clause = f"COALESCE({column}, '') = ''"
+        return f"NOT ({clause})" if operator == "is_not_empty" else clause
+    raise ValueError(f"Unsupported operator: {operator!r}")
 
 
 # --------------------------------------------------------------- execution
@@ -334,8 +430,13 @@ def run_query(conn, sql: str, params: dict, revision) -> pd.DataFrame:
     comment appended here folds the database file's identity into that key,
     so a rebuilt database busts the cache immediately instead of serving
     the old file's rows until the ttl expires.
+
+    ``convert_dtypes`` keeps a NULLable INTEGER column integer with real
+    <NA> holes instead of floating the whole column -- a games count of
+    123.0/NaN visually asserts a precision the data never had.
     """
-    return conn.query(f"{sql}\n/* rev {revision} */", params=params, ttl=600)
+    frame = conn.query(f"{sql}\n/* rev {revision} */", params=params, ttl=600)
+    return frame.convert_dtypes()
 
 
 # ------------------------------------------------------------------- page
@@ -497,19 +598,29 @@ def page(sport):
     bag = ParamBag()
     predicates: list[str] = []
     combinator = "AND"
-    raw_where = ""
+    tree = None
 
     if mode == MODE_TREE:
         st.markdown(f"Drag conditions together below to filter "
                     f"**{table}**. Groups nest, and each group can match "
                     f"all (AND) or any (OR) of its rules.")
-        raw_where = condition_tree(
+        tree_key = sport.k("qb_tree", table)
+        # The component's return value (its own compiled SQL) is discarded
+        # on purpose: it is a browser-supplied string. The structured tree
+        # it stores under `tree_key` is what gets compiled, server-side.
+        condition_tree(
             condition_tree_config(cols, profiles),
             return_type="sql",
             placeholder="Add a rule to start building your query",
             min_height=300,
-            key=sport.k("qb_tree", table),
-        ) or ""
+            key=tree_key,
+        )
+        tree = st.session_state.get(tree_key)
+        if isinstance(tree, str):        # some component versions store JSON
+            try:
+                tree = json.loads(tree) if tree.strip() else None
+            except ValueError:
+                tree = None
     else:
         side.markdown("### Filters")
         combinator = side.radio("Combine filters with", ["AND", "OR"],
@@ -526,8 +637,10 @@ def page(sport):
 
     # -- compile ----------------------------------------------------------
     try:
-        if mode == MODE_TREE and raw_where.strip():
-            predicates = [vet_where(raw_where.strip())]
+        if mode == MODE_TREE and tree:
+            clause = compile_tree_node(tree, set(names), bag)
+            if clause:
+                predicates = [clause]
         sql = build_select(table, shown, predicates, combinator, order_by,
                            descending, limit, bag,
                            known_tables=set(tables), known_columns=set(names))

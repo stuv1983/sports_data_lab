@@ -134,6 +134,19 @@ class Schema:
     clubs: Sequence[str] = ()
     venue_aliases: dict = field(default_factory=dict)
 
+    #: Statistics in `stats` that are rates rather than counts. Summing a
+    #: rate across rows is arithmetic nonsense — an ERA of 3.2 with one
+    #: team and 4.1 with another is not a 7.3 — so the search compiler
+    #: refuses `season.`/`career.` totals for anything named here.
+    rate_stats: Sequence[str] = ()
+
+    #: The `games` column that says how many real games one row stands for,
+    #: set only by a sport whose row is coarser than a game. MLB sets it to
+    #: "games": a row there is a player's season, and a page that counts
+    #: appearances must SUM this column rather than COUNT(*) rows. Empty
+    #: means a row is a game and COUNT(*) is the truth.
+    games_per_row: str = ""
+
     #: Current club name -> every identity that counts as that club.
     #:
     #: A club square asks "played for this club", and for a club formed by
@@ -622,10 +635,14 @@ class Generic:
 
     # -- venues ------------------------------------------------------
     def played_at_venue(self, venue):
+        # names.like_contains escapes % and _ in the venue itself, so a
+        # ground whose name carries either matches literally. The names
+        # module is imported lazily to keep core free of module-level deps.
+        import names
         s = self.s
         return (f"SELECT DISTINCT {s.player_id} FROM {s.games} "
-                f"WHERE {s.venue} LIKE ?",
-                [f"%{s.canonical_venue(venue)}%"])
+                f"WHERE {s.venue} LIKE ? ESCAPE '\\'",
+                [names.like_contains(s.canonical_venue(venue))])
 
     def played_at_venues(self, venues):
         """Played at any venue in a pre-resolved geographic group."""
@@ -677,11 +694,12 @@ class Generic:
                      WHERE {s.is_final} = 1 AND {s.result} = 'W')""", [])
 
     def won_postseason_at(self, venue):
+        import names
         s = self.s
         return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
                     WHERE {s.is_final} = 1 AND {s.result} = 'W'
-                      AND {s.venue} LIKE ?""",
-                [f"%{s.canonical_venue(venue)}%"])
+                      AND {s.venue} LIKE ? ESCAPE '\\'""",
+                [names.like_contains(s.canonical_venue(venue))])
 
     def score_average_in_postseason(self, avg=1.0):
         s = self.s
@@ -932,9 +950,24 @@ def _sql_literal(value):
 
 
 def _inline(sql, params):
-    for value in params:
-        sql = sql.replace("?", _sql_literal(value), 1)
-    return sql
+    """Substitute placeholders left to right, never scanning inlined text.
+
+    The old one-at-a-time ``str.replace`` re-scanned the whole string each
+    pass, so a bound value containing ``?`` ("Who? Jones") had its own text
+    treated as the next placeholder and later literals were spliced into the
+    middle of it. Splitting on the placeholders first makes each ``?`` in
+    the original SQL — and only those — a substitution point.
+    """
+    parts = sql.split("?")
+    if len(parts) - 1 != len(params):
+        raise ValueError(
+            f"SQL has {len(parts) - 1} placeholders but {len(params)} "
+            f"parameters")
+    out = [parts[0]]
+    for value, tail in zip(params, parts[1:]):
+        out.append(_sql_literal(value))
+        out.append(tail)
+    return "".join(out)
 
 
 def to_standalone_sql(constraints, schema: Schema, limit=25):

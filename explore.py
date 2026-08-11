@@ -36,9 +36,13 @@ SCOPES = {
 
 
 def _db_revision(db):
-    """Return a cheap cache key that changes when the database changes."""
+    """Return a cheap cache key that changes when the database changes.
+
+    Same shape as app.py's db_revision: the path is part of the value so
+    two sports' caches can never collide on a (mtime, size) coincidence.
+    """
     stat = os.stat(db)
-    return stat.st_mtime_ns, stat.st_size
+    return str(db), stat.st_mtime_ns, stat.st_size
 
 
 @st.cache_data(show_spinner=False, max_entries=512)
@@ -563,7 +567,9 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
     game_columns = {
         row[1] for row in _con.execute(f"PRAGMA table_info({sc.games})")
     }
-    if sport_key == "mlb" and "war" in game_columns:
+    # A layer capability, not a sport key: any sport whose build loads a
+    # per-row WAR column and declares the probe gets the metric.
+    if "war" in game_columns and sport.layer_ready("war_available", _con):
         best_war = _con.execute(
             f"""SELECT ROUND(MAX(season_war), 1) FROM (
                   SELECT SUM(war) AS season_war FROM {sc.games}
@@ -615,12 +621,18 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
             if seasons:
                 honours["All-Australian"] = seasons
 
-    elif sport_key == "mlb" and "awards" in tables:
+    elif sport.native_awards_table and sport.native_awards_table in tables:
+        # An awards table keyed directly by player_id, the Lahman shape --
+        # declared by the sport rather than inferred from its key.
         for name, season in _con.execute(
-                "SELECT award, season FROM awards WHERE player_id=?", (pid,)):
+                f"SELECT award, season FROM {sport.native_awards_table} "
+                f"WHERE player_id=?", (pid,)):
             honours.setdefault(_clean_award_name(name), set()).add(season)
 
-    elif sport_key == "nfl":
+    else:
+        # Draft facts carried as plain columns on `players` (the nflverse
+        # shape). `wanted` is empty for any build without them, so this
+        # falls through quietly rather than being keyed to one sport.
         wanted = [col for col in ("draft_year", "draft_round", "draft_pick",
                                   "draft_team") if col in player_columns]
         if wanted:
@@ -971,16 +983,20 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                     f"PRAGMA table_info({sc.games})")
             }
             has_player_war = (
-                sport.key == "mlb" and "war" in game_columns
+                "war" in game_columns
+                and sport.layer_ready("war_available", con)
                 and con.execute(
                     f"SELECT 1 FROM {sc.games} WHERE {sc.player_id}=? "
                     "AND war IS NOT NULL LIMIT 1", (pid,)).fetchone()
             )
             war_select = (", ROUND(SUM(war), 1) AS bWAR"
                           if has_player_war else "")
-            if sport.key == "mlb" and "games" in game_columns:
+            if sc.games_per_row and sc.games_per_row in game_columns:
+                # Season-grain rows: each stands for `games_per_row` games,
+                # so appearances are summed rather than rows counted.
                 season_games_sql = (
-                    f"SUM(CASE WHEN {sc.is_final}=0 THEN games ELSE 0 END)")
+                    f"SUM(CASE WHEN {sc.is_final}=0 "
+                    f"THEN {sc.games_per_row} ELSE 0 END)")
                 season_score_sql = (
                     f"SUM(CASE WHEN {sc.is_final}=0 "
                     f"THEN {sc.game_score} ELSE 0 END)")
@@ -988,7 +1004,8 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                     f"ROUND(CAST({season_score_sql} AS REAL) / "
                     f"NULLIF({season_games_sql}, 0), 2)")
                 postseason_sql = (
-                    f"SUM(CASE WHEN {sc.is_final}=1 THEN games ELSE 0 END)")
+                    f"SUM(CASE WHEN {sc.is_final}=1 "
+                    f"THEN {sc.games_per_row} ELSE 0 END)")
             else:
                 season_games_sql = "COUNT(*)"
                 season_score_sql = f"SUM({sc.game_score})"

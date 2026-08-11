@@ -29,6 +29,12 @@ SCHEMA = core.Schema(
     #: the score, the venue and the crowd.
     matches="",
     stats=STATS,
+    #: ERA is a rate, not a count: summing it across rows is arithmetic
+    #: nonsense, so the search compiler refuses season./career. totals.
+    rate_stats=("era",),
+    #: A row is a season; its `games` column says how many games it stands
+    #: for. Pages counting appearances SUM this rather than COUNT(*) rows.
+    games_per_row="games",
     clubs=mlb_reference.teams(),
     club_lineage=mlb_reference.club_lineage(),
     venue_aliases=mlb_reference.venue_aliases(),
@@ -92,6 +98,9 @@ SPORT = Sport(
     title_round="WS",
     has_awards_page=True,
     awards_page_module="mlb.awards_page",
+    #: Lahman's AwardsPlayers, keyed by player_id directly -- the player
+    #: card reads honours from it without the Draftguru link tables.
+    native_awards_table="awards",
     has_ground_explorer=True,
     ground_explorer_module="mlb.ground_explorer",
     optional_layers={"Awards data": "awards_available",

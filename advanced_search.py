@@ -15,8 +15,9 @@ import query_filters_family as Q
 
 
 def _db_revision(db):
+    # Same shape as app.py's db_revision; see the note there.
     stat = os.stat(db)
-    return stat.st_mtime_ns, stat.st_size
+    return str(db), stat.st_mtime_ns, stat.st_size
 
 
 @st.cache_data(show_spinner=False, max_entries=256)
