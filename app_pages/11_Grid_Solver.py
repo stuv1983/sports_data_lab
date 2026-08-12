@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import html
 import random
 
@@ -493,8 +494,12 @@ order = st.sidebar.radio("Rank by",
                          ["obscurity", f"fewest {V.games}", "oldest", "newest"],
                          key=SPORT.k("order"))
 order = "fewest games" if order.startswith("fewest") else order
-limit = st.sidebar.slider("Results per square", 5, 100, 25,
-                          key=SPORT.k("limit"))
+default_limit = st.sidebar.slider(
+    "Default rows per square", 5, 100, 25,
+    key=SPORT.k("limit"),
+    help="Sets the initial result count. Each opened square can be changed "
+         "independently above its results table.",
+)
 
 
 # -------------------------------------------------------------- the board
@@ -556,6 +561,40 @@ def square_for(r, c):
                    tuple(s for s, _ in cs),
                    tuple(v for _, p in cs for v in p),
                    order)
+
+
+def _rows_key(r, c, constraints):
+    """Stable per-square key for its independently chosen result count."""
+    signature = hashlib.blake2s(
+        repr(constraints).encode("utf-8"), digest_size=6).hexdigest()
+    return SPORT.k("result_rows", r, c, signature)
+
+
+def _rows_to_show(r, c, constraints, total):
+    """Render the selected square's custom row-count form."""
+    key = _rows_key(r, c, constraints)
+    initial = min(int(default_limit), int(total))
+    try:
+        current = int(st.session_state.get(key, initial))
+    except (TypeError, ValueError):
+        current = initial
+    st.session_state[key] = max(1, min(current, int(total)))
+
+    with st.form(SPORT.k("result_rows_form", r, c), border=False):
+        field, action = st.columns([2, 1], vertical_alignment="bottom")
+        with field:
+            chosen = st.number_input(
+                "Rows to show",
+                min_value=1,
+                max_value=int(total),
+                step=25,
+                key=key,
+                help="Type any number up to the square's eligible-player "
+                     "count.",
+            )
+        with action:
+            st.form_submit_button("Show rows", width="stretch")
+    return int(chosen)
 
 
 # The first square with both axes defined opens automatically, so the page
@@ -646,14 +685,20 @@ if st.session_state.cell:
     r, c = st.session_state.cell
     rlab, clab = rows_def[r][0], cols_def[c][0]
     cs = constraints_for(r, c)
+    selected_square = square_for(r, c)
+    total = selected_square.eligible if selected_square else 0
 
     st.markdown(f"### {rlab.replace(chr(10), ' ')} × {clab.replace(chr(10), ' ')}")
-    rows = _solve(
-        SPORT.key, SPORT.db, DB_REVISION,
-        tuple(sql for sql, _ in cs),
-        tuple(value for _, values in cs for value in values),
-        order, limit,
-    )
+    if selected_square is None or total <= 0:
+        rows = ()
+    else:
+        limit = _rows_to_show(r, c, cs, total)
+        rows = _solve(
+            SPORT.key, SPORT.db, DB_REVISION,
+            tuple(sql for sql, _ in cs),
+            tuple(value for _, values in cs for value in values),
+            order, limit,
+        )
 
     if not rows:
         st.info(SPORT.empty_hint)
@@ -671,8 +716,6 @@ if st.session_state.cell:
 
         best = rows[0][1:]          # drop the id the table does not show
         best_name, best_obsc = best[0], best[-1]
-        selected_square = square_for(r, c)
-        total = selected_square.eligible if selected_square else len(rows)
 
         # Star ratings replace the raw 0-100 obscurity score everywhere,
         # scaled against this square's own spread rather than the whole
