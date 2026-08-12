@@ -177,6 +177,99 @@ def test_flat_compatibility_wrapper_keeps_pairing_with_or_groups():
     assert [r[0] for r in rows] == ["Alpha"]
 
 
+# ------------------------------------- pairing across nested boundaries
+
+def _crossrow_con():
+    """Beta is the DNF regression's false positive: an A row with 10
+    goals and a separate C row with 150, so any compilation that lets the
+    team and the statistic come from different rows accepts Beta."""
+    con = sqlite3.connect(":memory:")
+    con.executescript("""
+        CREATE TABLE players (player_id INTEGER, player TEXT,
+                              career_games INTEGER);
+        CREATE TABLE games (player_id INTEGER, club_now TEXT, goals INT);
+        INSERT INTO players VALUES (1,'Alpha',200), (2,'Beta',50);
+        INSERT INTO games VALUES (1,'A',120), (2,'A',10), (2,'C',150);
+    """)
+    return con
+
+
+def _players(con, where, params):
+    return [r[0] for r in con.execute(
+        f"SELECT player FROM players p WHERE {where} ORDER BY player",
+        params)]
+
+
+def test_pairing_holds_when_stats_sit_inside_a_nested_or():
+    """team A AND (stat >= 100 OR stat >= 200): the audit's case. Before
+    DNF this compiled the OR subgroup standalone, so Beta's 150 goals for
+    C satisfied the statistic while the A membership came from another
+    row entirely."""
+    ast = _group("AND", _crit("row team", "A"),
+                 _group("OR", _crit("row stat", 100),
+                        _crit("row stat", 200)))
+    where, params = QB.compile_constraint_ast(_schema(), ast, _resolve)
+    assert core.ROW_MARKER not in where
+    # Both DNF branches carry the pairing inside one row predicate.
+    assert where.count("g.club_now = ? AND g.goals >= ?") == 2, where
+    assert _players(_crossrow_con(), where, params) == ["Alpha"]
+
+
+def test_pairing_holds_when_teams_sit_inside_a_nested_or():
+    """(team A OR team C) AND stat >= 140 distributes to two paired
+    branches: Beta's 150 for C matches, Alpha's 120 for A does not."""
+    ast = _group("AND",
+                 _group("OR", _crit("row team", "A"),
+                        _crit("row team", "C")),
+                 _crit("row stat", 140))
+    where, params = QB.compile_constraint_ast(_schema(), ast, _resolve)
+    assert _players(_crossrow_con(), where, params) == ["Beta"]
+
+
+def test_career_condition_distributes_over_row_scoped_branches():
+    """career AND (team/stat OR team/stat): the plain career predicate is
+    copied into each branch and pairing survives in both."""
+    ast = _group("AND",
+                 _crit("games min", 100),
+                 _group("OR",
+                        _group("AND", _crit("row team", "A"),
+                               _crit("row stat", 100)),
+                        _group("AND", _crit("row team", "C"),
+                               _crit("row stat", 140))))
+    where, params = QB.compile_constraint_ast(_schema(), ast, _resolve)
+    assert where.count("g.club_now = ? AND g.goals >= ?") == 2, where
+    # Alpha: 200 games and 120 for A. Beta: 150 for C but only 50 games.
+    assert _players(_crossrow_con(), where, params) == ["Alpha"]
+
+
+def test_dnf_expansion_is_bounded():
+    """Two OR groups of 17 alternatives mean 289 conjunctions -- past the
+    ceiling, and refused rather than truncated."""
+    alts = [_crit("games min", n) for n in range(17)]
+    ast = _group("AND", _group("OR", *alts), _group("OR", *alts))
+    with pytest.raises(ValueError, match="expands past"):
+        QB.compile_constraint_ast(_schema(), ast, _resolve)
+
+
+def test_empty_subgroup_stays_a_placeholder_noop():
+    """"Add a subgroup" appends an empty group and reruns into a compile:
+    it must contribute nothing, in AND and OR positions alike, and a
+    wholly empty root stays the no-op query."""
+    empty = {"type": "group", "op": "AND", "children": []}
+    ast = _group("AND", _crit("row team", "A"), _crit("row stat", 100),
+                 dict(empty))
+    where, params = QB.compile_constraint_ast(_schema(), ast, _resolve)
+    assert _players(_crossrow_con(), where, params) == ["Alpha"]
+
+    ast = _group("OR", _crit("games min", 100), dict(empty))
+    where, params = QB.compile_constraint_ast(_schema(), ast, _resolve)
+    assert _players(_crossrow_con(), where, params) == ["Alpha"]
+
+    where, params = QB.compile_constraint_ast(_schema(), dict(empty),
+                                              _resolve)
+    assert (where, params) == ("1=1", [])
+
+
 # ------------------------------------------------------------- validation
 
 def test_criterion_leaves_are_resolved_by_the_catalogue_only():

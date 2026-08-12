@@ -176,7 +176,12 @@ SPORT = Sport(
         "players.birth_date": "date",
         "games.date": "date", "games.is_playoff": "boolean",
         "matches.gameday": "date",
+        "rosters.birth_date": "date",
     },
+    query_low_cardinality_columns=(
+        "games.season_type", "games.result", "games.position",
+        "games.club_now", "games.club_hist", "games.opponent_team",
+    ),
     search_examples=(
         'club:"Kansas City Chiefs" games>=100 sort:obscurity',
         'game.passing_yards>=400 postseason:true',

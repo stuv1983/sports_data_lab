@@ -141,6 +141,14 @@ MAX_QUERY_PARAMS = 900
 MAX_GROUP_DEPTH = 6
 MAX_GROUP_CHILDREN = 32
 
+#: Ceiling on the disjunctive-normal-form expansion of a grid query. The
+#: grid compiler distributes AND over OR so same-row pairing can hold
+#: inside every conjunction (see compile_constraint_ast), and that
+#: expansion is multiplicative: two OR groups of 17 alternatives under one
+#: AND already mean 289 branches. Growth past this bound is refused, never
+#: silently truncated.
+MAX_DNF_BRANCHES = 256
+
 #: How deep the *editing UI* nests groups -- the compiler accepts
 #: MAX_GROUP_DEPTH so restored queries keep working, but the panel stops
 #: offering "add subgroup" past this, because a five-deep Boolean tree in
@@ -879,7 +887,15 @@ def serialize_state(payload: dict) -> str:
                      allow_nan=False).encode("utf-8")
     if len(raw) > MAX_STATE_BYTES:
         raise ValueError("Query state is too large to share")
-    return base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode("ascii")
+    token = base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode("ascii")
+    # The decoder's ceiling, applied on the way out: MAX_STATE_BYTES
+    # bounds the JSON but says nothing about the *encoded* size, and an
+    # incompressible payload under the first limit can still exceed the
+    # second -- handing the reader a "shareable" token no restore would
+    # ever accept. Fail here, immediately and with the reason, instead.
+    if len(token) > MAX_TOKEN_CHARS:
+        raise ValueError("Compressed query state is too large to share")
+    return token
 
 
 def deserialize_state(token: str) -> dict:
@@ -1080,6 +1096,60 @@ def _tree_scalar(operator: str, values: list, position: int = 0):
     return value
 
 
+def _coerce_tree_value(col: Column | None, value):
+    """One tree-rule value, validated against its column's kind.
+
+    The operator allowlist (TREE_OPS_BY_KIND) stops LIKE reaching a
+    number, but the *value* in a comparison is its own attack surface: a
+    doctored payload can put text under an integer field or a dict where
+    a scalar belongs, and an unchecked bind then compares wrongly instead
+    of failing. Values are coerced through the same gates the native
+    panel uses -- coerce_number for numbers, ISO parsing for dates -- so
+    a value that cannot mean what the column stores is a ValueError,
+    never a silently-empty (or silently-broad) result.
+
+    ``col`` is None when the caller supplied a bare name set instead of
+    column metadata; shape and size are still enforced, kind is not.
+    """
+    if isinstance(value, (dict, list, tuple, set)):
+        raise ValueError("Tree condition values must be scalars")
+    if value is None:
+        raise ValueError("Tree condition value cannot be null")
+    if isinstance(value, str) and len(value) > MAX_SCALAR_CHARS:
+        raise ValueError("Tree condition value is too long")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("Tree condition values must be finite")
+    if col is None:
+        return value
+
+    if col.kind == "integer":
+        return coerce_number(value, integer=True)
+    if col.kind == "float":
+        return coerce_number(value)
+    if col.kind == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError("Boolean conditions require true or false")
+        # Flags are stored as 0/1 INTEGER in every build here.
+        return int(value)
+    if col.kind == "date":
+        try:
+            return dt.date.fromisoformat(str(value)).isoformat()
+        except ValueError as exc:
+            raise ValueError(
+                "Date conditions require an ISO YYYY-MM-DD value") from exc
+    if col.kind == "datetime":
+        text = str(value)
+        try:
+            dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(
+                "Datetime conditions require an ISO-8601 value") from exc
+        # Bound as sent: the stored TEXT is compared lexically, and
+        # rewriting the caller's spelling could move the boundary.
+        return text
+    return str(value)
+
+
 def compile_tree_node(node, known_columns, bag: ParamBag) -> str | None:
     """Compile one node of the component's condition tree to safe SQL.
 
@@ -1151,31 +1221,35 @@ def compile_tree_node(node, known_columns, bag: ParamBag) -> str | None:
 
     if operator in _TREE_BINARY_OPS:
         if not values or values[0] is None:
-            return None
-        value = _tree_scalar(operator, values)
+            return None                   # rule still being built
+        value = _coerce_tree_value(col_meta, _tree_scalar(operator, values))
         return f"{column} {_TREE_BINARY_OPS[operator]} {bag.add(value)}"
     if operator in ("between", "not_between"):
         if len(values) < 2 or values[0] is None or values[1] is None:
-            return None
-        clause = (f"{column} BETWEEN {bag.add(_tree_scalar(operator, values, 0))} "
-                  f"AND {bag.add(_tree_scalar(operator, values, 1))}")
+            return None                   # rule still being built
+        lo = _coerce_tree_value(col_meta, _tree_scalar(operator, values, 0))
+        hi = _coerce_tree_value(col_meta, _tree_scalar(operator, values, 1))
+        clause = f"{column} BETWEEN {bag.add(lo)} AND {bag.add(hi)}"
         return f"NOT ({clause})" if operator == "not_between" else clause
     if operator in ("select_any_in", "select_not_any_in", "multiselect_equals"):
         chosen = values[0] if values and isinstance(values[0], list) else values
-        if len(chosen) > MAX_RULE_VALUES:
-            raise ValueError(
-                f"Rule holds more than {MAX_RULE_VALUES} values")
-        chosen = [v for v in chosen
-                  if not isinstance(v, (dict, list, tuple)) and v is not None]
+        # Fail closed, never narrow: a malformed member invalidates the
+        # whole rule. The predecessor filtered bad members out, which
+        # quietly changed ["A", {...}] into IN ("A") -- a different query
+        # than the payload specified. Only the genuinely-empty selection
+        # (a rule mid-edit) stays a no-op.
+        chosen = [_coerce_tree_value(col_meta, value)
+                  for value in _bounded_values(chosen)]
         if not chosen:
-            return None
+            return None                   # rule still being built
         marks = ", ".join(bag.add(v) for v in chosen)
         clause = f"{column} IN ({marks})"
         return f"NOT ({clause})" if operator == "select_not_any_in" else clause
     if operator in ("like", "not_like", "starts_with", "ends_with"):
         if not values or values[0] is None:
-            return None
-        text = str(_tree_scalar(operator, values))
+            return None                   # rule still being built
+        text = str(_coerce_tree_value(col_meta,
+                                      _tree_scalar(operator, values)))
         escaped = (text.replace("\\", "\\\\")
                        .replace("%", "\\%")
                        .replace("_", "\\_"))
@@ -1652,41 +1726,72 @@ def build_share_envelope(sport, mode: str, query, *, table: str | None = None,
     return payload
 
 
-_ENVELOPE_KEYS = {"v", "sport", "mode", "table", "display", "query"}
-_DISPLAY_KEYS = {"columns", "sort", "descending", "limit", "group_by",
-                 "order"}
+#: Exact field vocabulary and obligations *per mode*. The union of every
+#: mode's fields would accept a grid token carrying table/columns/sort --
+#: fields grid restore ignores -- and a token whose fields are silently
+#: ignored is not reproduced, it is reinterpreted. ``sport`` stays
+#: optional everywhere: migrated legacy tokens never knew theirs, and the
+#: page refuses a mismatched one either way.
+_ENVELOPE_KEYS_BY_MODE = {
+    "grid": {"v", "sport", "mode", "display", "query"},
+    "filters": {"v", "sport", "mode", "table", "display", "query"},
+    "tree": {"v", "sport", "mode", "table", "display", "query"},
+}
+_REQUIRED_KEYS_BY_MODE = {
+    "grid": {"v", "mode", "query"},
+    "filters": {"v", "mode", "table", "query"},
+    "tree": {"v", "mode", "table", "query"},
+}
+_DISPLAY_KEYS_BY_MODE = {
+    "grid": {"order", "limit"},
+    "filters": {"columns", "sort", "descending", "limit", "group_by"},
+    "tree": {"columns", "sort", "descending", "limit", "group_by"},
+}
 
 
 def validate_envelope(payload: dict) -> dict:
     """Version/shape-check a decoded token, migrating the legacy format.
 
-    Returns the (possibly migrated) envelope or raises ValueError. Field
-    names outside the envelope's vocabulary are refused rather than
-    dropped: a token carrying keys this build does not understand would
-    otherwise restore to *some* query while silently meaning another.
+    Returns the (possibly migrated) envelope or raises ValueError. Every
+    envelope -- including one lifted out of the legacy shape -- passes
+    the same v1 validator, so migration cannot become a side door around
+    the field rules.
     """
     if not isinstance(payload, dict):
         raise ValueError("Not a query-state payload")
     if "v" not in payload:
         if "groups" in payload and "table" in payload:
-            return _migrate_legacy_payload(payload)
-        raise ValueError("Not a query token this build understands")
+            payload = _migrate_legacy_payload(payload)
+        else:
+            raise ValueError("Not a query token this build understands")
+    return _validate_v1_envelope(payload)
+
+
+def _validate_v1_envelope(payload: dict) -> dict:
+    """The v1 rules: known version and mode, then that mode's exact
+    field set -- unknown fields refused, required fields demanded, and
+    the display vocabulary matched to the mode. A field the restore
+    would ignore is a lie in the token, so it is an error here."""
     if payload.get("v") != TOKEN_VERSION:
         raise ValueError(
             f"Unsupported query-token version: {payload.get('v')!r}")
     mode = payload.get("mode")
     if mode not in _TOKEN_MODES:
         raise ValueError(f"Unsupported query-token mode: {mode!r}")
-    extra = set(payload) - _ENVELOPE_KEYS
+    extra = set(payload) - _ENVELOPE_KEYS_BY_MODE[mode]
     if extra:
-        raise ValueError(f"Unknown token fields: {sorted(extra)}")
+        raise ValueError(f"Unknown {mode} token fields: {sorted(extra)}")
+    missing = _REQUIRED_KEYS_BY_MODE[mode] - set(payload)
+    if missing:
+        raise ValueError(f"Missing {mode} token fields: {sorted(missing)}")
     display = payload.get("display")
     if display is not None:
         if not isinstance(display, dict):
             raise ValueError("Token display settings must be an object")
-        bad = set(display) - _DISPLAY_KEYS
+        bad = set(display) - _DISPLAY_KEYS_BY_MODE[mode]
         if bad:
-            raise ValueError(f"Unknown display fields: {sorted(bad)}")
+            raise ValueError(
+                f"Unknown {mode} display fields: {sorted(bad)}")
     sport_key = payload.get("sport")
     if sport_key is not None and not isinstance(sport_key, str):
         raise ValueError("Token sport must be text")
@@ -1811,8 +1916,12 @@ def _apply_restored_state(sport, envelope: dict, schema: dict, conn,
     is a Streamlit error, and reusing an old gid would collide with parked
     widget state).
     """
-    staged: dict[str, object] = {}
     mode = envelope.get("mode")
+    if mode not in ("filters", "tree"):
+        # validate_envelope routes grid tokens elsewhere; a caller that
+        # reaches here with one is a programming error surfaced early.
+        raise ValueError(f"Unsupported query-token mode: {mode!r}")
+    staged: dict[str, object] = {}
     table = _require_known(str(envelope.get("table")), set(schema), "table")
     by_name = {c.name: c for c in schema[table]}
 
@@ -2081,30 +2190,26 @@ def _resolve_criterion(sport, kind, args) -> tuple[str, list]:
     return sql, list(params)
 
 
-def compile_constraint_ast(schema, node, resolve, *, _depth: int = 0,
-                           _count: list | None = None) -> tuple[str, list]:
-    """One grid-query AST node -> ``(where, params)`` over ``players p``.
+def _constraint_dnf(node, resolve, *, _depth: int = 0,
+                    _count: list | None = None) -> list[list[tuple]]:
+    """One grid-query AST node -> bounded disjunctive normal form.
 
-    The AST mirrors the filter panel's -- ``{"type": "group", "op",
-    "children"}`` -- with criterion leaves resolved to ``(sql, params)``
-    by ``resolve(kind, args)`` (the server-owned builder catalogue).
-    ``(A AND B) OR (C AND D)`` and deeper shapes compile exactly as
-    written, under the same depth/children/node bounds as the filter AST.
+    Returns a list of alternative *branches*; each branch is a flat list
+    of resolved ``(sql, params)`` leaves that must all hold together.
+    ``A AND (B OR C)`` therefore becomes ``[[A, B], [A, C]]`` -- the
+    distribution is what lets every conjunction pass through one
+    core._where call, however deep the AND/OR shape nested (see
+    compile_constraint_ast for why that matters).
 
-    Pairing rule: all criterion leaves that are *direct children of one
-    AND group* compile through core._where together, so the Immaculate
-    Grid team-and-season pairing applies within every AND branch -- not
-    only when the whole query is a flat intersection, which is the
-    regression where one unrelated OR card silently split "100 RBIs for
-    Cleveland" into two independent facts. OR branches compile each child
-    standalone, because "either of these" has no one row to pair on.
+    An empty group is the panel's "Add a subgroup" placeholder, not a
+    Boolean TRUE: it contributes nothing, exactly as when it was skipped
+    as a ``1=1`` member. A wholly empty tree is the single no-op branch
+    ``[[]]``.
 
-    Internal fragment leaves (``{"type": "fragment", "sql", "params"}``)
-    exist for pre-built constraints inside this process; the token
-    validator refuses them, so no serialized payload can smuggle SQL in.
+    Expansion is multiplicative, so it is bounded (MAX_DNF_BRANCHES) on
+    top of the depth/children/node bounds -- oversize growth is refused,
+    never truncated to some subset of the query's meaning.
     """
-    import core
-
     if _count is None:
         _count = [0]
     _count[0] += 1
@@ -2116,8 +2221,7 @@ def compile_constraint_ast(schema, node, resolve, *, _depth: int = 0,
 
     kind = node.get("type")
     if kind in ("criterion", "fragment"):
-        leaf_sql, leaf_params = _resolve_leaf(node, resolve)
-        return core._where([(leaf_sql, leaf_params)], schema)
+        return [[_resolve_leaf(node, resolve)]]
     if kind != "group":
         raise ValueError(f"Unsupported query node type: {kind!r}")
 
@@ -2134,56 +2238,72 @@ def compile_constraint_ast(schema, node, resolve, *, _depth: int = 0,
         raise ValueError(
             f"A group may hold at most {MAX_GROUP_CHILDREN} items")
 
-    if op == "AND":
-        # Direct criterion leaves compile through core._where as one
-        # constraint list, preserving same-row pairing across the whole
-        # AND branch; subgroups contribute their own parenthesised
-        # clauses alongside.
-        leaves: list[tuple[str, list]] = []
-        subclauses: list[str] = []
-        subparams: list = []
+    if op == "OR":
+        branches: list[list[tuple]] = []
         for child in children:
-            if not isinstance(child, dict):
-                raise ValueError("Query nodes must be objects")
-            if child.get("type") in ("criterion", "fragment"):
-                leaves.append(_resolve_leaf(child, resolve))
-            else:
-                clause, bound = compile_constraint_ast(
-                    schema, child, resolve,
-                    _depth=_depth + 1, _count=_count)
-                if clause != "1=1":
-                    subclauses.append(clause)
-                    subparams.extend(bound)
-        clauses: list[str] = []
-        params: list = []
-        if leaves:
-            where, bound = core._where(leaves, schema)
-            clauses.append(where)
-            params.extend(bound)
-        clauses.extend(subclauses)
-        params.extend(subparams)
-        if not clauses:
-            return "1=1", []
-        return " AND ".join(clauses), params
+            alternatives = [branch for branch in _constraint_dnf(
+                child, resolve, _depth=_depth + 1, _count=_count) if branch]
+            if not alternatives:        # placeholder subgroup: no-op
+                continue
+            if len(branches) + len(alternatives) > MAX_DNF_BRANCHES:
+                raise ValueError(
+                    f"The query expands past {MAX_DNF_BRANCHES} OR "
+                    f"branches")
+            branches.extend(alternatives)
+        return branches or [[]]
 
-    # -- OR ---------------------------------------------------------------
-    members: list[str] = []
-    params = []
+    branches = [[]]
     for child in children:
-        clause, bound = compile_constraint_ast(
-            schema, child, resolve, _depth=_depth + 1, _count=_count)
-        if clause == "1=1":
-            continue
-        members.append(clause)
+        alternatives = _constraint_dnf(
+            child, resolve, _depth=_depth + 1, _count=_count)
+        if len(branches) * len(alternatives) > MAX_DNF_BRANCHES:
+            raise ValueError(
+                f"The query expands past {MAX_DNF_BRANCHES} OR branches")
+        branches = [current + alternative
+                    for current in branches
+                    for alternative in alternatives]
+    return branches
+
+
+def compile_constraint_ast(schema, node, resolve) -> tuple[str, list]:
+    """One grid-query AST node -> ``(where, params)`` over ``players p``.
+
+    The AST mirrors the filter panel's -- ``{"type": "group", "op",
+    "children"}`` -- with criterion leaves resolved to ``(sql, params)``
+    by ``resolve(kind, args)`` (the server-owned builder catalogue).
+    ``(A AND B) OR (C AND D)`` and deeper shapes compile exactly as
+    written, under the same depth/children/node bounds as the filter AST
+    plus a DNF expansion ceiling.
+
+    Pairing rule: the tree is first distributed into disjunctive normal
+    form, and *every* resulting conjunction compiles through one
+    core._where call -- so the Immaculate Grid team-and-season pairing
+    holds across nested Boolean boundaries, not only between direct
+    siblings. The predecessor paired direct AND children only, which made
+    "team A AND (100 goals OR 200 goals)" accept a player whose team-A
+    rows and 100-goal rows were different rows: DNF turns it into
+    "(team A AND 100 goals) OR (team A AND 200 goals)", each half paired.
+
+    Internal fragment leaves (``{"type": "fragment", "sql", "params"}``)
+    exist for pre-built constraints inside this process; the token
+    validator refuses them, so no serialized payload can smuggle SQL in.
+    """
+    import core
+
+    clauses: list[str] = []
+    params: list = []
+    for branch in _constraint_dnf(node, resolve):
+        clause, bound = core._where(branch, schema)
+        if len(params) + len(bound) > MAX_QUERY_PARAMS:
+            raise ValueError(
+                f"A query may bind at most {MAX_QUERY_PARAMS} values.")
+        clauses.append(clause)
         params.extend(bound)
-    if not members:
-        return "1=1", []
-    if len(members) == 1:
-        return members[0], params
-    # Every member gets its own parentheses: an AND-compound member inside
-    # an OR must mean what the panel showed, by punctuation, never by SQL
-    # operator precedence.
-    joined = " OR ".join(f"({member})" for member in members)
+    if len(clauses) == 1:
+        return clauses[0], params
+    # Every branch gets its own parentheses: the query must mean what the
+    # panel showed by punctuation, never by SQL operator precedence.
+    joined = " OR ".join(f"({clause})" for clause in clauses)
     return f"({joined})", params
 
 
@@ -2530,6 +2650,8 @@ def _apply_grid_restore(sport, envelope: dict) -> None:
     before a single session key is written, so a failing token leaves
     the existing query untouched.
     """
+    if envelope.get("mode") != "grid":
+        raise ValueError("Grid restore requires a grid token")
     prior = st.session_state.get(sport.k("qbc_query")) or {}
     counter = [int(prior.get("next_nid", 1) or 1)]
     root = _validated_grid_query(sport, envelope.get("query"), counter)
@@ -3032,6 +3154,24 @@ def _active_filter_columns(sport, table: str, state: dict) -> set:
     return names
 
 
+def _tree_profile_columns(sport, table: str, cols) -> list:
+    """Which of a table's columns the visual tree may profile.
+
+    Only text columns the sport has declared low-cardinality
+    (query_low_cardinality_columns) -- each profile is a DISTINCT scan,
+    and speculatively scanning *every* text column cost ~4 s on the NFL
+    games table's 19 before the component could render. An undeclared
+    text column stays a free-text field; numeric and date fields never
+    needed profiles here (their widgets carry no observed bounds by
+    design). The declaration is matched against live discovery, so a
+    stale entry selects nothing rather than probing a ghost column.
+    """
+    configured = set(
+        getattr(sport, "query_low_cardinality_columns", ()) or ())
+    return [c for c in cols
+            if c.kind == "text" and f"{table}.{c.name}" in configured]
+
+
 def page(sport, heading=True):
     """Render the query builder for whichever sport is active.
 
@@ -3204,7 +3344,7 @@ def page(sport, heading=True):
     # selected table -- one query each, ~30 seconds on the NFL's
     # 155-column games table -- before either builder appeared.
     if mode == MODE_TREE:
-        needed = [c for c in cols if c.kind == "text"]
+        needed = _tree_profile_columns(sport, table, cols)
     else:
         active = _active_filter_columns(sport, table,
                                         _groups_state(sport, table))

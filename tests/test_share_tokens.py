@@ -20,6 +20,8 @@ _os.chdir(_ROOT)
 
 import base64
 import json
+import random
+import string
 import zlib
 
 import pytest
@@ -31,7 +33,39 @@ def _token(payload_bytes: bytes) -> str:
     return base64.urlsafe_b64encode(zlib.compress(payload_bytes)).decode()
 
 
+def _incompressible_payload(size: int) -> dict:
+    """A payload zlib cannot shrink: deterministic pseudo-random ASCII,
+    chunked under MAX_SCALAR_CHARS so validate_tree accepts it. A
+    repetitive filler would deflate to a few hundred bytes and never
+    probe the encoded-size boundary at all."""
+    rng = random.Random(7)
+    alphabet = string.ascii_letters + string.digits
+    chunk = QB.MAX_SCALAR_CHARS // 2
+    blobs = ["".join(rng.choices(alphabet, k=min(chunk, size - done)))
+             for done in range(0, size, chunk)]
+    return {"v": 1, "blob": blobs}
+
+
 # ------------------------------------------------------------ round trips
+
+def test_every_serialized_token_round_trips():
+    """The encoder's contract: a token it returns is one the decoder
+    accepts. 40 KB of incompressible state stays under the token ceiling
+    and must come back exactly."""
+    payload = _incompressible_payload(40_000)
+    token = QB.serialize_state(payload)
+    assert len(token) <= QB.MAX_TOKEN_CHARS
+    assert QB.deserialize_state(token) == payload
+
+
+def test_serializer_refuses_a_token_larger_than_the_decoder_limit():
+    """240 KB of incompressible state passes the decompressed-size bound
+    but encodes past MAX_TOKEN_CHARS: the old encoder returned that token
+    'successfully' and every restore then refused it. Failure must move
+    to the serialize call, immediately and with the reason."""
+    payload = _incompressible_payload(240_000)
+    with pytest.raises(ValueError, match="too large to share"):
+        QB.serialize_state(payload)
 
 def test_a_versioned_envelope_round_trips():
     payload = QB.build_share_envelope(
@@ -156,9 +190,10 @@ def test_unknown_fields_are_refused_not_dropped():
     restore to *some* query while meaning another."""
     with pytest.raises(ValueError):
         QB.validate_envelope({"v": 1, "mode": "filters", "query": {},
-                              "surprise": True})
+                              "table": "players", "surprise": True})
     with pytest.raises(ValueError):
         QB.validate_envelope({"v": 1, "mode": "filters", "query": {},
+                              "table": "players",
                               "display": {"columns": [], "rowsz": 5}})
 
 
@@ -171,3 +206,92 @@ def test_the_ui_envelope_builders_validate_cleanly():
              "args": ["Boston Celtics"]}]},
         display={"order": "Most obscure", "limit": 50})
     assert QB.validate_envelope(grid) == grid
+
+
+# ------------------------------------------------- mode-specific envelopes
+
+def _grid_envelope(**extra):
+    payload = {"v": 1, "sport": "afl", "mode": "grid",
+               "query": {"type": "group", "op": "AND", "children": []}}
+    payload.update(extra)
+    return payload
+
+
+def _filters_envelope(**extra):
+    payload = {"v": 1, "sport": "afl", "mode": "filters",
+               "table": "players",
+               "query": {"type": "group", "op": "AND", "children": []}}
+    payload.update(extra)
+    return payload
+
+
+@pytest.mark.parametrize("extra", [
+    {"table": "secret_staging"},
+    {"display": {"columns": ["password"]}},
+    {"display": {"sort": "password"}},
+    {"display": {"descending": True}},
+    {"display": {"group_by": ["password"]}},
+])
+def test_grid_tokens_refuse_table_and_table_display_fields(extra):
+    """Grid restore has no table, columns or sort: a grid token carrying
+    them used to validate and then be silently ignored -- the restored
+    query was not the token, it was a reinterpretation of it."""
+    with pytest.raises(ValueError, match="grid"):
+        QB.validate_envelope(_grid_envelope(**extra))
+
+
+@pytest.mark.parametrize("mode", ["filters", "tree"])
+def test_table_tokens_refuse_the_grid_ranking_field(mode):
+    with pytest.raises(ValueError, match="display"):
+        QB.validate_envelope(
+            _filters_envelope(mode=mode, display={"order": "Most games"}))
+
+
+@pytest.mark.parametrize("missing", ["table", "query"])
+@pytest.mark.parametrize("mode", ["filters", "tree"])
+def test_table_tokens_demand_their_required_fields(mode, missing):
+    payload = _filters_envelope(mode=mode)
+    del payload[missing]
+    with pytest.raises(ValueError, match="Missing"):
+        QB.validate_envelope(payload)
+
+
+def test_grid_tokens_demand_a_query():
+    payload = _grid_envelope()
+    del payload["query"]
+    with pytest.raises(ValueError, match="Missing"):
+        QB.validate_envelope(payload)
+
+
+def test_each_mode_still_accepts_its_own_exact_shape():
+    grid = _grid_envelope(display={"order": "Most obscure", "limit": 25})
+    assert QB.validate_envelope(grid) == grid
+    filters = _filters_envelope(display={
+        "columns": ["player"], "sort": "player", "descending": False,
+        "limit": 100, "group_by": []})
+    assert QB.validate_envelope(filters) == filters
+    tree = _filters_envelope(mode="tree")
+    assert QB.validate_envelope(tree) == tree
+
+
+def test_restore_entrypoints_assert_their_own_mode():
+    """Defense in depth under the validator: handing the wrong mode's
+    envelope to a restore function is refused before any staging."""
+    with pytest.raises(ValueError):
+        QB._apply_grid_restore(
+            type("S", (), {"key": "afl",
+                           "k": staticmethod(lambda *a: ":".join(
+                               map(str, a)))}),
+            _filters_envelope())
+
+
+def test_migrated_legacy_tokens_pass_the_common_v1_validator():
+    """Migration feeds the same validator as native v1 tokens: the
+    lifted envelope carries exactly the filters vocabulary."""
+    legacy = {"table": "players", "groups": [
+        {"match": "AND", "conditions": [
+            {"column": "a", "kind": "integer", "op": "≥", "value": 1}]}]}
+    envelope = QB.validate_envelope(legacy)
+    assert envelope["mode"] == "filters"
+    assert set(envelope) <= QB._ENVELOPE_KEYS_BY_MODE["filters"]
+    assert QB._REQUIRED_KEYS_BY_MODE["filters"] <= set(envelope)

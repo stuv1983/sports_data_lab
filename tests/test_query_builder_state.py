@@ -183,6 +183,12 @@ def test_a_valid_token_restores_query_and_display_atomically():
     lambda env: env["query"]["children"][0].update(value="not-a-number"),
     lambda env: env["display"].update(limit=-1),
     lambda env: env.update(table="secret_staging"),
+    # Mode-crossed tokens: a "grid" token still carrying the table
+    # vocabulary, and a filters token carrying the grid ranking field.
+    # Validation is mode-specific, so fields the restore would ignore
+    # are refused rather than silently dropped.
+    lambda env: env.update(mode="grid"),
+    lambda env: env["display"].update(order="Most career games"),
 ])
 def test_a_broken_token_warns_and_leaves_existing_state_untouched(break_it):
     """Restore is all-or-nothing: unknown columns, foreign operators,

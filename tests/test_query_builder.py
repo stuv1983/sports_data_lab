@@ -761,3 +761,75 @@ def test_a_legitimate_tree_still_compiles_under_the_bounds():
     clause = QB.compile_tree_node(tree, {"player", "goals"}, bag)
     assert '"player" IN' in clause and '"goals" >' in clause
     assert len(bag.values) == 3
+
+
+# ------------------------------------------------- fail-closed tree values
+
+@pytest.mark.parametrize("bad_member", [
+    {"bad": 1}, ["nested"], ("nested",), None, float("inf"),
+])
+def test_tree_in_rejects_a_malformed_member_outright(bad_member):
+    """["A", <bad>] refuses the whole rule. The predecessor filtered the
+    bad member out, quietly turning the payload into IN ("A") -- a
+    different query than the one specified -- and no parameter may be
+    left behind by the failed rule."""
+    bag = QB.ParamBag()
+    tree = _rule("player", "select_any_in", ["A", bad_member])
+    with pytest.raises(ValueError):
+        QB.compile_tree_node(tree, {"player"}, bag)
+    assert bag.values == {}
+
+
+def _kinded_columns():
+    return {"games": QB.Column("games", "INTEGER", "integer"),
+            "average": QB.Column("average", "REAL", "float"),
+            "club": QB.Column("club", "TEXT", "text"),
+            "is_final": QB.Column("is_final", "INTEGER", "boolean"),
+            "date": QB.Column("date", "TEXT", "date"),
+            "updated_at": QB.Column("updated_at", "TEXT", "datetime")}
+
+
+@pytest.mark.parametrize("tree", [
+    _rule("games", "equal", 1.9),               # fraction into integer
+    _rule("games", "greater", "abc"),           # text into a number
+    _rule("games", "equal", True),              # bool is not a count
+    _rule("average", "between", "low", "high"),  # text range on a float
+    _rule("date", "equal", "15/06/2020"),       # not ISO
+    _rule("date", "equal", "2020-13-45"),       # impossible ISO
+    _rule("updated_at", "greater", "not a time"),
+    _rule("is_final", "equal", "yes"),          # non-boolean flag value
+    _rule("is_final", "equal", 1),              # even 1: true/false only
+    _rule("club", "equal", "A" * (QB.MAX_SCALAR_CHARS + 1)),
+])
+def test_tree_values_are_typed_by_column_kind(tree):
+    """The operator allowlist gates the operator; these gate the value.
+    A value that cannot mean what the column stores is refused, never
+    bound to compare wrongly -- and the failed rule leaves nothing in
+    the bag."""
+    bag = QB.ParamBag()
+    with pytest.raises(ValueError):
+        QB.compile_tree_node(tree, _kinded_columns(), bag)
+    assert bag.values == {}
+
+
+def test_tree_values_bind_in_storage_form_once_coerced():
+    columns = _kinded_columns()
+
+    bag = QB.ParamBag()
+    QB.compile_tree_node(_rule("is_final", "equal", True), columns, bag)
+    assert bag.values == {"p0": 1}      # flags are stored as 0/1
+
+    bag = QB.ParamBag()
+    QB.compile_tree_node(_rule("games", "equal", 100.0), columns, bag)
+    assert bag.values == {"p0": 100}    # integral float -> exact int
+
+    bag = QB.ParamBag()
+    QB.compile_tree_node(_rule("date", "between", "2020-06-01",
+                               "2020-06-30"), columns, bag)
+    assert bag.values == {"p0": "2020-06-01", "p1": "2020-06-30"}
+
+    bag = QB.ParamBag()
+    QB.compile_tree_node(
+        _rule("updated_at", "greater", "2020-06-15T14:30:00Z"),
+        columns, bag)
+    assert bag.values == {"p0": "2020-06-15T14:30:00Z"}

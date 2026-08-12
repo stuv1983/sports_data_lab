@@ -130,7 +130,18 @@ SPORT = Sport(
     ),
     query_column_kinds={
         "games.date": "date", "games.is_postseason": "boolean",
+        "clubs.updated_at": "datetime",
+        "club_player_register.dob": "date",
+        "club_player_records.match_date": "date",
+        "mlb_player_rivalry_games.is_win": "boolean",
+        # mlb_player_rivalry_games.game_date stays undeclared on purpose:
+        # it stores compact YYYYMMDD, not the ISO text the date compiler
+        # binds, so a date override would compare wrongly. Normalising it
+        # is a loader change, tracked separately.
     },
+    query_low_cardinality_columns=(
+        "games.club_now", "games.result", "games.round",
+    ),
     search_examples=(
         'club:"New York Yankees" games>=1000 sort:obscurity',
         'season.home_runs>=40 debut:1990..1999',

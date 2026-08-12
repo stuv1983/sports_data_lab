@@ -105,7 +105,18 @@ SPORT = Sport(
     query_column_kinds={
         "games.date": "date", "games.is_home": "boolean",
         "games.is_playoff": "boolean", "matches.date": "date",
+        "clubs.updated_at": "datetime",
+        "club_player_register.dob": "date",
+        "club_player_records.match_date": "date",
+        "teams.is_current": "boolean",
+        "franchises.is_active": "boolean",
+        "team_seasons.made_playoffs": "boolean",
+        "team_seasons.reached_finals": "boolean",
     },
+    query_low_cardinality_columns=(
+        "games.club_now", "games.club_hist", "games.opponent",
+        "games.result", "games.venue", "games.season_label",
+    ),
     search_examples=(
         'club:"Boston Celtics" games>=500 sort:obscurity',
         'game.points>=50 postseason:true',

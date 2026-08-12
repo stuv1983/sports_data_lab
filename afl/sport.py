@@ -183,11 +183,35 @@ SPORT = Sport(
     #: builder needs the application-level truth to offer the right
     #: operators.
     query_column_kinds={
-        "players.dob": "date",
-        "games.date": "date", "games.dob": "date",
+        # players.dob and games.dob stay undeclared on purpose: they mix
+        # ISO with "30-Jan-1987"-style text, so a date declaration would
+        # compile chronological comparisons that silently skip the
+        # non-ISO rows. games.birth_est is the uniformly-ISO estimate.
+        # Normalising dob is a loader change, tracked separately.
+        "games.date": "date",
+        "games.birth_est": "date",
         "games.is_home": "boolean", "games.is_final": "boolean",
         "matches.match_date": "date", "matches.is_final": "boolean",
+        "match_details.scheduled_datetime": "datetime",
+        "clubs.updated_at": "datetime",
+        "venue_match_records.match_date": "date",
+        "club_player_register.dob": "date",
+        "club_player_records.match_date": "date",
+        "historic_grids.date": "date",
+        "all_australian.is_captain": "boolean",
+        "all_australian.is_vice_captain": "boolean",
+        "hall_of_fame.is_legend": "boolean",
+        "rising_star_nominees.is_season_winner": "boolean",
+        "season_goals.is_club_leading": "boolean",
     },
+    #: Text columns worth a distinct-values scan when the visual tree
+    #: renders, so they become select widgets. An explicit allowlist, not
+    #: a guess: profiling every text column of a wide table cost seconds
+    #: per cold render, mostly on names and dates no select could hold.
+    query_low_cardinality_columns=(
+        "games.club_now", "games.club_hist", "games.opponent",
+        "games.result", "games.round", "games.venue",
+    ),
     search_examples=(
         'club:Hawthorn games>=200 sort:obscurity',
         'game.disposals>=40 postseason:true',

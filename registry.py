@@ -209,6 +209,13 @@ class Sport:
     #: builder must offer date pickers and true/false controls there,
     #: not substring matches and arbitrary arithmetic.
     query_column_kinds: dict = field(default_factory=dict)
+    #: ``("table.column", ...)`` text columns the visual tree may profile
+    #: for a select widget's value list. Profiling is a DISTINCT scan per
+    #: column, so which columns deserve one is the sport's explicit call
+    #: -- clubs, results, positions -- never "every text column", which
+    #: spent whole seconds scanning names and dates on each cold render.
+    #: Undeclared text columns stay free-text fields.
+    query_low_cardinality_columns: tuple = ()
     search_examples: tuple = ()
     grid_defaults: tuple = ()
     venue_display: dict = field(default_factory=dict)
