@@ -974,10 +974,16 @@ def store(con: sqlite3.Connection, season: int, round_name: str,
         f"VALUES ({', '.join('?' for _ in STORE_COLUMNS)})", player_rows)
 
     names = load_club_all_games.SOURCE_COLUMNS + ["imported_at"]
-    con.executemany(
-        f"INSERT OR REPLACE INTO club_match_sources ({', '.join(names)}) "
-        f"VALUES ({', '.join('?' for _ in names)})",
-        [tuple(row[name] for name in names) for row in source_rows])
+    payload = [tuple(row[name] for name in names) for row in source_rows]
+    # Both tables, always: club_match_sources is the live view the club
+    # pages read, and manual_round_fixtures is the copy that survives the
+    # rebuild which clears that view. Writing only the first is what let a
+    # round vanish from the app while its player rows stayed put.
+    for table in ("club_match_sources",
+                  load_club_all_games.MANUAL_SOURCE_TABLE):
+        con.executemany(
+            f"INSERT OR REPLACE INTO {table} ({', '.join(names)}) "
+            f"VALUES ({', '.join('?' for _ in names)})", payload)
     con.commit()
     return stats
 
@@ -1334,6 +1340,14 @@ def apply_stored(con: sqlite3.Connection, db_path: Path, season: int,
     # re-mirrors everything when it does -- skipping here loses nothing.
     if table_exists(con, "club_match_sources"):
         report("Restoring crowds and quarter scores")
+        # A replay after a rebuild finds the fixture rows gone: the store
+        # survived, the live view did not. Put them back before linking,
+        # so the round reappears in the club pages and its crowds and
+        # quarter scores reach `matches` exactly as on a first load.
+        restored = load_club_all_games.restore_manual_sources(con)
+        if restored:
+            print(f"  restored {restored:,} fixture rows into "
+                  f"club_match_sources")
         counts = load_club_all_games.link_sources(con)
         print("  link: " + ", ".join(
             f"{k}={v}" for k, v in counts.items() if v))
@@ -1540,6 +1554,12 @@ def forget(db_path: Path, season: int, round_name: str) -> int:
         sources = con.execute(
             "DELETE FROM club_match_sources WHERE season = ? AND round = ? "
             "AND source_game_url IS NULL", (season, source_round)).rowcount
+        # The durable copy goes with them, or the next rebuild would put
+        # the forgotten round straight back.
+        if table_exists(con, load_club_all_games.MANUAL_SOURCE_TABLE):
+            con.execute(
+                f"DELETE FROM {load_club_all_games.MANUAL_SOURCE_TABLE} "
+                f"WHERE season = ? AND round = ?", (season, source_round))
         con.commit()
         print(f"Dropped {removed:,} stored player rows and {sources} fixture "
               f"rows for round {round_name}, {season}.")
@@ -1725,6 +1745,10 @@ def remove(db_path: Path, season: int, round_name: str, *,
         con.execute(
             "DELETE FROM club_match_sources WHERE season=? AND round=? "
             "AND source_game_url IS NULL", (season, source_round))
+        if table_exists(con, load_club_all_games.MANUAL_SOURCE_TABLE):
+            con.execute(
+                f"DELETE FROM {load_club_all_games.MANUAL_SOURCE_TABLE} "
+                f"WHERE season=? AND round=?", (season, source_round))
         con.commit()
     finally:
         con.close()

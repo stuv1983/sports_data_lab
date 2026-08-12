@@ -70,6 +70,27 @@ SOURCE_COLUMNS = [
      for q in (1, 2, 3, 4)
      for stat in ("goals", "behinds", "points")]
 
+#: Which of SOURCE_COLUMNS are text rather than numbers. Named once: the
+#: live table and the durable store below must not drift apart.
+_TEXT_SOURCE_COLUMNS = {
+    "source_club_id", "source_club_label", "round", "team_position",
+    "opponent_raw", "scoring_for_raw", "scoring_against_raw", "result",
+    "venue_raw", "date_text", "match_date", "match_time", "match_datetime",
+    "source_game_url", "source_game_key", "team_code_low", "team_code_high",
+    "home_team_raw", "away_team_raw"}
+
+#: The durable copy of the fixture rows a hand-entered round writes.
+#:
+#: `club_match_sources` is rebuilt wholesale from the cached club pages --
+#: write_sources() clears it first -- and that scrape lags the live season
+#: by weeks. A round typed in ahead of it therefore had its fixture rows
+#: deleted by the next rebuild and nothing to put them back, so the round
+#: disappeared from Past Games, the club explorer and the ground explorer
+#: while its player rows sat correctly in `games`. This table is what the
+#: round loader writes them to, and restore_manual_sources() is what puts
+#: them back after each wipe.
+MANUAL_SOURCE_TABLE = "manual_round_fixtures"
+
 # Fields both club pages report identically about the same match.
 SHARED_FIELDS = ["season", "round", "match_date", "match_time", "venue_raw",
                  "attendance"]
@@ -99,7 +120,7 @@ def columns(con: sqlite3.Connection, table: str) -> set[str]:
 
 def create_schema(con: sqlite3.Connection) -> None:
     source_defs = ",\n            ".join(
-        f"{name} {'TEXT' if name in {'source_club_id','source_club_label','round','team_position','opponent_raw','scoring_for_raw','scoring_against_raw','result','venue_raw','date_text','match_date','match_time','match_datetime','source_game_url','source_game_key','team_code_low','team_code_high','home_team_raw','away_team_raw'} else 'INTEGER'}"
+        f"{name} {'TEXT' if name in _TEXT_SOURCE_COLUMNS else 'INTEGER'}"
         for name in SOURCE_COLUMNS)
     con.execute(f"""
         CREATE TABLE IF NOT EXISTS club_match_sources (
@@ -107,6 +128,14 @@ def create_schema(con: sqlite3.Connection) -> None:
             match_id INTEGER,
             match_status TEXT NOT NULL DEFAULT 'unlinked',
             source_fetched_at TEXT,
+            imported_at TEXT,
+            PRIMARY KEY (source_club_id, source_game_key)
+        )""")
+    # Same shape, minus the columns the live table derives for itself
+    # (match_id and match_status are link state, not source data).
+    con.execute(f"""
+        CREATE TABLE IF NOT EXISTS {MANUAL_SOURCE_TABLE} (
+            {source_defs},
             imported_at TEXT,
             PRIMARY KEY (source_club_id, source_game_key)
         )""")
@@ -150,6 +179,12 @@ def create_schema(con: sqlite3.Connection) -> None:
     ):
         con.execute(statement)
     con.commit()
+    # Adopt any hand-entered rows this database already carries. run()
+    # ensures the schema before write_sources() clears the live table, so
+    # a round loaded by an earlier build is taken into the durable store
+    # on the first rebuild after this change and restored immediately
+    # afterwards -- no re-run of the CSV load, no window where it is lost.
+    seed_manual_sources(con)
 
 
 # --------------------------------------------------------------------------
@@ -202,6 +237,62 @@ def write_sources(con: sqlite3.Connection, observations: list[MatchObservation],
         [tuple(obs.flat()[name] for name in SOURCE_COLUMNS) + (now,)
          for obs in observations])
     con.commit()
+    # The DELETE above is indiscriminate, and the scrape it refills from
+    # lags the live season -- so this is exactly where a hand-entered
+    # round used to be lost. Put those rows back before anything links.
+    restored = restore_manual_sources(con)
+    if restored:
+        print(f"  restored {restored:,} hand-entered fixture rows "
+              f"the club pages do not carry yet")
+
+
+def restore_manual_sources(con: sqlite3.Connection) -> int:
+    """Re-apply the durable hand-entered fixture rows. Returns rows added.
+
+    The scrape always wins: a row is inserted only where that club has no
+    row for that game key already, so a real fetched page is never
+    overwritten by a typed-in one. That makes this safe to call as often
+    as anything wants to -- it is the same idempotent statement whether
+    the round is still missing upstream or arrived there last week.
+    """
+    if not table_exists(con, MANUAL_SOURCE_TABLE):
+        return 0
+    stored = columns(con, MANUAL_SOURCE_TABLE)
+    shared = [name for name in SOURCE_COLUMNS + ["imported_at"]
+              if name in stored]
+    names = ", ".join(shared)
+    restored = con.execute(
+        f"INSERT OR IGNORE INTO club_match_sources ({names}) "
+        f"SELECT {names} FROM {MANUAL_SOURCE_TABLE}").rowcount
+    con.commit()
+    return max(restored, 0)
+
+
+def seed_manual_sources(con: sqlite3.Connection) -> int:
+    """Adopt hand-entered fixture rows written before the store existed.
+
+    Rounds loaded by an earlier build wrote their fixture rows straight
+    into club_match_sources and nowhere else, so the first rebuild after
+    this change would still lose them. A NULL source_game_url is what
+    marks a row as typed in rather than fetched -- the same marker
+    ``forget`` and ``remove`` already delete on -- so the rows can be
+    adopted exactly once, and an existing database is protected without
+    re-running any CSV load.
+    """
+    if not (table_exists(con, MANUAL_SOURCE_TABLE)
+            and table_exists(con, "club_match_sources")):
+        return 0
+    stored = columns(con, MANUAL_SOURCE_TABLE)
+    shared = [name for name in SOURCE_COLUMNS + ["imported_at"]
+              if name in stored and name in columns(con,
+                                                    "club_match_sources")]
+    names = ", ".join(shared)
+    seeded = con.execute(
+        f"INSERT OR IGNORE INTO {MANUAL_SOURCE_TABLE} ({names}) "
+        f"SELECT {names} FROM club_match_sources "
+        f"WHERE source_game_url IS NULL").rowcount
+    con.commit()
+    return max(seeded, 0)
 
 
 # --------------------------------------------------------------------------

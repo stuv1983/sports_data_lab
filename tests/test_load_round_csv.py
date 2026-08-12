@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pytest
 
+from utils.afl import load_club_all_games as C
 from utils.afl import load_round_csv as L
 
 SUMMARY = (
@@ -971,3 +972,181 @@ def test_the_replay_writes_games_even_before_the_marquee_tagger_ran():
     row = con.execute("SELECT player_id, season, round, goals, match_id "
                       "FROM games").fetchone()
     assert row == (13260, 2026, "23", 2.0, None)
+
+
+# --------------------------------------------------------------------------
+# surviving a rebuild
+#
+# A hand-entered round is two halves. The player rows go to
+# `manual_round_games`, which rides through a rebuild and is replayed into
+# `games` afterwards -- that half always worked. The fixture rows (venue,
+# crowd, quarter scores) go to `club_match_sources`, which the club-page
+# loader rebuilds wholesale from a scrape that lags the live season by
+# weeks: it clears the table and refills it from pages that do not carry
+# the round yet. Nothing put those rows back, so rounds 22 and 23 of 2026
+# sat correctly in `games` while Past Games, the club explorer and the
+# ground explorer all stopped at round 21.
+
+
+def _sources_con(tmp_path):
+    con = sqlite3.connect(tmp_path / "afl.db")
+    C.create_schema(con)
+    return con
+
+
+def _fixture_rows(**over):
+    """The two rows a hand-entered fixture writes, one per club."""
+    rows = []
+    for club, position in (("collingwood", "H"), ("west_coast", "A")):
+        row = {name: None for name in C.SOURCE_COLUMNS}
+        row.update({
+            "source_club_id": club, "source_club_label": club.title(),
+            "season": 2026, "round": "R23", "is_final": 0,
+            "team_position": position, "venue_raw": "Docklands",
+            "attendance": 25052, "date_text": "2026-08-06",
+            "match_date": "2026-08-06", "source_game_key": "CWWC20260806",
+            "source_game_url": None, "imported_at": "2026-08-11T00:00:00",
+        })
+        row.update(over)
+        rows.append(row)
+    return rows
+
+
+def _insert(con, table, rows):
+    names = C.SOURCE_COLUMNS + ["imported_at"]
+    con.executemany(
+        f"INSERT OR REPLACE INTO {table} ({', '.join(names)}) "
+        f"VALUES ({', '.join('?' for _ in names)})",
+        [tuple(row[name] for name in names) for row in rows])
+    con.commit()
+
+
+def test_a_rebuild_wipe_no_longer_loses_a_hand_entered_round(tmp_path):
+    """The regression, at the exact statement that caused it: the club
+    loader clears the table and the scrape it refills from carries
+    nothing for this round yet."""
+    con = _sources_con(tmp_path)
+    rows = _fixture_rows()
+    _insert(con, "club_match_sources", rows)
+    _insert(con, C.MANUAL_SOURCE_TABLE, rows)
+
+    C.write_sources(con, [], None)
+
+    back = con.execute(
+        "SELECT source_club_id, round, attendance, venue_raw "
+        "FROM club_match_sources ORDER BY source_club_id").fetchall()
+    assert back == [("collingwood", "R23", 25052, "Docklands"),
+                    ("west_coast", "R23", 25052, "Docklands")]
+    con.close()
+
+
+def test_without_the_durable_copy_the_wipe_still_empties_the_table(tmp_path):
+    """The control: nothing is being restored by accident, and a database
+    with no hand-entered round is untouched by the new step."""
+    con = _sources_con(tmp_path)
+    _insert(con, "club_match_sources", _fixture_rows())
+
+    C.write_sources(con, [], None)
+
+    assert con.execute(
+        "SELECT COUNT(*) FROM club_match_sources").fetchone()[0] == 0
+    con.close()
+
+
+def test_a_fetched_row_is_never_overwritten_by_the_typed_in_one(tmp_path):
+    """Once the scrape reaches the round its fetched page is the truth.
+    Restoring must defer to it rather than paste the typed-in crowd back
+    over a real one."""
+    con = _sources_con(tmp_path)
+    _insert(con, C.MANUAL_SOURCE_TABLE, _fixture_rows())
+    _insert(con, "club_match_sources", _fixture_rows(
+        attendance=25999, source_game_url="https://afltables/r23"))
+
+    assert C.restore_manual_sources(con) == 0
+
+    kept = con.execute(
+        "SELECT DISTINCT attendance, source_game_url "
+        "FROM club_match_sources").fetchall()
+    assert kept == [(25999, "https://afltables/r23")]
+    con.close()
+
+
+def test_restoring_is_idempotent(tmp_path):
+    """It runs on every club-page load and every replay, so running it
+    twice must not duplicate a fixture or fail on the second pass."""
+    con = _sources_con(tmp_path)
+    _insert(con, C.MANUAL_SOURCE_TABLE, _fixture_rows())
+
+    assert C.restore_manual_sources(con) == 2
+    assert C.restore_manual_sources(con) == 0
+    assert con.execute(
+        "SELECT COUNT(*) FROM club_match_sources").fetchone()[0] == 2
+    con.close()
+
+
+def test_rows_loaded_before_the_store_existed_are_adopted(tmp_path):
+    """A database whose rounds were loaded by an earlier build has the
+    fixture rows only in the live table. They are adopted once, so the
+    first rebuild after this change protects them instead of being the
+    last thing that sees them."""
+    con = _sources_con(tmp_path)
+    con.execute(f"DELETE FROM {C.MANUAL_SOURCE_TABLE}")
+    _insert(con, "club_match_sources", _fixture_rows())
+
+    assert C.seed_manual_sources(con) == 2
+    assert con.execute(
+        f"SELECT COUNT(*) FROM {C.MANUAL_SOURCE_TABLE}").fetchone()[0] == 2
+    # And the round now survives the wipe that would have lost it.
+    C.write_sources(con, [], None)
+    assert con.execute(
+        "SELECT COUNT(*) FROM club_match_sources").fetchone()[0] == 2
+    con.close()
+
+
+def test_scraped_rows_are_not_adopted_as_hand_entered(tmp_path):
+    """A NULL source_game_url is the marker. Adopting a fetched row would
+    make the scrape's own data immortal, restored forever after the club
+    pages legitimately dropped or corrected it."""
+    con = _sources_con(tmp_path)
+    con.execute(f"DELETE FROM {C.MANUAL_SOURCE_TABLE}")
+    _insert(con, "club_match_sources",
+            _fixture_rows(source_game_url="https://afltables/r23"))
+
+    assert C.seed_manual_sources(con) == 0
+    assert con.execute(
+        f"SELECT COUNT(*) FROM {C.MANUAL_SOURCE_TABLE}").fetchone()[0] == 0
+    con.close()
+
+
+def test_forget_drops_the_durable_copy_too(tmp_path):
+    """Otherwise the next rebuild restores a round deliberately forgotten
+    because the source dataset finally published it."""
+    path = tmp_path / "afl.db"
+    con = sqlite3.connect(path)
+    C.create_schema(con)
+    con.execute("CREATE TABLE manual_round_games (season INTEGER, "
+                "round TEXT, player_id INTEGER)")
+    con.execute("INSERT INTO manual_round_games VALUES (2026, '23', 1)")
+    _insert(con, "club_match_sources", _fixture_rows())
+    _insert(con, C.MANUAL_SOURCE_TABLE, _fixture_rows())
+    con.commit()
+    con.close()
+
+    assert L.forget(path, 2026, "23") == 0
+
+    con = sqlite3.connect(path)
+    assert con.execute(
+        f"SELECT COUNT(*) FROM {C.MANUAL_SOURCE_TABLE}").fetchone()[0] == 0
+    assert con.execute(
+        "SELECT COUNT(*) FROM club_match_sources").fetchone()[0] == 0
+    con.close()
+
+
+def test_the_durable_store_rides_through_a_staged_rebuild():
+    """A staged rebuild starts from a fresh file and seeds the durable
+    tables into it. A store left out of that list is a store the build
+    cannot see -- which is how the player half was lost once already."""
+    import database_updates
+
+    assert "manual_round_fixtures" in database_updates.PRESEEDED_TABLES["afl"]
+    assert "manual_round_games" in database_updates.PRESEEDED_TABLES["afl"]

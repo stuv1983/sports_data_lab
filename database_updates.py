@@ -638,11 +638,20 @@ CARRIED_TABLES: dict[str, tuple[str, ...]] = {"afl": ("historic_grids",)}
 #: it), never be pasted over the finished build the way CARRIED_TABLES
 #: rows are.
 #:
+#: `manual_round_fixtures` is the fixture half of that store -- the venue,
+#: crowd and quarter scores the round summary stated. Those rows live in
+#: `club_match_sources`, which the club-page loader rebuilds wholesale from
+#: a scrape that lags the live season, so without a durable copy riding
+#: through the build a hand-entered round kept its player rows and lost
+#: its fixtures: present in `games`, absent from Past Games and every club
+#: and ground page.
+#:
 #: `historic_grids` is seeded here too so the build is complete before the
 #: health check runs; _carry_forward still copies it afterwards, which is
 #: idempotent, and keeps the non-rebuild paths covered.
 PRESEEDED_TABLES: dict[str, tuple[str, ...]] = {
-    "afl": ("manual_round_games", "historic_grids")}
+    "afl": ("manual_round_games", "manual_round_fixtures",
+            "historic_grids")}
 
 
 def _table_columns(con, table: str, schema: str = "main") -> list[str]:
