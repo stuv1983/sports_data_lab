@@ -67,7 +67,8 @@ def fixture():
 
 
 def G():
-    return core.Generic(core.Schema(
+    return core.Generic(core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals",
+
         stats=["frees_against", "disposals", "goals"],
         required_games_cols=(), required_player_cols=()))
 

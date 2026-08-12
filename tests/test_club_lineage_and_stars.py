@@ -27,7 +27,8 @@ import sports
 # ------------------------------------------------------------- lineage
 
 def schema_with_lineage():
-    return core.Schema(
+    return core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals",
+
         clubs=["Brisbane Lions", "Carlton"],
         club_lineage={"Brisbane Lions":
                       ["Brisbane Lions", "Brisbane Bears", "Fitzroy"]},
@@ -151,7 +152,8 @@ def star_fixture():
 
 def test_square_reports_the_obscurity_range():
     con = star_fixture()
-    schema = core.Schema(required_games_cols=(), required_player_cols=())
+    schema = core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals",
+        required_games_cols=(), required_player_cols=())
     sq = core.square(
         con, [("SELECT player_id FROM players WHERE career_games >= ?", [1])],
         schema)
@@ -168,7 +170,8 @@ def test_square_reports_the_obscurity_range():
 def test_square_stars_are_not_trivially_five_under_other_orderings():
     """The face rating is informative whenever ranking is not by obscurity."""
     con = star_fixture()
-    schema = core.Schema(required_games_cols=(), required_player_cols=())
+    schema = core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals",
+        required_games_cols=(), required_player_cols=())
     sq = core.square(
         con, [("SELECT player_id FROM players WHERE career_games >= ?", [1])],
         schema, order="newest")
@@ -178,7 +181,8 @@ def test_square_stars_are_not_trivially_five_under_other_orderings():
 
 def test_empty_square_has_no_range():
     con = star_fixture()
-    schema = core.Schema(required_games_cols=(), required_player_cols=())
+    schema = core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals",
+        required_games_cols=(), required_player_cols=())
     sq = core.square(
         con, [("SELECT player_id FROM players WHERE career_games > ?", [999])],
         schema)

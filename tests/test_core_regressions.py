@@ -25,7 +25,8 @@ def test_matches_player_uses_the_same_compiled_constraints_as_solver():
                     [(1, "Right Player", 50.0), (2, "Wrong Era", 40.0)])
     con.executemany("INSERT INTO games VALUES (?, ?, ?)",
                     [(1, "A", 2020), (2, "A", 1990)])
-    schema = core.Schema(required_games_cols=(), required_player_cols=())
+    schema = core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals",
+        required_games_cols=(), required_player_cols=())
     constraints = [
         ("SELECT player_id FROM games WHERE club_now=?", ["A"]),
         ("SELECT player_id FROM games WHERE season>=?", [2000]),
@@ -52,7 +53,8 @@ def run():
             (2, "Known Two", 2000, 2010, 200, 50, 10, 1980, 1, "A", 10.0, "known two"),
         ],
     )
-    schema = core.Schema(required_games_cols=(), required_player_cols=())
+    schema = core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals",
+        required_games_cols=(), required_player_cols=())
     selects = []
     con.set_trace_callback(lambda sql: selects.append(sql) if sql.lstrip().upper().startswith("SELECT") else None)
     square = core.square(
@@ -108,7 +110,8 @@ def _bonds_db():
         # A player for whom both really did happen in the same season/row.
         ("onecard", "Cleveland", 1971, 102),
     ])
-    schema = core.Schema(required_games_cols=(), required_player_cols=())
+    schema = core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals",
+        required_games_cols=(), required_player_cols=())
     return con, schema
 
 

@@ -192,12 +192,22 @@ finally:
     app.run()
 
     assert not list(app.exception)
-    assert app.pills[0].value == ["afl", "nba", "mlb", "nfl"]
-    assert any(
-        button.label == "Update selected databases" for button in app.button)
-    assert any(
-        button.label == "Check for new Rising Star nominations"
-        for button in app.button)
+    # The web process is strictly read-only: no control on the page may
+    # start a database write. Updates, scans, round loads and forgets are
+    # shown as the offline commands that run them instead.
+    forbidden = {"Update selected databases", "Load this round",
+                 "Check this round", "Scan Gridley for new games",
+                 "Check for new Rising Star nominations"}
+    assert not any(button.label in forbidden for button in app.button)
+    assert not any(button.label.startswith("Forget round")
+                   for button in app.button)
+    shown_commands = "\n".join(str(block.value) for block in app.code)
+    assert "database_updates.py run --event regular" in shown_commands
+    assert "database_updates.py manual-round-load" in shown_commands
+    assert ("database_updates.py manual-round-forget "
+            "--season 2026 --round 23") in shown_commands
+    assert "database_updates.py gridley-scan" in shown_commands
+    assert "database_updates.py rising-star-scan" in shown_commands
     # How current the award is has to be legible without running a check.
     labels = [metric.label for metric in app.metric]
     assert "Latest 2026 nomination" in labels
@@ -205,11 +215,6 @@ finally:
     assert any("Round 22" == metric.value for metric in app.metric)
     assert any("Jesse Dattoli" in str(element.value)
                for element in app.success)
-    # Hand-entered rounds are enterable here, not only from the desktop
-    # window and the command line.
-    assert any(button.label == "Load this round" for button in app.button)
-    assert any(button.label == "Forget round 23, 2026"
-               for button in app.button)
 
 
 # --------------------------------------------------------------------------
@@ -316,7 +321,7 @@ def test_a_job_in_progress_is_announced_above_the_tabs():
 
     warnings = " ".join(str(element.value) for element in app.warning)
     assert "Round load in progress" in warnings
-    assert "disabled until it finishes" in warnings
+    assert "until it finishes" in warnings
 
 
 def test_nothing_running_means_no_banner_and_no_progress_bar():

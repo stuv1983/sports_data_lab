@@ -4,7 +4,6 @@ import sqlite3
 import streamlit as st
 
 import accounts
-import data_paths
 import database_updates
 import db_pool
 
@@ -38,15 +37,6 @@ def _change_value(previous, current, key):
         return f"{_display_size(new)} ({delta / 1_048_576:+,.1f} MB)"
     return f"{int(new):,} ({delta:+,})"
 
-
-#: The events an administrator can start by hand, in plain words.
-#: brownlow-awards and grand-final-awards are deliberately absent: both are
-#: calendar-guarded jobs that do nothing away from their one due date, so
-#: offering them here would only produce a job that silently skips.
-_UPDATE_EVENTS = {
-    "regular": "Scores and statistics",
-    "full": "Everything including awards",
-}
 
 #: How a freshness verdict reads in the table.
 _CURRENCY_LABELS = {
@@ -458,8 +448,8 @@ def _render_manual_round_status(status):
         st.error(f"{kind} of {label} failed: {status.get('error')}")
         st.caption("Nothing was written to the live database.")
     elif state == "complete" and status.get("dry_run"):
-        st.success(f"{label} checked. Nothing was written — use **Load this "
-                   "round** to apply it.")
+        st.success(f"{label} checked. Nothing was written — rerun the "
+                   "command without `--dry-run` to apply it.")
     elif state == "complete":
         st.success(f"{label} loaded and the AFL database was replaced. Use "
                    "**Reload updated databases** above to pick it up.")
@@ -499,122 +489,12 @@ def _render_manual_rounds(summary):
         )
 
 
-def _rising_star_edit_form(user, active):
-    """Nominate a player, or record a suspension or vote count.
-
-    Players are chosen from a search rather than typed. A typed name that
-    does not resolve loads as `unmatched` -- kept for audit, invisible to
-    the solver -- so the nomination would look saved and answer nothing.
-    Picking from the database cannot produce that.
-    """
-    from utils.afl import rising_star_manual as manual
-
-    st.caption(
-        "Hand-entered nominations are stored as a source file and re-applied "
-        "on every load, so a rebuild replays them rather than losing them. "
-        "A suspension or a vote count is recorded against the published "
-        "nomination and keeps its match statistics."
-    )
-
-    term = st.text_input(
-        "Find a player", key="rs_player_search",
-        placeholder="Surname, or part of a name",
-        help="Search the players already in the database.")
-    if len(term.strip()) < 2:
-        st.caption("Type at least two characters to search.")
-        return
-
-    try:
-        con = db_pool.open_read_only(data_paths.default_db("afl"))
-        try:
-            matches = manual.search_players(con, term)
-        finally:
-            con.close()
-    except (sqlite3.Error, OSError) as exc:
-        st.error(f"Could not search players: {exc}")
-        return
-    if not matches:
-        st.warning(f"No player matches {term!r}.")
-        return
-
-    chosen = st.selectbox(
-        "Player", matches, format_func=lambda row: row["label"],
-        key="rs_player_choice",
-        help="Career span, games and clubs are shown because a name is not "
-             "an identity — two Bailey Williamses played in 2026.")
-
-    today = dt.date.today()
-    with st.form("rising_star_edit"):
-        fields = st.container(horizontal=True)
-        season = fields.number_input(
-            "Season", min_value=1993, max_value=today.year + 1,
-            value=min(max(chosen["final_season"], 1993), today.year),
-            step=1, format="%d", key="rs_season")
-        round_number = fields.number_input(
-            "Round", min_value=0, max_value=30, value=0, step=1,
-            format="%d", key="rs_round",
-            help="The round the nomination was for. Ignored when you are "
-                 "only recording a suspension or votes.")
-        club = fields.text_input("Club", value=(chosen["clubs"] or "").split(",")[0].strip(),
-                                 key="rs_club")
-        votes = fields.number_input(
-            "Votes", min_value=0, max_value=200, value=0, step=1,
-            format="%d", key="rs_votes",
-            help="Final panel votes, published with the winner. Leave at 0 "
-                 "to record none.")
-        ineligible = st.checkbox(
-            "Ineligible to win the Rising Star due to suspension",
-            key="rs_ineligible",
-            help="Records that a nominated player was later suspended and "
-                 "so cannot win. The nomination itself stands.")
-        winner = st.checkbox("Won the Rising Star this season", key="rs_winner")
-        buttons = st.container(horizontal=True)
-        nominate = buttons.form_submit_button(
-            "Add nomination", icon=":material/add:", type="primary",
-            disabled=active)
-        annotate = buttons.form_submit_button(
-            "Record against existing nomination", icon=":material/edit:",
-            disabled=active)
-
-    if not (nominate or annotate):
-        return
-    try:
-        manual.upsert(
-            int(season), chosen["player"],
-            # The club is recorded either way. On an annotation it is what
-            # tells two same-named nominees apart, and without it the
-            # loader refuses to guess which one was suspended.
-            club=club,
-            # A round is what makes an entry a nomination. Passing it on an
-            # annotation would turn "this nominee was suspended" into a
-            # second nomination in whichever round the box happened to show.
-            round_number=int(round_number) if nominate else None,
-            ineligible=True if ineligible else None,
-            votes=int(votes) or None,
-            winner=True if winner else None,
-            edited_by=getattr(user, "email", "admin"))
-    except (OSError, ValueError) as exc:
-        st.error(f"{type(exc).__name__}: {exc}")
-        return
-
-    try:
-        database_updates.apply_rising_star_edits()
-    except (OSError, RuntimeError, sqlite3.Error) as exc:
-        st.error(f"Saved the edit, but the database was not updated: {exc}")
-        return
-    st.session_state["database_update_notice"] = {
-        "kind": "success",
-        "message": (
-            f"{chosen['player']} saved for {int(season)} and the AFL "
-            "database was updated. Use Reload updated databases to pick it "
-            "up in this session."
-        ),
-    }
-    st.rerun()
-
-
 def _render_rising_star_edits():
-    """The hand-entered rows, so an edit can be found and undone."""
+    """The hand-entered rows, read-only, so an edit can be found.
+
+    Adding, amending or undoing one happens offline through
+    `utils.afl.rising_star_manual` -- the web process never writes.
+    """
     from utils.afl import rising_star_manual as manual
 
     try:
@@ -636,46 +516,23 @@ def _render_rising_star_edits():
         "Edited by": row.get("edited_by"),
     } for row in entries], width="stretch", hide_index=True)
 
-    labels = {
-        f"{row.get('season')} {row.get('player')}": row.get("source_key")
-        for row in entries
-    }
-    remove = st.selectbox("Undo an edit", ["—", *labels], key="rs_remove")
-    if remove != "—" and st.button("Remove this edit",
-                                   icon=":material/undo:", key="rs_remove_go"):
-        manual.remove(labels[remove])
-        try:
-            database_updates.apply_rising_star_edits()
-        except (OSError, RuntimeError, sqlite3.Error) as exc:
-            st.error(f"Removed the edit, but the reload failed: {exc}")
-            return
-        st.session_state["database_update_notice"] = {
-            "kind": "success",
-            "message": f"Removed the hand-entered row for {remove}.",
-        }
-        st.rerun()
-
 
 def _render_manual_round_section(active):
-    """Enter a round the upstream dataset has not published yet.
+    """Follow hand-entered rounds; entering one happens offline.
 
     afl/build_db.py does not scrape AFL Tables -- its robots.txt disallows
     it -- so game data arrives through the cached fitzRoy dataset, which
-    lags the live season by a round or two. This is the supported way to
-    close that gap, and it is the same loader the command line and the
-    desktop window use, so all three agree on what a valid round is.
-
-    Nothing here writes to the live database directly: a round is loaded
-    into a staged copy and promoted only if the loader accepted it, and the
-    parsed rows are stored so a rebuild replays them instead of losing
-    them.
+    lags the live season by a round or two. Hand-entered rounds close that
+    gap, but the web process is strictly read-only: it accepts no uploads
+    and starts no load. Rounds are checked and loaded from the command
+    line (the same loader the desktop window uses), and this tab shows
+    what is stored and how the last load went.
     """
     st.markdown("#### Hand-entered round results")
     st.caption(
         "For a round that has been played but not yet published upstream. "
-        "Upload the round summary and one file per match, copied from the "
-        "AFL Tables match pages. Player statistics, Brownlow votes where "
-        "published, debutants and the ladder all follow from these files."
+        "Rounds are loaded offline from the command line; this page only "
+        "reports what is stored and follows a load's progress."
     )
 
     try:
@@ -685,69 +542,20 @@ def _render_manual_round_section(active):
         st.warning(f"Could not read stored rounds: {exc}")
     _render_manual_rounds(summary)
 
-    today = dt.date.today()
-    with st.form("manual_round_form"):
-        fields = st.container(horizontal=True)
-        season = fields.number_input(
-            "Season", min_value=1897, max_value=today.year + 1,
-            value=today.year, step=1, format="%d")
-        round_name = fields.text_input(
-            "Round", value="",
-            help="The round as AFL Tables names it: 23, or a final such as EF.")
-        # .csv only: the loader globs *.csv, so anything else would upload
-        # successfully and then be invisible to it -- the worst of both.
-        uploads = st.file_uploader(
-            "Round summary and match files", accept_multiple_files=True,
-            type=["csv"],
-            help="One round summary plus one file per match. They are "
-                 "paired to fixtures by the club names inside them, never "
-                 "by filename, so a misnamed file cannot attach statistics "
-                 "to the wrong match.")
-        buttons = st.container(horizontal=True)
-        check = buttons.form_submit_button(
-            "Check this round", icon=":material/fact_check:")
-        load = buttons.form_submit_button(
-            "Load this round", icon=":material/upload_file:",
-            disabled=active, type="primary")
-
-    if check or load:
-        if not str(round_name).strip():
-            st.error("Enter the round, as AFL Tables names it.")
-        elif not uploads:
-            st.error("Upload the round summary and one file per match.")
-        else:
-            folder = database_updates.upload_round_files(
-                int(season), str(round_name).strip(),
-                [(item.name, item.getvalue()) for item in uploads])
-            if check:
-                # A dry run writes nothing, so it runs inline: the operator
-                # is waiting for its verdict before deciding to load.
-                with st.status("Checking the round...", expanded=True) as box:
-                    status = database_updates.run_manual_round_load(
-                        folder, int(season), str(round_name).strip(),
-                        dry_run=True)
-                    box.update(
-                        label=("Round checked" if status.get("state") == "complete"
-                               else "The round has problems"),
-                        state=("complete" if status.get("state") == "complete"
-                               else "error"))
-                _render_manual_round_status(status)
-                return
-            try:
-                pid = database_updates.start_manual_round_load_background(
-                    folder, int(season), str(round_name).strip())
-            except (OSError, RuntimeError, ValueError) as exc:
-                st.error(f"{type(exc).__name__}: {exc}")
-            else:
-                st.session_state["database_update_notice"] = {
-                    "kind": "success",
-                    "message": (
-                        f"Loading round {round_name}, {season} in the "
-                        f"background (PID {pid}). It takes about a minute — "
-                        "use Refresh status to follow it."
-                    ),
-                }
-                st.rerun()
+    st.markdown("##### Load a round from the command line")
+    st.caption(
+        "Put the round summary and one CSV per match in a folder, copied "
+        "from the AFL Tables match pages. Run the check first; the real "
+        "load stages a copy of the database and promotes it only if the "
+        "loader accepts the round."
+    )
+    st.code(
+        "python database_updates.py manual-round-load "
+        "--dir <folder> --season <year> --round <round> --dry-run\n"
+        "python database_updates.py manual-round-load "
+        "--dir <folder> --season <year> --round <round>",
+        language="bash",
+    )
 
     # Poll only while there is something to poll. When the fragment sees
     # the job finish it reruns the app, which lands here on the other
@@ -761,32 +569,19 @@ def _render_manual_round_section(active):
     redundant = [row for row in (summary.get("rounds") or [])
                  if row.get("upstream_has")]
     if redundant:
-        with st.expander("Forget a round the upstream dataset now carries"):
+        with st.expander("Rounds the upstream dataset now carries"):
             st.caption(
                 "Dropping a stored round is safe once the rebuild produces "
-                "it: the upstream rows are already the authority, and this "
-                "only removes the hand-entered copy underneath them."
+                "it: the upstream rows are already the authority, and "
+                "forgetting only removes the hand-entered copy underneath "
+                "them. Run offline:"
             )
             for row in redundant:
-                if st.button(
-                    f"Forget round {row['round']}, {row['season']}",
-                    key=f"forget_{row['season']}_{row['round']}",
-                    disabled=active, icon=":material/delete:",
-                ):
-                    try:
-                        database_updates.forget_manual_round(
-                            row["season"], row["round"])
-                    except (OSError, RuntimeError, sqlite3.Error) as exc:
-                        st.error(f"{type(exc).__name__}: {exc}")
-                    else:
-                        st.session_state["database_update_notice"] = {
-                            "kind": "success",
-                            "message": (
-                                f"Round {row['round']}, {row['season']} is no "
-                                "longer stored by hand."
-                            ),
-                        }
-                        st.rerun()
+                st.code(
+                    "python database_updates.py manual-round-forget "
+                    f"--season {row['season']} --round {row['round']}",
+                    language="bash",
+                )
 
 
 def _render_rising_star_scan(status):
@@ -990,8 +785,8 @@ def _admin_banner(active, state, status, gridley_status, rising_star_status,
         if (job or {}).get("state") in {"starting", "running"}:
             st.warning(
                 f"**{label} in progress** — started "
-                f"{_elapsed_time(job.get('started_at'))} ago. Every other "
-                "database job is disabled until it finishes.",
+                f"{_elapsed_time(job.get('started_at'))} ago. The update "
+                "lock holds every other database job until it finishes.",
                 icon=":material/hourglass_top:")
             return
     st.warning("A database job is in progress.",
@@ -1000,8 +795,9 @@ def _admin_banner(active, state, status, gridley_status, rising_star_status,
 
 def _admin_schedule_tab() -> None:
     st.markdown("#### Automatic schedule")
-    st.caption("Every job below also has a button on its own tab, for "
-               "picking something up early rather than waiting for a timer.")
+    st.caption("Every job below can also be run early from the command "
+               "line -- its tab shows the exact command -- rather than "
+               "waiting for a timer.")
     st.dataframe([
         {"Job": "Scores and statistics",
          "Runs": "Fri, Sat, Sun, Mon at 12:10 am Sydney"},
@@ -1225,65 +1021,22 @@ def _admin_databases_tab(user, status, check_status, state, active):
     )
 
     with st.container(border=True):
-        st.markdown("#### Start a database update")
+        st.markdown("#### Run a database update (offline)")
         st.caption(
-            "Scores and statistics is the routine update. The awards option "
-            "adds slower AFL award imports and is normally only needed after "
-            "Brownlow night or the Grand Final."
+            "The web process is strictly read-only and cannot start a "
+            "database write. Updates run from the command line (or their "
+            "scheduled timers) against staging files, and this page follows "
+            "their progress. `regular` is the routine scores-and-statistics "
+            "update; the awards events add slower AFL award imports and are "
+            "normally only needed after Brownlow night or the Grand Final."
         )
-        with st.form("admin_database_update_form", border=False):
-            event = st.segmented_control(
-                "Update type", list(_UPDATE_EVENTS), default="regular",
-                format_func=lambda key: _UPDATE_EVENTS[key],
-                selection_mode="single", width="stretch",
-            )
-            sports = st.pills(
-                "Sports to update", database_updates.SPORT_KEYS,
-                default=list(database_updates.SPORT_KEYS),
-                selection_mode="multi", format_func=str.upper,
-            )
-            planned_steps = len(database_updates.plan(
-                event, sports)) if event and sports else 0
-            st.caption(
-                f"Selected scope: {len(sports or [])} sport(s), "
-                f"{planned_steps} validation and update steps. Each sport is "
-                "promoted independently only after its required checks pass."
-            )
-            password = st.text_input(
-                "Confirm your admin password", type="password",
-                help=("A fresh password check is required before starting a "
-                      "database write."),
-            )
-            submitted = st.form_submit_button(
-                "Update selected databases", type="primary",
-                icon=":material/sync:", disabled=active,
-            )
-    if submitted:
-        try:
-            confirmed = accounts.authenticate(user.email, password)
-        except accounts.AccountError as exc:
-            st.error(str(exc))
-        else:
-            if confirmed is None or confirmed.id != user.id or not confirmed.is_admin:
-                st.error("Password confirmation failed.")
-            elif not sports:
-                st.error("Choose at least one sport to refresh.")
-            else:
-                try:
-                    pid = database_updates.start_background(
-                        event=event, sports=sports)
-                except (RuntimeError, ValueError) as exc:
-                    st.error(str(exc))
-                else:
-                    st.session_state["database_update_notice"] = {
-                        "kind": "success",
-                        "message": (
-                            f"{_UPDATE_EVENTS[event]} accepted for "
-                            f"{', '.join(s.upper() for s in sports)} and "
-                            f"started in the background (PID {pid})."
-                        ),
-                    }
-                    st.rerun()
+        st.code(
+            "python database_updates.py run --event regular "
+            "--sports afl nba mlb nfl\n"
+            "python database_updates.py run --event brownlow-awards --sports afl\n"
+            "python database_updates.py run --event grand-final-awards --sports afl",
+            language="bash",
+        )
 
     controls = st.container(horizontal=True)
     if controls.button(
@@ -1313,6 +1066,10 @@ def _admin_databases_tab(user, status, check_status, state, active):
     ):
         db_pool.close_all()
         st.cache_data.clear()
+        # st.connection stores its SQLConnection (engine and pool inside)
+        # in cache_resource; clearing it disposes those engines, so no
+        # pooled handle keeps reading the replaced file's old inode.
+        st.cache_resource.clear()
         st.rerun()
 
     _render_database_check(check_status)
@@ -1324,30 +1081,11 @@ def _admin_grids_tab(gridley_status, active):
         "Checks Gridley's public daily AFL board feed from the newest saved "
         "date through today. New boards are validated in a copy before the "
         "AFL database is atomically replaced. This does not scan Immaculate "
-        "Grid. It also runs on its own daily timer, so this button is for "
-        "picking up today's board early rather than for routine upkeep."
+        "Grid. The scan runs on its own daily timer; to pick up today's "
+        "board early, run it offline -- the web process is read-only and "
+        "cannot start it:"
     )
-    if st.button(
-        "Scan Gridley for new games", icon=":material/grid_view:",
-        disabled=active,
-        help="Checks at most 31 dates and keeps Gridley's real board numbers.",
-    ):
-        # Detached, like the main update. Run inline this made up to 31
-        # sequential HTTP requests inside the script run, which blocks the
-        # page and loses the job if the websocket times out first.
-        try:
-            pid = database_updates.start_gridley_scan_background()
-        except (OSError, RuntimeError, ValueError) as exc:
-            st.error(f"{type(exc).__name__}: {exc}")
-        else:
-            st.session_state["database_update_notice"] = {
-                "kind": "success",
-                "message": (
-                    f"Gridley scan started in the background (PID {pid}). "
-                    "Use Refresh update status to follow it."
-                ),
-            }
-            st.rerun()
+    st.code("python database_updates.py gridley-scan", language="bash")
     _render_gridley_scan(gridley_status)
 
 
@@ -1365,28 +1103,20 @@ def _admin_rising_star_tab(user, rising_star_status, active):
     except (OSError, sqlite3.Error) as exc:
         rising_star_currency = {"state": "unreadable", "summary": str(exc)}
     _render_rising_star_currency(rising_star_currency)
-    if st.button(
-        "Check for new Rising Star nominations", icon=":material/star:",
-        disabled=active,
-        help="One request. The AFL database is replaced only if a new "
-             "nomination was published.",
-    ):
-        try:
-            pid = database_updates.start_rising_star_scan_background()
-        except (OSError, RuntimeError, ValueError) as exc:
-            st.error(f"{type(exc).__name__}: {exc}")
-        else:
-            st.session_state["database_update_notice"] = {
-                "kind": "success",
-                "message": (
-                    f"Rising Star check started in the background (PID {pid}). "
-                    "It takes a few seconds -- use Refresh status to see what "
-                    "it found."
-                ),
-            }
-            st.rerun()
+    st.caption(
+        "To pick up this week's nomination early, run the scan offline -- "
+        "the web process is read-only and cannot start it:"
+    )
+    st.code("python database_updates.py rising-star-scan", language="bash")
     _render_rising_star_scan(rising_star_status)
 
-    with st.expander("Add or amend a Rising Star nomination by hand"):
-        _rising_star_edit_form(user, active)
+    with st.expander("Hand-entered nominations"):
+        st.caption(
+            "Hand-entered nominations are stored as a source file and "
+            "re-applied on every load, so a rebuild replays them rather "
+            "than losing them. Adding, amending or removing one happens "
+            "offline:"
+        )
+        st.code("python -m utils.afl.rising_star_manual --help",
+                language="bash")
         _render_rising_star_edits()

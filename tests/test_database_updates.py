@@ -863,3 +863,48 @@ def test_nfl_club_history_is_projected_after_a_rebuild():
     assert "Project NFL club history" in labels
     assert labels.index("Fetch and rebuild NFL") < labels.index(
         "Project NFL club history")
+
+
+# --------------------------------------------------- round-name allowlist
+#
+# `round_name` becomes a directory name that upload_round_files rmtree's,
+# so it is allowlisted -- a round number or a finals code -- and the
+# resolved folder must sit directly under the uploads root. Sanitising
+# instead of rejecting is exactly how the traversal existed.
+
+@pytest.mark.parametrize("hostile", [
+    "../../etc", r"..\..\boot", "23/../..", "..", ".", "",
+    "GF; rm -rf /", "23|x", "R23", "EF/../GF", "23\x00", "GRAND FINAL",
+])
+def test_a_round_name_off_the_allowlist_is_rejected(hostile, tmp_path,
+                                                    monkeypatch):
+    monkeypatch.setattr(updates, "MANUAL_ROUND_UPLOADS", tmp_path / "uploads")
+    with pytest.raises(ValueError):
+        updates.upload_round_files(2026, hostile, [("summary.csv", b"x")])
+    assert not (tmp_path / "uploads").exists() or not any(
+        (tmp_path / "uploads").iterdir()), "a rejected name touched the disk"
+
+
+@pytest.mark.parametrize("fine", ["23", "1", "EF", "QF", "SF", "PF", "GF",
+                                  "gf", " 23 "])
+def test_allowlisted_round_names_land_directly_under_the_uploads_root(
+        fine, tmp_path, monkeypatch):
+    root = tmp_path / "uploads"
+    monkeypatch.setattr(updates, "MANUAL_ROUND_UPLOADS", root)
+    folder = updates.upload_round_files(2026, fine, [("summary.csv", b"x")])
+    assert folder.parent == root.resolve()
+    assert folder.name.startswith("2026-")
+
+
+def test_an_out_of_range_season_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr(updates, "MANUAL_ROUND_UPLOADS", tmp_path / "uploads")
+    for season in (1896, 2999):
+        with pytest.raises(ValueError):
+            updates.upload_round_files(season, "23", [("summary.csv", b"x")])
+
+
+def test_an_upload_name_that_reduces_to_no_leaf_is_rejected(tmp_path,
+                                                            monkeypatch):
+    monkeypatch.setattr(updates, "MANUAL_ROUND_UPLOADS", tmp_path / "uploads")
+    with pytest.raises(ValueError):
+        updates.upload_round_files(2026, "23", [("..", b"x")])

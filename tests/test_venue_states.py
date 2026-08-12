@@ -21,7 +21,7 @@ def test_known_venues_are_assigned_to_the_right_state():
 
 
 def test_grouped_venue_constraint_is_parameterised_and_matches_players():
-    schema = core.Schema()
+    schema = core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals")
     generic = core.Generic(schema)
     sql, params = generic.played_at_venues(("Fenway Park", "TD Garden"))
     assert params == ["Fenway Park", "TD Garden"]
@@ -34,7 +34,7 @@ def test_grouped_venue_constraint_is_parameterised_and_matches_players():
 
 
 def test_empty_state_is_a_valid_no_match_query():
-    sql, params = core.Generic(core.Schema()).played_at_venues(())
+    sql, params = core.Generic(core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals")).played_at_venues(())
     con = sqlite3.connect(":memory:")
     con.execute("CREATE TABLE games(player_id INTEGER, venue TEXT)")
     assert con.execute(sql, params).fetchall() == []

@@ -109,6 +109,10 @@ def _match_table(matches, two_sided: bool) -> pd.DataFrame:
 
 def past_games_page(sport, con: sqlite3.Connection) -> None:
     V = sport.vocab
+    # Widget/state keys ride in the sport namespace: this page serves
+    # every sport with club history, and a bare "pg_round" would let
+    # one sport's picked round bleed into another's.
+    k = sport.k
     st.markdown(f"# Past {V.games.capitalize()}")
     st.caption(
         f"Every {V.game} in the database, searchable by {V.club}, opponent, "
@@ -153,12 +157,12 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
     f1, f2, f3 = st.columns(3)
     club = f1.selectbox(V.club.capitalize(), [ANY, *clubs],
                         format_func=lambda c:
-                        c if c == ANY else _label(c), key="pg_club")
+                        c if c == ANY else _label(c), key=k("pg_club"))
     opponent_choices = [c for c in clubs if c != club]
     opponent = f2.selectbox("Opponent", [ANY, *opponent_choices],
                             format_func=lambda c: c if c == ANY else _label(c),
-                            key="pg_opponent")
-    venue = f3.selectbox(V.venue.capitalize(), [ANY, *venues], key="pg_venue")
+                            key=k("pg_opponent"))
+    venue = f3.selectbox(V.venue.capitalize(), [ANY, *venues], key=k("pg_venue"))
 
     # Season and round are the two things somebody arrives here already
     # knowing, so they are pickers rather than something to type or to hunt
@@ -170,7 +174,7 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
     season_pick = g1.selectbox(
         V.season.capitalize(), [ANY, *seasons],
         format_func=lambda s: f"Any {V.season}" if s == ANY else str(s),
-        key="pg_season")
+        key=k("pg_season"))
 
     one_season = None if season_pick == ANY else season_pick
     round_choices = [ANY, *CH.rounds_available(con, season=one_season)]
@@ -178,8 +182,8 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
     # stopped at 14 and had no finals series to speak of. Dropping a
     # selection the newly chosen season never played beats keeping a filter
     # that can only return nothing.
-    if st.session_state.get("pg_round") not in round_choices:
-        st.session_state.pop("pg_round", None)
+    if st.session_state.get(k("pg_round")) not in round_choices:
+        st.session_state.pop(k("pg_round"), None)
 
     def _round_choice(code: str) -> str:
         if code == ANY:
@@ -194,7 +198,7 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
     # MLB reader read four postseason entries as the whole season.
     unrounded = CH.matches_without_a_round(con, season=one_season)
     round_pick = g2.selectbox(
-        "Round", round_choices, format_func=_round_choice, key="pg_round",
+        "Round", round_choices, format_func=_round_choice, key=k("pg_round"),
         disabled=len(round_choices) == 1,
         help=(f"{unrounded:,} {V.games} record no round and are reachable "
               f"only as 'Any round'." if unrounded else None))
@@ -203,18 +207,18 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
         format_func=lambda s: {"all": f"All {V.games}",
                                "home_and_away": "Home and away",
                                "finals": V.postseason.capitalize()}[s],
-        key="pg_scope")
+        key=k("pg_scope"))
 
     lo, hi = st.select_slider(
         "Years", options=sorted(seasons),
-        value=(min(seasons), max(seasons)), key="pg_years",
+        value=(min(seasons), max(seasons)), key=k("pg_years"),
         disabled=one_season is not None,
         help=(f"Set the {V.season} above back to any to search a span of "
               "years." if one_season else None))
 
     with st.expander("More filters"):
         d1, d2, d3 = st.columns(3)
-        use_date = d1.checkbox("Filter by exact date", key="pg_use_date")
+        use_date = d1.checkbox("Filter by exact date", key=k("pg_use_date"))
         # Bound the picker to the data. A date outside it is not a search
         # that returns nothing, it is a search that cannot mean anything.
         first = dt.date(min(seasons), 1, 1)
@@ -222,12 +226,12 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
         on_date = d1.date_input(
             "Date", value=dt.date(max(seasons), 1, 1),
             min_value=first, max_value=last,
-            key="pg_date", disabled=not use_date)
+            key=k("pg_date"), disabled=not use_date)
         result = d2.selectbox(
             "Result", [ANY, "W", "D", "L"],
             format_func=lambda r: {ANY: "Any", "W": "Wins", "D": "Draws",
                                    "L": "Losses"}[r],
-            key="pg_result", disabled=(club == ANY),
+            key=k("pg_result"), disabled=(club == ANY),
             help=f"Needs a {V.club} — a result is from someone's point of "
                  "view.")
         where = d2.selectbox(
@@ -235,14 +239,14 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
             format_func=lambda p: {
                 ANY: "Any", "H": "Home", "A": "Away",
                 "F": f"{V.postseason.capitalize()} (no home side)"}[p],
-            key="pg_where", disabled=(club == ANY))
+            key=k("pg_where"), disabled=(club == ANY))
         min_margin = d3.number_input(
             "Minimum margin", min_value=0, max_value=200, value=0, step=5,
-            key="pg_margin",
+            key=k("pg_margin"),
             help="Absolute margin, so it selects blowouts either way.")
         min_crowd = d3.number_input(
             "Minimum crowd", min_value=0, max_value=130000, value=0,
-            step=5000, key="pg_crowd")
+            step=5000, key=k("pg_crowd"))
 
     order = st.selectbox(
         "Sort by",
@@ -252,7 +256,7 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
             "date_desc": "Most recent", "date_asc": "Oldest",
             "margin_desc": "Biggest margin", "margin_asc": "Smallest margin",
             "crowd_desc": "Biggest crowd", "crowd_asc": "Smallest crowd",
-        }[o], key="pg_order")
+        }[o], key=k("pg_order"))
 
     # -- search ----------------------------------------------------------
     club_id = None if club == ANY else club
@@ -309,7 +313,7 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
     st.caption(f"Select a row to see that {V.game}'s full detail — the "
                f"score at every break, both box scores and the conditions.")
     components.clickable_match_table(
-        table, matches, key="pg_matches", sport=sport, con=con,
+        table, matches, key=k("pg_matches"), sport=sport, con=con,
         column_config={
             "Crowd": st.column_config.NumberColumn(format="%d"),
             "Margin": st.column_config.NumberColumn(

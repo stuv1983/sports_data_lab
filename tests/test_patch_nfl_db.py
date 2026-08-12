@@ -74,3 +74,91 @@ def test_no_reference_leaves_the_reference_file_absent(tmp_path, monkeypatch):
 
     patch_nfl_db.patch(str(db), verbose=False, write_reference_file=False)
     assert not (tmp_path / "reference" / "nfl_reference.json").exists()
+
+
+# ----------------------------------------------------- NULL preservation
+
+def test_all_null_touchdown_components_stay_null(tmp_path, monkeypatch):
+    """A 1999 defensive lineman whose row records no touchdown column was
+    not measured at zero -- games.touchdowns must stay NULL for him while
+    still summing mixed-presence rows for everyone else. The project rule:
+    unrecorded history is NULL, never 0."""
+    db = tmp_path / "nfl.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE games (player_id TEXT, season INTEGER, "
+                "season_type TEXT, passing_tds REAL, rushing_tds REAL, "
+                "receiving_tds REAL)")
+    con.execute("INSERT INTO games VALUES ('unmeasured', 1999, 'REG', "
+                "NULL, NULL, NULL)")
+    con.execute("INSERT INTO games VALUES ('partial', 2024, 'REG', "
+                "2, NULL, 1)")
+    con.commit()
+
+    # Only the touchdown derivation is under test; the team/match joins
+    # want a much larger nflverse-shaped fixture than this needs.
+    monkeypatch.setattr(patch_nfl_db, "_patch_teams", lambda con, say: None)
+    monkeypatch.setattr(patch_nfl_db, "_patch_from_matches",
+                        lambda con, say: None)
+    monkeypatch.setattr(patch_nfl_db, "_patch_career_game_no",
+                        lambda con, say: None)
+    patch_nfl_db.patch_games(con, lambda *_: None)
+
+    rows = dict(con.execute("SELECT player_id, touchdowns FROM games"))
+    con.close()
+    assert rows["unmeasured"] is None, "an unmeasured row was stamped 0"
+    assert rows["partial"] == 3, "mixed presence must still add what is there"
+
+
+# ------------------------------------------------------------- indexes
+
+def _games_for_indexes(path):
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE games (player_id TEXT, season INTEGER, "
+                "round TEXT, club_now TEXT, club_hist TEXT, "
+                "opponent_team TEXT, venue TEXT, is_playoff INTEGER, "
+                "career_game_no INTEGER)")
+    con.commit()
+    return con
+
+
+def _index_columns(con, name):
+    return [row[2] for row in sorted(con.execute(
+        f"PRAGMA index_info({name})"))]
+
+
+def test_an_existing_index_with_an_old_definition_is_rebuilt(tmp_path):
+    """CREATE INDEX IF NOT EXISTS keeps whatever holds the name, so the
+    widened (is_playoff, season) composite would silently never land on a
+    database patched before the upgrade."""
+    con = _games_for_indexes(tmp_path / "nfl.db")
+    con.execute("CREATE INDEX ix_games_playoff ON games(is_playoff)")
+    con.commit()
+
+    patch_nfl_db.add_indexes(con, lambda *_: None)
+
+    assert _index_columns(con, "ix_games_playoff") == ["is_playoff", "season"]
+    con.close()
+
+
+def test_indexes_come_from_the_sport_schema_not_hardcoded_strings(tmp_path):
+    con = _games_for_indexes(tmp_path / "nfl.db")
+    patch_nfl_db.add_indexes(con, lambda *_: None)
+
+    names = {row[0] for row in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'")}
+    assert {"ix_games_opponent", "ix_games_player_season",
+            "ix_games_playoff", "ix_games_season_round"} <= names
+    assert _index_columns(con, "ix_games_opponent") == ["opponent_team"]
+    con.close()
+
+
+def test_a_current_index_is_left_alone_and_not_counted_as_created(tmp_path):
+    con = _games_for_indexes(tmp_path / "nfl.db")
+    said = []
+    patch_nfl_db.add_indexes(con, said.append)
+    patch_nfl_db.add_indexes(con, said.append)
+
+    assert any("8 schema-derived indexes created" in line for line in said)
+    assert any("0 schema-derived indexes created, 8 already current" in line
+               for line in said)
+    con.close()

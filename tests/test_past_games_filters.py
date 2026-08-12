@@ -94,7 +94,8 @@ def page(con, **state):
     # arrives at them.
     at = AppTest.from_function(_run, args=(con,))
     for name, value in state.items():
-        at.session_state[name] = value
+        # The page namespaces every key with sport.k, so seeds do too.
+        at.session_state[f"afl:{name}"] = value
     at.run(timeout=30)
     assert not at.exception, at.exception
     return at
@@ -153,7 +154,7 @@ def test_choosing_a_season_narrows_the_rounds_to_the_ones_it_had(con):
 def test_a_round_the_newly_chosen_season_never_played_is_dropped(con):
     """Otherwise the page holds a filter that can only return nothing."""
     at = page(con, pg_round="R23", pg_season=1897)
-    assert at.session_state["pg_round"] == "Any"
+    assert at.session_state["afl:pg_round"] == "Any"
 
 
 def test_the_round_picker_names_the_afls_own_number_beside_ours(con):

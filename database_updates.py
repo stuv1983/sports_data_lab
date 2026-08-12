@@ -16,6 +16,7 @@ import datetime as dt
 import io
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -1096,6 +1097,50 @@ def manual_rounds(database: str | Path | None = None) -> dict:
     return result
 
 
+#: The only round names a manual load will accept: AFL Tables' own naming
+#: -- a home-and-away round number, or one of the five finals codes. A
+#: strict allowlist rather than sanitisation, because this value is used to
+#: build a filesystem path that is later `shutil.rmtree`'d: anything with a
+#: separator, a dot sequence or a stray character must be rejected outright,
+#: never "cleaned".
+_ROUND_NAME_RE = re.compile(r"^(?:[0-9]{1,2}|EF|QF|SF|PF|GF)$")
+
+
+def validate_round_name(round_name) -> str:
+    """The round name if it is on the allowlist, or raise ValueError."""
+    name = str(round_name).strip()
+    if not _ROUND_NAME_RE.fullmatch(name.upper()):
+        raise ValueError(
+            f"Not a round AFL Tables names: {round_name!r}. Expected a "
+            "round number (1-99) or a finals code (EF, QF, SF, PF, GF).")
+    return name.upper() if name.isalpha() else name.lstrip("0") or "0"
+
+
+def validate_season(season) -> int:
+    """The season as an int, bounded to years the competition has played."""
+    year = int(season)
+    if not 1897 <= year <= dt.date.today().year + 1:
+        raise ValueError(f"Season out of range: {season!r}")
+    return year
+
+
+def _round_upload_folder(season: int, round_name: str) -> Path:
+    """The upload folder for one round, provably inside the uploads root.
+
+    Both parts are validated before they touch the path, and the resolved
+    result is required to sit *directly* under the resolved uploads root --
+    a belt-and-braces check so no future change to the name rules can turn
+    the rmtree below into a traversal.
+    """
+    season = validate_season(season)
+    round_name = validate_round_name(round_name)
+    root = MANUAL_ROUND_UPLOADS.resolve()
+    folder = (root / f"{season}-{round_name}").resolve()
+    if folder.parent != root or folder == root:
+        raise ValueError(f"Refusing upload folder outside {root}: {folder}")
+    return folder
+
+
 def upload_round_files(season: int, round_name: str,
                        files: Iterable[tuple[str, bytes]]) -> Path:
     """Save an uploaded round's CSVs where a detached load can read them.
@@ -1105,14 +1150,18 @@ def upload_round_files(season: int, round_name: str,
     for the pairer to find -- it matches files to fixtures by the club
     names inside them, so a stale file is not obviously stale.
     """
-    folder = MANUAL_ROUND_UPLOADS / f"{int(season)}-{round_name}"
+    folder = _round_upload_folder(season, round_name)
     if folder.exists():
         shutil.rmtree(folder)
     folder.mkdir(parents=True, exist_ok=True)
     for name, data in files:
         # Uploads are named by the browser; keep only the leaf so a crafted
-        # name cannot write outside the folder.
-        (folder / Path(name).name).write_bytes(data)
+        # name cannot write outside the folder. Reject names that reduce to
+        # no leaf at all ("..", "/") rather than writing to the folder itself.
+        leaf = Path(str(name)).name
+        if not leaf or leaf in (".", ".."):
+            raise ValueError(f"Refusing upload with unusable name: {name!r}")
+        (folder / leaf).write_bytes(data)
     return folder
 
 
@@ -1128,6 +1177,10 @@ def run_manual_round_load(folder: str | Path, season: int, round_name: str, *,
     """
     from utils.afl import load_round_csv
 
+    # The same allowlist the upload path applies -- this entry point is
+    # also reachable from the CLI, and the values flow into paths and SQL.
+    season = validate_season(season)
+    round_name = validate_round_name(round_name)
     folder = Path(folder)
     started = dt.datetime.now().astimezone()
     live = Path(data_paths.default_db("afl"))
@@ -1219,6 +1272,8 @@ def forget_manual_round(season: int, round_name: str) -> dict:
     """Drop a stored round the upstream dataset has since published."""
     from utils.afl import load_round_csv
 
+    season = validate_season(season)
+    round_name = validate_round_name(round_name)
     _acquire_lock()
     live = Path(data_paths.default_db("afl"))
     staging = live.with_suffix(live.suffix + ".manual-round-building")
@@ -1245,6 +1300,8 @@ def start_manual_round_load_background(folder: str | Path, season: int,
     read the whole games table -- about a minute. Far too long to hold a
     script run open.
     """
+    season = validate_season(season)
+    round_name = validate_round_name(round_name)
     return _spawn_detached(
         ["manual-round-load", "--dir", str(folder), "--season", str(season),
          "--round", str(round_name), "--trigger", trigger],
@@ -1732,6 +1789,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     manual.add_argument("--dry-run", action="store_true",
                         help="check the files without writing anything")
     manual.add_argument("--trigger", default="cli")
+    forget = sub.add_parser(
+        "manual-round-forget",
+        help="drop a stored hand-entered round the upstream dataset has "
+             "since published")
+    forget.add_argument("--season", type=int, required=True)
+    forget.add_argument("--round", dest="round_name", required=True)
     scheduled = sub.add_parser(
         "scheduled", help="run a guarded update from an operating-system timer")
     scheduled.add_argument(
@@ -1783,6 +1846,10 @@ def main(argv: list[str] | None = None) -> int:
         if status.get("state") == "failed":
             print(status.get("error", ""), file=sys.stderr)
             return 1
+        return 0
+    if args.command == "manual-round-forget":
+        status = forget_manual_round(args.season, args.round_name)
+        print(status.get("report", ""))
         return 0
     if args.command == "scheduled":
         if not event_is_due(args.event):

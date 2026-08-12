@@ -189,13 +189,16 @@ won_postseason_at = _G.won_postseason_at
 # -- exactly as constraints.premiership_player() reads 'GF' for the AFL and
 # constraints_nba.played_in_the_finals() reads 'F'.
 
+# Compared bare (`round = ?`), never as UPPER(TRIM(round)): wrapping the
+# column blinds SQLite to the round indexes. The build stores codes already
+# normalised, and the round/result hygiene test guards that invariant.
 WORLD_SERIES_ROUND = "WS"
 
 
 def played_in_the_world_series():
     """Appeared in a World Series game."""
     return ("SELECT DISTINCT player_id FROM games "
-            "WHERE UPPER(TRIM(round)) = ?", [WORLD_SERIES_ROUND])
+            "WHERE round = ?", [WORLD_SERIES_ROUND])
 
 
 def won_the_world_series():
@@ -207,14 +210,14 @@ def won_the_world_series():
     player on the roster who never left the bench is not in BattingPost.
     """
     return ("SELECT DISTINCT player_id FROM games "
-            "WHERE UPPER(TRIM(round)) = ? AND result = 'W'",
+            "WHERE round = ? AND result = 'W'",
             [WORLD_SERIES_ROUND])
 
 
 def never_played_the_world_series():
     """Played, but never in a World Series game."""
     return ("SELECT DISTINCT player_id FROM games WHERE player_id NOT IN "
-            "(SELECT player_id FROM games WHERE UPPER(TRIM(round)) = ?)",
+            "(SELECT player_id FROM games WHERE round = ?)",
             [WORLD_SERIES_ROUND])
 
 

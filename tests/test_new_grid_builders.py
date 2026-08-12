@@ -60,7 +60,8 @@ def con():
     con.close()
 
 
-G = core.Generic(core.Schema(stats=("goals", "disposals"),
+G = core.Generic(core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals",
+        stats=("goals", "disposals"),
                              venue_aliases={"mcg": "M.C.G."}))
 
 

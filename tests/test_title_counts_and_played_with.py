@@ -34,7 +34,7 @@ def _games():
 
 def test_title_counts_count_seasons_not_rows():
     con = _games()
-    generic = core.Generic(core.Schema())
+    generic = core.Generic(core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals"))
     assert _ids(con, generic.played_in_round_min("GF", 2)) == {1}
     assert _ids(con, generic.round_outcome_min("GF", "W", 2)) == {1}
     assert _ids(con, generic.round_outcome_min("GF", "L", 1)) == {2, 4}
@@ -42,7 +42,7 @@ def test_title_counts_count_seasons_not_rows():
 
 def test_played_with_means_same_team_and_season_for_every_data_grain():
     con = _games()
-    found = _ids(con, core.Generic(core.Schema()).played_with_id(2))
+    found = _ids(con, core.Generic(core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals")).played_with_id(2))
     assert found == {1}
     assert 4 not in found  # same season, different team
     assert 2 not in found  # never return the selected player
@@ -89,7 +89,7 @@ def _named_games():
 
 def test_a_named_teammate_is_the_same_club_in_the_same_match():
     con = _named_games()
-    generic = core.Generic(core.Schema())
+    generic = core.Generic(core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals"))
     assert _ids(con, generic.teammate_of("Mason Wood")) == {2}
     assert 5 not in _ids(con, generic.teammate_of("Mason Wood"))  # opponent
 
@@ -97,7 +97,7 @@ def test_a_named_teammate_is_the_same_club_in_the_same_match():
 def test_a_surname_unions_every_namesake_but_only_as_a_fallback():
     """Gridley labels sometimes carry the surname alone."""
     con = _named_games()
-    generic = core.Generic(core.Schema())
+    generic = core.Generic(core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals"))
     # No player is called plain "Smith", so both Smiths' matches count.
     assert _ids(con, generic.teammate_of("Smith")) == {1, 4}
     # An exact full name never falls back to the surname sweep.
@@ -113,6 +113,6 @@ def test_the_teammate_name_is_resolved_over_players_not_over_every_game():
     once. Both tables carry the name; the name predicate belongs to the one
     with 13k rows, and the games side must join on the id.
     """
-    sql, _params = core.Generic(core.Schema()).teammate_of("Mason Wood")
+    sql, _params = core.Generic(core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals")).teammate_of("Mason Wood")
     before_the_player_lookup, _, _rest = sql.partition("FROM players")
     assert "LIKE" not in before_the_player_lookup

@@ -34,9 +34,12 @@ class Schema:
     """
     Column and table names for one sport's database.
 
-    The defaults are the AFL build produced by afl/build_db.py. The NBA build
-    should reuse as many of them as it honestly can -- every name that
-    matches is a page of explore.py that needs no changes at all.
+    The defaults are the *generic* names shared by every build. The columns
+    that have no honest generic name -- what a sport counts as its score,
+    and what it calls the post-season -- carry no default at all: each
+    sport must map its own (`career_score`, `career_postseason`,
+    `game_score` are keyword-only and required), so an AFL column name can
+    never silently leak into another sport's SQL.
     """
     players: str = "players"
     games: str = "games"
@@ -47,8 +50,11 @@ class Schema:
     debut_season: str = "debut_season"
     final_season: str = "final_season"
     career_games: str = "career_games"
-    career_score: str = "career_goals"      # NBA: career_points
-    career_postseason: str = "finals_played"  # NBA: playoffs_played
+    #: Required, sport-specific: AFL career_goals, NBA career_points,
+    #: MLB career_home_runs, NFL career_touchdowns.
+    career_score: str = field(kw_only=True)
+    #: Required, sport-specific: AFL finals_played, NBA playoffs_played.
+    career_postseason: str = field(kw_only=True)
     birth_year: str = "birth_year"
     birth_country: str = "birth_country"
     n_clubs: str = "n_clubs"
@@ -80,7 +86,8 @@ class Schema:
     round: str = "round"
     opponent: str = "opponent"
     career_game_no: str = "career_game_no"
-    game_score: str = "goals"               # NBA: points
+    #: Required, sport-specific: AFL goals, NBA points, NFL touchdowns.
+    game_score: str = field(kw_only=True)
     is_final: str = "is_final"              # NBA: is_playoff
     result: str = "result"
 
@@ -262,7 +269,9 @@ class Schema:
     #: differs states it here rather than health.py learning three sports'
     #: worth of special cases. An entry mapping to None skips the check.
     career_totals_sql: dict = field(default_factory=dict)
-    rebuild_cmd: str = "python -m afl.build_db"
+    #: The command that rebuilds this sport's database, shown when a
+    #: required column is missing. No AFL default: each sport states its own.
+    rebuild_cmd: str = ""
 
     def canonical_venue(self, name):
         return self.venue_aliases.get(str(name).strip().lower(), name)
@@ -644,9 +653,10 @@ class Generic:
                       FROM {s.games}
                       WINDOW w AS (PARTITION BY {s.player_id}
                                    ORDER BY {s.season}, {s.date}
-                                   ROWS BETWEEN {n - 1} PRECEDING
+                                   ROWS BETWEEN ? PRECEDING
                                             AND CURRENT ROW)
-                    ) WHERE span = {n} AND hits = {n}""", [_code(result)])
+                    ) WHERE span = ? AND hits = ?""",
+                [_code(result), n - 1, n, n])
 
     def postseason_wins_min(self, n):
         """Won `n` or more post-season games -- more than won_postseason's

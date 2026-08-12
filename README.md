@@ -394,10 +394,16 @@ python -m utils.afl.load_round_csv --forget 2026 23 # once fitzRoy carries it
 
 The `database_updates.py` script runs on a schedule and keeps the AFL, NBA, and MLB databases current without rebuilding them from scratch. A **"regular"** update runs frequently (every ~7 days for AFL, ~5 months for NBA, etc.) and appends/refreshes only the most recent season's games. A **"full"** rebuild is manual and rare (after a source format change or a deliberate reset):
 
+Updates never run inside the Streamlit process — the web app is strictly
+read-only and only reports what the last run did. Start one from the command
+line (or let its systemd timer do it):
+
 ```bash
-python database_updates.py              # automated regular update
-python database_updates.py --full       # manual full rebuild (rare)
-python database_updates.py --dry-run    # preview without writing
+python -m database_updates run --event regular --sports afl nba mlb nfl
+python -m database_updates run --event full --sports afl   # full rebuild (rare)
+python -m database_updates run --event regular --dry-run   # preview, writes nothing
+python -m database_updates status                          # last run's result
+python -m database_updates check                           # read-only integrity/currency
 ```
 
 **MLB and NBA no longer rebuild from scratch in automated updates.** Instead:

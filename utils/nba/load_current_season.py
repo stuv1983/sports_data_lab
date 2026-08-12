@@ -56,8 +56,11 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
+import shutil
 import sqlite3
 import sys
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -567,75 +570,265 @@ def _restore_join_columns(con, out):
     return out.merge(identity, on=["club_now", "club_hist"], how="left")
 
 
+#: A fetched season may not shrink the stored one below this fraction of
+#: its matches (or its player-game rows). Mid-season a re-fetch always
+#: returns at least what it returned yesterday, so a genuine snapshot only
+#: ever grows; a response half the stored size means the upstream dropped
+#: games, not that they un-happened.
+MIN_MATCH_RATIO = 0.5
+MIN_GAME_RATIO = 0.5
+
+#: The shrink guards only engage once the stored season is at least this
+#: big. Below them, a ratio is noise -- reloading a two-game synthetic or
+#: very-early season with one corrected game is routine -- while a real
+#: mid-season NBA store passes both within the first fortnight.
+MIN_GUARDED_MATCHES = 50
+MIN_GUARDED_GAMES = 500
+
+
+def validate_snapshot(con, season, matches, out) -> tuple[str, str]:
+    """Decide whether a fetched season may replace the stored one.
+
+    Returns (verdict, reason): "ok" to proceed, "skip" for the harmless
+    nothing-fetched-nothing-stored case, "reject" when stored data had to
+    be protected from an empty or severely partial upstream response
+    (NBA.com outage, schema drift, a source silently returning nothing).
+    _replace_season deletes before it inserts, so this gate runs first --
+    and it runs *before* the DNP carry-forward, which only ever adds rows,
+    so the fetched counts compared here understate what would land: a
+    rejection is conservative, never optimistic.
+    """
+    stored_matches = con.execute(
+        "SELECT COUNT(*) FROM matches WHERE season=?",
+        (season,)).fetchone()[0]
+    stored_games = con.execute(
+        "SELECT COUNT(*) FROM games WHERE season=?", (season,)).fetchone()[0]
+    fetched_matches = 0 if matches is None else len(matches)
+    fetched_games = 0 if out is None else len(out)
+
+    if fetched_matches == 0:
+        if stored_matches or stored_games:
+            return "reject", (
+                f"upstream returned no matches for {season_label(season)} "
+                f"while {stored_matches:,} matches / {stored_games:,} games "
+                f"are stored -- season left untouched")
+        return "skip", (f"nothing fetched for {season_label(season)} and "
+                        f"nothing stored -- skipped")
+    if stored_games and fetched_games == 0:
+        return "reject", (
+            f"upstream returned matches but no player-games for "
+            f"{season_label(season)} while {stored_games:,} games are "
+            f"stored -- season left untouched")
+    if (stored_matches >= MIN_GUARDED_MATCHES
+            and fetched_matches < stored_matches * MIN_MATCH_RATIO):
+        return "reject", (
+            f"upstream returned {fetched_matches:,} matches for "
+            f"{season_label(season)} where {stored_matches:,} are stored "
+            f"(below the {MIN_MATCH_RATIO:.0%} floor) -- season left "
+            f"untouched")
+    # A complete-looking schedule with a gutted game log is the sneakier
+    # failure: matches pass their ratio while the player-game fetch came
+    # back one page short of everything. Guard the two independently.
+    if (stored_games >= MIN_GUARDED_GAMES
+            and fetched_games < stored_games * MIN_GAME_RATIO):
+        return "reject", (
+            f"upstream returned {fetched_games:,} player-games for "
+            f"{season_label(season)} where {stored_games:,} are stored "
+            f"(below the {MIN_GAME_RATIO:.0%} floor) -- season left "
+            f"untouched")
+    return "ok", ""
+
+
+#: A lock older than this is presumed abandoned (a crashed run cannot
+#: release it). Far beyond any real load, which takes minutes.
+LOCK_STALE_SECONDS = 6 * 3600
+
+
+def _acquire_update_lock(live: Path) -> Path:
+    """One updater per live database, enforced with an O_EXCL lock file.
+
+    database_updates.py holds its own lock around the whole orchestration,
+    but this module is also a documented standalone CLI -- two direct
+    invocations must not race each other through copy/verify/promote. The
+    lock lives beside the database so it guards the file, not the process.
+    """
+    lock = live.with_suffix(live.suffix + ".update-lock")
+    payload = f"{os.getpid()} {dt.datetime.now().astimezone().isoformat()}\n"
+    for attempt in (1, 2):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w") as handle:
+                handle.write(payload)
+            return lock
+        except FileExistsError:
+            try:
+                age = time.time() - lock.stat().st_mtime
+            except OSError:
+                continue          # released between the open and the stat
+            if attempt == 1 and age > LOCK_STALE_SECONDS:
+                lock.unlink(missing_ok=True)   # abandoned by a dead run
+                continue
+            raise RuntimeError(
+                f"another update holds {lock.name} "
+                f"(age {age:.0f}s); not starting a second one") from None
+    raise RuntimeError(f"could not acquire {lock.name}")
+
+
+def update_atomically(db_path, work, verbose=True):
+    """Run `work(staging_path)` against a copy, verify it, then swap it in.
+
+    The live database is never written: `work` gets a private staging copy
+    (suffixed with this pid, so two runs can never scribble on the same
+    file), the copy must pass PRAGMA integrity_check, and only then does
+    os.replace -- atomic on POSIX and Windows alike -- put it where the
+    live file was. An exclusive lock file beside the database serialises
+    whole runs, so promote cannot race promote. A crash or a failed check
+    at any point leaves the live database exactly as it started.
+
+    `work` returns (outcome, changed); when nothing changed the staging
+    copy is simply discarded and the live file is not touched at all.
+    """
+    live = Path(db_path)
+    lock = _acquire_update_lock(live)
+    staging = live.with_suffix(live.suffix + f".{os.getpid()}.updating")
+    try:
+        staging.unlink(missing_ok=True)
+        shutil.copy2(live, staging)
+        outcome, changed = work(staging)
+        if not changed:
+            return outcome
+        with closing(sqlite3.connect(staging)) as check:
+            verdict = check.execute("PRAGMA integrity_check").fetchone()[0]
+        if verdict != "ok":
+            raise RuntimeError(
+                f"staging database failed integrity_check: {verdict}")
+        if verbose:
+            print(f"promoting {staging.name} -> {live.name}")
+        os.replace(staging, live)
+        return outcome
+    finally:
+        staging.unlink(missing_ok=True)
+        lock.unlink(missing_ok=True)
+
+
+def _load_into(con, db_dir, source, seasons, verbose, dry_run) -> tuple[dict, bool]:
+    """The load itself, against whatever database `con` holds.
+
+    Returns (result, changed): changed is False when every season was
+    skipped by validate_snapshot, so the caller knows the database needs
+    no promotion.
+    """
+    result = {"seasons": [], "new_players": 0, "dry_run": dry_run}
+    team_now = _existing_team_identity(con)
+    existing_people = _existing_players(con)
+    rounds = nba_playoff_rounds.load(db_dir)
+
+    # Fetched up front, across every requested season, before any
+    # player is matched to an id: two open seasons can share a debut
+    # (a rookie's first games span the season boundary), and assembling
+    # season-by-season against a pid_of that only grows afterwards
+    # would drop the second season's rows for exactly that player.
+    raw = {season: _fetch_season(source, season) for season in seasons}
+    all_incoming_ids = set()
+    for _matches, games in raw.values():
+        if games is not None:
+            all_incoming_ids |= set(games["source_player_id"])
+
+    people, pid_of, new_players = _merge_new_players(
+        existing_people, source, all_incoming_ids, verbose)
+    result["new_players"] = new_players
+    name_of = dict(zip(people["player_id"], people["player"]))
+
+    issues = []
+    assembled = {}
+    for season, (matches, games) in raw.items():
+        if verbose:
+            print(f"season {season}...")
+        m, out = _assemble_season(
+            season, matches, games, team_now, pid_of, name_of, rounds,
+            issues, verbose, source.key)
+        assembled[season] = (m, out)
+
+    if dry_run:
+        for season, (matches, out) in assembled.items():
+            # counted through the same carry-forward a real run applies,
+            # so the reported figure is the one that would land
+            merged = _carry_forward_dnps(con, season, out)
+            result["seasons"].append({
+                "season": season,
+                "would_insert_games": 0 if merged is None else len(merged),
+                "would_insert_matches": 0 if matches is None else len(matches),
+            })
+        return result, False
+
+    changed = False
+    rejected = 0
+    for season, (matches, out) in assembled.items():
+        # The gate between fetching and deleting: a season the upstream
+        # answered badly is reported and rejected, never wiped. A harmless
+        # skip (nothing fetched, nothing stored) is kept distinct so the
+        # caller can tell "protected stored data" from "nothing to do".
+        verdict, reason = validate_snapshot(con, season, matches, out)
+        if verdict != "ok":
+            if verbose:
+                print(f"  ! {reason}")
+            if verdict == "reject":
+                issue(issues, "rejected_snapshot", reason, severity="error",
+                      season=season, source_key=source.key)
+                rejected += 1
+                result["seasons"].append({"season": season,
+                                          "rejected": reason})
+            else:
+                result["seasons"].append({"season": season,
+                                          "skipped": reason})
+            continue
+        outcome = _replace_season(con, season, matches, out)
+        result["seasons"].append(outcome)
+        changed = True
+    result["rejected_seasons"] = rejected
+
+    if not changed:
+        return result, False
+
+    if verbose:
+        print("renumbering career_game_no...")
+    _recompute_career_game_no(con)
+    if verbose:
+        print("recomputing career totals and obscurity...")
+    full_out = _recompute_players(con, people, verbose)
+    # _write_derived announces itself ("derived tables...") already.
+    _write_derived(con, _restore_join_columns(con, full_out), verbose)
+    # players and player_seasons are rewritten wholesale above (pandas
+    # to_sql replaces the table, which takes its indexes with it), so
+    # the build's own index set is re-applied. IF NOT EXISTS throughout,
+    # so this only ever restores what the rewrite dropped.
+    for statement in INDEXES:
+        con.execute(statement)
+    con.commit()
+    return result, True
+
+
 def load(db_path, seasons=None, refresh=False, verbose=True,
         dry_run=False) -> dict:
     seasons = seasons or open_seasons()
     source = nba_source.get_source("live", refresh=True)
+    db_dir = Path(db_path).resolve().parent
 
-    result = {"database": str(db_path), "seasons": [], "new_players": 0,
-              "dry_run": dry_run}
-    with closing(sqlite3.connect(db_path)) as con:
-        team_now = _existing_team_identity(con)
-        existing_people = _existing_players(con)
-        rounds = nba_playoff_rounds.load(Path(db_path).resolve().parent)
+    if dry_run:
+        # Nothing is written, so the live file can safely be read directly.
+        with closing(sqlite3.connect(db_path)) as con:
+            result, _changed = _load_into(
+                con, db_dir, source, seasons, verbose, dry_run=True)
+        result["database"] = str(db_path)
+        return result
 
-        # Fetched up front, across every requested season, before any
-        # player is matched to an id: two open seasons can share a debut
-        # (a rookie's first games span the season boundary), and assembling
-        # season-by-season against a pid_of that only grows afterwards
-        # would drop the second season's rows for exactly that player.
-        raw = {season: _fetch_season(source, season) for season in seasons}
-        all_incoming_ids = set()
-        for _matches, games in raw.values():
-            if games is not None:
-                all_incoming_ids |= set(games["source_player_id"])
+    def work(staging):
+        with closing(sqlite3.connect(staging)) as con:
+            return _load_into(con, db_dir, source, seasons, verbose,
+                              dry_run=False)
 
-        people, pid_of, new_players = _merge_new_players(
-            existing_people, source, all_incoming_ids, verbose)
-        result["new_players"] = new_players
-        name_of = dict(zip(people["player_id"], people["player"]))
-
-        issues = []
-        assembled = {}
-        for season, (matches, games) in raw.items():
-            if verbose:
-                print(f"season {season}...")
-            m, out = _assemble_season(
-                season, matches, games, team_now, pid_of, name_of, rounds,
-                issues, verbose, source.key)
-            assembled[season] = (m, out)
-
-        if dry_run:
-            for season, (matches, out) in assembled.items():
-                # counted through the same carry-forward a real run applies,
-                # so the reported figure is the one that would land
-                merged = _carry_forward_dnps(con, season, out)
-                result["seasons"].append({
-                    "season": season,
-                    "would_insert_games": 0 if merged is None else len(merged),
-                    "would_insert_matches": 0 if matches is None else len(matches),
-                })
-            return result
-
-        for season, (matches, out) in assembled.items():
-            outcome = _replace_season(con, season, matches, out)
-            result["seasons"].append(outcome)
-
-        if verbose:
-            print("renumbering career_game_no...")
-        _recompute_career_game_no(con)
-        if verbose:
-            print("recomputing career totals and obscurity...")
-        full_out = _recompute_players(con, people, verbose)
-        # _write_derived announces itself ("derived tables...") already.
-        _write_derived(con, _restore_join_columns(con, full_out), verbose)
-        # players and player_seasons are rewritten wholesale above (pandas
-        # to_sql replaces the table, which takes its indexes with it), so
-        # the build's own index set is re-applied. IF NOT EXISTS throughout,
-        # so this only ever restores what the rewrite dropped.
-        for statement in INDEXES:
-            con.execute(statement)
-        con.commit()
+    result = update_atomically(db_path, work, verbose=verbose)
+    result["database"] = str(db_path)
     return result
 
 
@@ -669,7 +862,7 @@ def main(argv=None) -> int:
     try:
         result = load(db_path, seasons, refresh=args.refresh,
                       verbose=args.verbose, dry_run=args.dry_run)
-    except (nba_source.SourceError, sqlite3.Error) as exc:
+    except (nba_source.SourceError, sqlite3.Error, RuntimeError) as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
@@ -677,6 +870,13 @@ def main(argv=None) -> int:
         print(f"  {season}")
     if not args.dry_run:
         print(f"new players: {result['new_players']}")
+    if result.get("rejected_seasons"):
+        # A season with stored data was refused an empty/partial snapshot.
+        # The store is safe, but the update did not happen -- exiting 0
+        # would let an orchestrator record the step as a success.
+        print(f"{result['rejected_seasons']} season(s) rejected a bad "
+              f"upstream snapshot; stored data retained", file=sys.stderr)
+        return 1
     return 0
 
 

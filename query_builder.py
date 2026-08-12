@@ -19,9 +19,35 @@ there is functionally invisible):
   100+ games at the MCG" is typing "venue" and setting two values.
 * **Visual tree** -- `streamlit-condition-tree`, a drag-and-drop tree of
   nested AND/OR groups; its structured tree is compiled server-side here.
-* **Table filters** -- native Streamlit widgets, one operator-driven filter
-  per column the reader chooses, compiled into a fully parameterised
-  WHERE, with an optional COUNT(*)-per-group aggregation.
+* **Table filters** -- native Streamlit widgets arranged as *condition
+  groups*: each group holds any number of column conditions matched with
+  its own ALL (AND) / ANY (OR) rule, and each group after the first says
+  how it joins the groups above it, so "(played Collingwood AND 150+
+  games) OR (drafted Hawthorn AND premiership)" is two cards. Columns are
+  offered grouped into the same categories the grid criteria use, every
+  active condition and group shows a live row count of its own, and the
+  whole panel serialises to a compact shareable token. Compiled into a
+  fully parameterised WHERE, with an optional COUNT(*)-per-group
+  aggregation.
+
+STATE MODEL (mode isolation)
+----------------------------
+The three modes never share compilation state. Each mode's widgets live
+under a disjoint session-key namespace (``qbc_*`` grid, ``qb_tree`` tree,
+``qbf_*`` filter groups), only the *active* mode's branch in ``page()``
+renders widgets or compiles predicates, and the ParamBag handed to the
+compiler is constructed fresh on every script run -- so a value typed in
+one mode can never bleed into the SQL or parameter bag of another, and a
+stale bag can never survive a rerun. Switching modes leaves the other
+mode's widget state parked but inert: parked state is data in the session,
+not clauses in a query, until its mode is active again.
+
+The generated WHERE is SARGable throughout: every comparison keeps the
+bare (quoted) column on the left -- no ``DATE(col)``, ``LOWER(col)`` or
+other wrapper that would blind SQLite to an index. Day-granular date
+filters on datetime-bearing columns compile to half-open ISO string
+ranges (``col >= :day AND col < :next_day``) instead of ``DATE(col) =``,
+because ISO-8601 text compares correctly as plain strings.
 
 SECURITY MODEL
 --------------
@@ -42,11 +68,13 @@ Three independent walls, so no single mistake is fatal:
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import json
 import os
 import re
 import sqlite3
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -118,6 +146,68 @@ def type_kind(declared: str) -> str:
     return "text"
 
 
+# ------------------------------------------------------------- categories
+
+#: Display order for the filter panel's column categories -- the same
+#: shelves the grid criteria catalogue (BUILDER_GROUPS) is arranged on, so
+#: a reader who learned the grid picker finds the same map here.
+FILTER_CATEGORY_ORDER = (
+    "Clubs & journeys", "Career milestones", "Single-game feats",
+    "Season & era", "Finals & premierships", "Grounds & venues",
+    "Physical", "Draft & recruitment", "Awards & honours", "Match context",
+)
+
+#: Fallback shelf for a column no rule recognises.
+FILTER_CATEGORY_OTHER = "More columns"
+
+#: Name-pattern rules assigning a discovered column to a category. The
+#: schema is discovered at runtime from any sport's database, so this is
+#: necessarily a heuristic over naming conventions -- checked in order,
+#: most-specific first (e.g. "finals" claims postseason columns before the
+#: "season" rule can, while "final_season" falls through to Season & era).
+#: A miss is harmless: the column still appears, shelved under
+#: FILTER_CATEGORY_OTHER.
+_FILTER_CATEGORY_RULES = (
+    ("Grounds & venues", re.compile(r"venue|ground|stadium|arena|oval",
+                                    re.I)),
+    ("Draft & recruitment", re.compile(r"draft|pick|recruit|rookie", re.I)),
+    ("Physical", re.compile(r"height|weight|birth|\bdob\b|\bage\b|hand",
+                            re.I)),
+    ("Awards & honours",
+     re.compile(r"award|medal|brownlow|coleman|norm_smith|all_austral"
+                r"|captain|rising_star|mvp|fame|honou?r", re.I)),
+    ("Finals & premierships",
+     re.compile(r"finals|premiership|flag|playoff|postseason|grand", re.I)),
+    ("Season & era", re.compile(r"season|decade|era|debut|\byear\b", re.I)),
+    ("Clubs & journeys", re.compile(r"club|team|franchise|opponent", re.I)),
+    ("Single-game feats",
+     re.compile(r"game_high|best_on|single_game|in_a_game", re.I)),
+    ("Career milestones",
+     re.compile(r"career|games|goals|behinds|disposals|kicks|marks|tackles"
+                r"|hitouts|score|points|wins|losses|obscurity", re.I)),
+    ("Match context",
+     re.compile(r"date|round|margin|result|crowd|attendance|home|away"
+                r"|umpire|time", re.I)),
+)
+
+
+def column_category(name: str) -> str:
+    """The category shelf a discovered column is offered under."""
+    for category, rule in _FILTER_CATEGORY_RULES:
+        if rule.search(str(name)):
+            return category
+    return FILTER_CATEGORY_OTHER
+
+
+def categorised_order(names) -> list[str]:
+    """Column names sorted for a picker: by category shelf, then label."""
+    rank = {name: i for i, name in enumerate(FILTER_CATEGORY_ORDER)}
+    fallback = len(rank)
+    return sorted(names, key=lambda n: (rank.get(column_category(n),
+                                                 fallback),
+                                        labels.words(n).lower()))
+
+
 def _quote_ident(name: str) -> str:
     """Standard SQL identifier quoting; doubling any embedded quote."""
     return '"' + str(name).replace('"', '""') + '"'
@@ -154,10 +244,20 @@ def get_connection(sport):
     The URL opens the file read-only (`mode=ro` via SQLite's URI syntax),
     matching the guarantee the rest of the app gets from db_pool: nothing
     this page executes can write, whatever the query says.
+
+    NullPool, not the default QueuePool: the database file is atomically
+    *replaced* by every update, and a pooled handle checked in before the
+    replacement would keep serving the old inode on POSIX -- and on
+    Windows would hold the file open, failing the promotion's os.replace
+    outright. With NullPool each query opens and closes its own handle,
+    so nothing outlives the file it was opened on.
     """
+    from sqlalchemy.pool import NullPool
+
     url = ("sqlite:///file:" + Path(sport.db).resolve().as_posix()
            + "?mode=ro&uri=true")
-    return st.connection(f"sql_{sport.key}", type="sql", url=url)
+    return st.connection(f"sql_{sport.key}", type="sql", url=url,
+                         poolclass=NullPool)
 
 
 @st.cache_data(show_spinner=False)
@@ -304,6 +404,290 @@ def parse_number_list(text: str) -> list[float | int]:
     return out
 
 
+# ------------------------------------------------ condition specs (B)
+
+#: Operators offered per widget kind. The label the reader picks maps to
+#: exactly one clause builder in compile_condition; nothing typed ever
+#: becomes an operator. These tuples are the single source of truth for
+#: both the widgets (what the selectbox offers) and the compiler (what it
+#: will accept), so UI and SQL can never drift apart.
+_NUMERIC_OPS = ("≥", "≤", "=", "≠", ">", "<", "between", "one of",
+                "is missing", "is present")
+_TEXT_OPS = ("contains", "starts with", "ends with", "equals", "not equals",
+             "one of", "pattern (% and _ wildcards)",
+             "is missing", "is present")
+_DATE_OPS = ("between", "on", "on or after", "on or before",
+             "is missing", "is present")
+_BOOLEAN_OPS = ("is true", "is false", "is missing", "is present")
+
+SPEC_OPS = {"integer": _NUMERIC_OPS, "float": _NUMERIC_OPS,
+            "text": _TEXT_OPS, "date": _DATE_OPS, "datetime": _DATE_OPS,
+            "boolean": _BOOLEAN_OPS}
+
+_NUMERIC_SQL = {"≥": ">=", "≤": "<=", "=": "=", "≠": "!=", ">": ">", "<": "<"}
+
+
+def _next_day(iso: str) -> str:
+    """The day after an ISO date, for half-open day-granular ranges."""
+    return (dt.date.fromisoformat(str(iso)[:10])
+            + dt.timedelta(days=1)).isoformat()
+
+
+def compile_condition(spec: dict, known_columns, bag: ParamBag) -> str | None:
+    """One condition spec -> one SARGable, fully parameterised predicate.
+
+    A *spec* is a plain JSON-able dict -- ``{"column", "kind", "op"}`` plus
+    the operator's values (``value``, ``lo``/``hi``, or ``values``) -- the
+    shape the filter widgets emit, the share token stores, and this
+    function compiles. Keeping it a value object means the same condition
+    can be compiled twice without re-rendering a widget: once alone into a
+    fresh bag for its live count, once into the query's shared bag.
+
+    Guarantees, in order of importance:
+
+    * the column passes the discovery gate (`_require_known`) and is
+      quoted; the operator must be in the kind's fixed vocabulary; every
+      value rides as a bound parameter -- the three walls, unchanged;
+    * the compiled comparison keeps the bare column on the left (never
+      ``DATE(col)``/``LOWER(col)``), so SQLite can drive it from an index;
+      day-granular filters over datetime-bearing columns become half-open
+      ISO ranges (``col >= :day AND col < :next_day``);
+    * a spec still missing its value compiles to None -- a half-built
+      condition filters nothing rather than erroring per keystroke.
+    """
+    column = _require_known(str(spec.get("column")), known_columns, "column")
+    kind = spec.get("kind")
+    ops = SPEC_OPS.get(kind)
+    if ops is None:
+        raise ValueError(f"Unknown condition kind: {kind!r}")
+    op = spec.get("op")
+    if op not in ops:
+        raise ValueError(f"Unsupported {kind} operator: {op!r}")
+
+    if op == "is missing":
+        return null_clause(column, missing=True)
+    if op == "is present":
+        return null_clause(column, missing=False)
+
+    if kind == "boolean":
+        return equals_clause(column, 1 if op == "is true" else 0, bag)
+
+    if kind in ("integer", "float"):
+        cast = int if kind == "integer" else float
+        if op == "between":
+            lo, hi = spec.get("lo"), spec.get("hi")
+            if lo is None or hi is None:
+                return None
+            lo, hi = sorted((cast(lo), cast(hi)))
+            return between_clause(column, lo, hi, bag)
+        if op == "one of":
+            values = [cast(v) for v in spec.get("values") or []]
+            return in_clause(column, values, bag) if values else None
+        value = spec.get("value")
+        if value is None:
+            return None
+        return comparison_clause(column, _NUMERIC_SQL[op], cast(value), bag)
+
+    if kind in ("date", "datetime"):
+        return _compile_date_condition(column, spec, op, bag)
+
+    # -- text ------------------------------------------------------------
+    if op == "one of":
+        values = [str(v) for v in spec.get("values") or []]
+        return in_clause(column, values, bag) if values else None
+    value = spec.get("value")
+    if value in (None, ""):
+        return None
+    text = str(value)
+    if op == "equals":
+        return equals_clause(column, text, bag)
+    if op == "not equals":
+        return comparison_clause(column, "!=", text, bag)
+    if op.startswith("pattern"):
+        return pattern_clause(column, text, bag)
+    return like_clause(column, text, op, bag)
+
+
+def _compile_date_condition(column, spec, op, bag: ParamBag) -> str | None:
+    """Day-granular date filters that never wrap the column in a function.
+
+    ISO-8601 text sorts identically to the moments it names, so the raw
+    stored string can be compared directly -- the index stays usable where
+    the old ``DATE(col)`` normalisation forced a scan. ``day_ceiling``
+    marks a column whose values may carry a time-of-day (a datetime kind,
+    or bounds longer than a bare date): its day-granular ceilings become
+    half-open next-day bounds, so "on or before the 8th" still catches
+    ``...T14:30`` on the 8th.
+    """
+    q = _quote_ident(column)
+    ceiling = bool(spec.get("day_ceiling"))
+    if op == "between":
+        lo, hi = spec.get("lo"), spec.get("hi")
+        if not lo or not hi:
+            return None
+        lo, hi = sorted((str(lo), str(hi)))
+        if ceiling:
+            return (f"({q} >= {bag.add(lo)} "
+                    f"AND {q} < {bag.add(_next_day(hi))})")
+        return between_clause(column, lo, hi, bag)
+    value = spec.get("value")
+    if not value:
+        return None
+    value = str(value)
+    if op == "on":
+        if ceiling:
+            return (f"({q} >= {bag.add(value)} "
+                    f"AND {q} < {bag.add(_next_day(value))})")
+        return equals_clause(column, value, bag)
+    if op == "on or after":
+        return comparison_clause(column, ">=", value, bag)
+    if ceiling:                                      # on or before
+        return f"{q} < {bag.add(_next_day(value))}"
+    return comparison_clause(column, "<=", value, bag)
+
+
+def combine_condition_clauses(clauses, match: str) -> str | None:
+    """AND/OR the predicates inside one group; None when nothing is set."""
+    if match not in ("AND", "OR"):
+        raise ValueError(f"Bad group match rule: {match!r}")
+    parts = [clause for clause in clauses if clause]
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    return "(" + f" {match} ".join(parts) + ")"
+
+
+def combine_group_clauses(pairs) -> str | None:
+    """Fold (joiner, clause) group pairs into one WHERE expression.
+
+    Left-associative with explicit parentheses at every fold --
+    ``((g1 OR g2) AND g3)`` -- so a mixed AND/OR chain means exactly what
+    the page showed, never what SQL precedence would silently prefer.
+    The first contributing group's joiner is ignored; empty groups drop
+    out without consuming a joiner.
+    """
+    expression = None
+    for joiner, clause in pairs:
+        if not clause:
+            continue
+        if expression is None:
+            expression = clause
+            continue
+        if joiner not in ("AND", "OR"):
+            raise ValueError(f"Bad group joiner: {joiner!r}")
+        expression = f"({expression} {joiner} {clause})"
+    return expression
+
+
+# ------------------------------------------------------- shareable state
+
+#: Hard ceiling on a share token's *decompressed* size. A legitimate token
+#: holds a few groups of conditions -- hundreds of bytes, kilobytes at the
+#: outside -- while deflate can pack ~1000:1, so an unbounded
+#: zlib.decompress() would let a 64 KB query parameter unpack into tens of
+#: megabytes. Decompression is capped here, before json.loads ever runs.
+MAX_STATE_BYTES = 256 * 1024
+
+#: And on the compressed token itself, so the decoder never even feeds a
+#: multi-megabyte parameter to zlib.
+MAX_TOKEN_CHARS = 64 * 1024
+
+#: Bounds on the decoded payload's shape. The restore path iterates
+#: groups and conditions, and future nesting must not turn a doctored
+#: token into deep recursion or a million-node walk.
+MAX_TREE_DEPTH = 16
+MAX_TREE_NODES = 2_000
+
+#: No single string in a payload may exceed this. A node count alone is
+#: not enough: one 100 MB string is one "node", and downstream code that
+#: iterates a string (list(), a join, a LIKE-escape) would amplify it.
+MAX_SCALAR_CHARS = 8_192
+
+#: And no rule may carry more values than a legitimate multiselect could.
+MAX_RULE_VALUES = 200
+
+
+def validate_tree(node, *, _depth: int = 0, _count: list | None = None) -> None:
+    """Refuse a payload nested deeper than MAX_TREE_DEPTH, holding more
+    than MAX_TREE_NODES containers/values, or carrying any single string
+    longer than MAX_SCALAR_CHARS. Raises ValueError.
+
+    Structural only: names and values are still vetted against the live
+    schema by _apply_restored_state. This guard exists so that vetting
+    (and json.dumps re-serialisation, and Streamlit state seeding) only
+    ever runs over a payload of sane size and shape.
+    """
+    if _count is None:
+        _count = [0]
+    _count[0] += 1
+    if _count[0] > MAX_TREE_NODES:
+        raise ValueError(
+            f"Query payload holds more than {MAX_TREE_NODES} nodes")
+    if _depth > MAX_TREE_DEPTH:
+        raise ValueError(
+            f"Query payload nests deeper than {MAX_TREE_DEPTH} levels")
+    if isinstance(node, str):
+        if len(node) > MAX_SCALAR_CHARS:
+            raise ValueError(
+                f"Query payload holds a value longer than "
+                f"{MAX_SCALAR_CHARS} characters")
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            validate_tree(str(key), _depth=_depth + 1, _count=_count)
+            validate_tree(value, _depth=_depth + 1, _count=_count)
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            validate_tree(value, _depth=_depth + 1, _count=_count)
+
+
+def serialize_state(payload: dict) -> str:
+    """The builder's state as a compact URL-safe token.
+
+    Deterministic JSON (sorted keys, no whitespace), deflated and
+    base64url-encoded -- ready to ride in a query parameter. The token
+    holds only column names, operator labels and typed values; it is
+    *data about a query*, and everything in it still passes the discovery
+    gate and the parameter bag when it is compiled after a restore, so a
+    doctored token can rename nothing and inject nothing.
+    """
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True,
+                     default=str).encode("utf-8")
+    return base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode("ascii")
+
+
+def deserialize_state(token: str) -> dict:
+    """Decode a share token back to its payload dict, or raise ValueError.
+
+    Decompression is bounded: the compressed input is size-checked, the
+    inflater is given a hard output ceiling (MAX_STATE_BYTES), and any
+    unconsumed input past that ceiling makes the token invalid -- a
+    decompression bomb dies here as a ValueError, never as memory
+    exhaustion. The decoded payload's shape is then bounded by
+    validate_tree before anything walks it.
+    """
+    text = str(token).strip()
+    if len(text) > MAX_TOKEN_CHARS:
+        raise ValueError("Not a query token: too large")
+    try:
+        packed = base64.urlsafe_b64decode(text.encode("ascii"))
+        inflater = zlib.decompressobj()
+        raw = inflater.decompress(packed, MAX_STATE_BYTES)
+        if inflater.unconsumed_tail or not inflater.eof:
+            raise ValueError(
+                f"decompressed size exceeds {MAX_STATE_BYTES} bytes")
+        payload = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"Not a query token: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Not a query-state payload")
+    validate_tree(payload)
+    return payload
+
+
 def build_select(table: str, columns, predicates, combinator: str,
                  order_by: str | None, descending: bool,
                  limit: int, bag: ParamBag,
@@ -407,10 +791,17 @@ _TREE_BINARY_OPS = {
 
 
 def _tree_children(node: dict) -> list:
-    """A group's children, whichever container shape the component used."""
+    """A group's children, whichever container shape the component used.
+
+    Strictly a dict or a list: `list()` over any other iterable is an
+    amplifier -- a hostile string of N characters would become N child
+    "nodes" -- so anything else is refused, never coerced.
+    """
     children = node.get("children1") or []
     if isinstance(children, dict):
         return list(children.values())
+    if not isinstance(children, (list, tuple)):
+        raise ValueError("Tree children must be a list or an object")
     return list(children)
 
 
@@ -459,7 +850,18 @@ def compile_tree_node(node, known_columns, bag: ParamBag) -> str | None:
         return None                       # rule still being built
     _require_known(field, known_columns, "column")
     column = _quote_ident(field)
-    values = list(properties.get("value") or [])
+    # The component always exports `value` as a list. Anything else is a
+    # doctored payload: `list()` over a string would explode it into
+    # per-character values, so the shape is enforced, not coerced.
+    raw_values = properties.get("value")
+    if raw_values is None:
+        raw_values = []
+    if not isinstance(raw_values, (list, tuple)):
+        raise ValueError("Rule values must be a list")
+    if len(raw_values) > MAX_RULE_VALUES:
+        raise ValueError(
+            f"Rule holds more than {MAX_RULE_VALUES} values")
+    values = list(raw_values)
 
     if operator in _TREE_BINARY_OPS:
         if not values or values[0] is None:
@@ -474,6 +876,9 @@ def compile_tree_node(node, known_columns, bag: ParamBag) -> str | None:
         return f"NOT ({clause})" if operator == "not_between" else clause
     if operator in ("select_any_in", "select_not_any_in", "multiselect_equals"):
         chosen = values[0] if values and isinstance(values[0], list) else values
+        if len(chosen) > MAX_RULE_VALUES:
+            raise ValueError(
+                f"Rule holds more than {MAX_RULE_VALUES} values")
         chosen = [v for v in chosen
                   if not isinstance(v, (dict, list, tuple)) and v is not None]
         if not chosen:
@@ -521,62 +926,59 @@ def run_query(conn, sql: str, params: dict, revision) -> pd.DataFrame:
 
 # ------------------------------------------------------------------- page
 
-#: Operators offered per widget kind. The label the reader picks maps to
-#: exactly one clause builder below; nothing typed ever becomes an operator.
-_NUMERIC_OPS = ("≥", "≤", "=", "≠", ">", "<", "between", "one of",
-                "is missing", "is present")
-_TEXT_OPS = ("contains", "starts with", "ends with", "equals", "not equals",
-             "one of", "pattern (% and _ wildcards)",
-             "is missing", "is present")
-_DATE_OPS = ("between", "on or after", "on or before",
-             "is missing", "is present")
-
-_NUMERIC_SQL = {"≥": ">=", "≤": "<=", "=": "=", "≠": "!=", ">": ">", "<": "<"}
-
-
 def _filter_widget(container, sport, table: str, col: Column, profile: dict,
                    bag: ParamBag) -> str | None:
+    """One column's filter as a compiled predicate (compatibility shim).
+
+    The widgets now emit *specs* (see `_spec_widget` / `compile_condition`)
+    so a condition can be counted, serialised and compiled independently
+    of its widgets; this wrapper keeps the old render-and-compile contract
+    for callers like scripts/filter_widget_demo.py.
+    """
+    spec = _spec_widget(container, sport.k("qb", table, col.name), col,
+                        profile)
+    if spec is None:
+        return None
+    return compile_condition(spec, {col.name}, bag)
+
+
+def _spec_widget(container, key: str, col: Column,
+                 profile: dict) -> dict | None:
     """One column's filter: an operator picked for its type, then inputs.
 
-    Returns the parameterised predicate the setting compiles to, or None
-    while the widget sits in its "no filter" state. Every kind offers the
-    full operator set its type supports -- comparisons, ranges, lists,
-    text patterns, and IS NULL / IS NOT NULL for the columns whose empty
-    cells are the finding. Numeric inputs carry NO upper bound: the
+    Returns the JSON-able condition spec the widgets currently describe,
+    or None while the widget sits in its "no filter" state. Every kind
+    offers the full operator set its type supports -- comparisons, ranges,
+    lists, text patterns, and IS NULL / IS NOT NULL for the columns whose
+    empty cells are the finding. Numeric inputs carry NO upper bound: the
     column's observed maximum is shown as a hint, never enforced, because
     yesterday's record is not a cap on what may be asked.
     """
-    key = sport.k("qb", table, col.name)
     label = labels.words(col.name)
-
     if col.kind in ("integer", "float"):
-        return _numeric_filter(container, key, label, col, profile, bag)
+        return _numeric_spec(container, key, label, col, profile)
     if col.kind == "boolean":
         choice = container.segmented_control(
-            label, ["Any", "Yes", "No", "Missing"], default="Any", key=key)
-        if choice == "Yes":
-            return equals_clause(col.name, 1, bag)
-        if choice == "No":
-            return equals_clause(col.name, 0, bag)
-        if choice == "Missing":
-            return null_clause(col.name, missing=True)
-        return None
+            label, ["Any", "Yes", "No", "Missing", "Present"],
+            default="Any", key=f"{key}:bool")
+        op = {"Yes": "is true", "No": "is false", "Missing": "is missing",
+              "Present": "is present"}.get(choice)
+        return {"column": col.name, "kind": "boolean", "op": op} \
+            if op else None
     if col.kind in ("date", "datetime"):
-        return _date_filter(container, key, label, col, profile, bag)
-    return _text_filter(container, key, label, col, profile, bag)
+        return _date_spec(container, key, label, col, profile)
+    return _text_spec(container, key, label, col, profile)
 
 
-def _numeric_filter(container, key, label, col, profile, bag):
+def _numeric_spec(container, key, label, col, profile):
     lo, hi = profile.get("lo"), profile.get("hi")
     span = ("" if lo is None or hi is None
             else f"data spans {lo:g}–{hi:g}")
     op_col, value_col = container.columns((1, 2))
     operator = op_col.selectbox(label, _NUMERIC_OPS, key=f"{key}:op")
-    cast = int if col.kind == "integer" else float
-    if operator == "is missing":
-        return null_clause(col.name, missing=True)
-    if operator == "is present":
-        return null_clause(col.name, missing=False)
+    spec = {"column": col.name, "kind": col.kind, "op": operator}
+    if operator in ("is missing", "is present"):
+        return spec
     if operator == "between":
         a, b = value_col.columns(2)
         low = a.number_input("from", key=f"{key}:lo", value=None,
@@ -589,15 +991,17 @@ def _numeric_filter(container, key, label, col, profile, bag):
             value_col.caption(span)
         if low is None or high is None:
             return None
-        low, high = sorted((cast(low), cast(high)))
-        return between_clause(col.name, low, high, bag)
+        spec.update(lo=low, hi=high)
+        return spec
     if operator == "one of":
         typed = value_col.text_input(
             "values", key=f"{key}:in", label_visibility="collapsed",
             placeholder="e.g. 1, 5, 10")
         chosen = parse_number_list(typed)
-        return in_clause(col.name, [cast(v) for v in chosen], bag) \
-            if chosen else None
+        if not chosen:
+            return None
+        spec["values"] = chosen
+        return spec
     value = value_col.number_input(
         "value", key=f"{key}:val", value=None,
         label_visibility="collapsed",
@@ -606,19 +1010,18 @@ def _numeric_filter(container, key, label, col, profile, bag):
         f"No cap — {span}, but any value may be asked.")
     if value is None:
         return None
-    return comparison_clause(col.name, _NUMERIC_SQL[operator],
-                             cast(value), bag)
+    spec["value"] = value
+    return spec
 
 
-def _text_filter(container, key, label, col, profile, bag):
+def _text_spec(container, key, label, col, profile):
     values = profile.get("values")
     op_col, value_col = container.columns((1, 2))
     operator = op_col.selectbox(label, _TEXT_OPS, key=f"{key}:op",
                                 index=5 if values is not None else 0)
-    if operator == "is missing":
-        return null_clause(col.name, missing=True)
-    if operator == "is present":
-        return null_clause(col.name, missing=False)
+    spec = {"column": col.name, "kind": "text", "op": operator}
+    if operator in ("is missing", "is present"):
+        return spec
     if operator == "one of":
         if values is not None:
             chosen = value_col.multiselect(
@@ -630,38 +1033,43 @@ def _text_filter(container, key, label, col, profile, bag):
                 placeholder="comma, separated, values")
             chosen = [part.strip() for part in typed.split(",")
                       if part.strip()]
-        return in_clause(col.name, chosen, bag) if chosen else None
+        if not chosen:
+            return None
+        spec["values"] = chosen
+        return spec
     typed = value_col.text_input("value", key=f"{key}:val",
                                  label_visibility="collapsed",
                                  placeholder="text")
     if not typed:
         return None
-    if operator == "not equals":
-        return comparison_clause(col.name, "!=", typed, bag)
-    if operator.startswith("pattern"):
-        return pattern_clause(col.name, typed, bag)
-    return like_clause(col.name, typed, operator, bag)
+    spec["value"] = typed
+    return spec
 
 
-def _date_filter(container, key, label, col, profile, bag):
+def _date_spec(container, key, label, col, profile):
     bounds = _date_bounds(profile)
     op_col, value_col = container.columns((1, 2))
     operator = op_col.selectbox(label, _DATE_OPS, key=f"{key}:op")
-    if operator == "is missing":
-        return null_clause(col.name, missing=True)
-    if operator == "is present":
-        return null_clause(col.name, missing=False)
+    if operator in ("is missing", "is present"):
+        return {"column": col.name, "kind": col.kind, "op": operator}
     if bounds is None:
         # Bounds unreadable as dates (SQLite will store anything): a text
         # match is honest where a picker would lie.
         typed = value_col.text_input("value", key=f"{key}:txt",
                                      label_visibility="collapsed")
-        return like_clause(col.name, typed, "contains", bag) if typed else None
-    column = f"DATE({_quote_ident(col.name)})"
-    # DATE() normalises whatever ISO-ish form the column stores before
-    # comparing, at the cost of the index -- correctness over speed.
+        return ({"column": col.name, "kind": "text", "op": "contains",
+                 "value": typed} if typed else None)
+    # A datetime kind, or bounds longer than a bare date, may carry a
+    # time-of-day: day-granular ceilings then need half-open next-day
+    # bounds. Either way the raw column stays on the left -- ISO text
+    # compares correctly as strings, so no DATE() wrapper, no lost index.
+    ceiling = (col.kind == "datetime"
+               or len(str(profile.get("hi") or "")) > 10)
+    spec = {"column": col.name, "kind": col.kind, "op": operator,
+            "day_ceiling": ceiling}
     if operator == "between":
-        picked = value_col.date_input(label, value=bounds, key=key,
+        picked = value_col.date_input(label, value=bounds,
+                                      key=f"{key}:range",
                                       min_value=bounds[0],
                                       max_value=bounds[1],
                                       label_visibility="collapsed")
@@ -669,15 +1077,16 @@ def _date_filter(container, key, label, col, profile, bag):
             return None          # picker mid-edit: one end chosen so far
         if picked == bounds:
             return None          # full range = not actually filtering
-        return (f"{column} BETWEEN {bag.add(picked[0].isoformat())} "
-                f"AND {bag.add(picked[1].isoformat())}")
+        spec.update(lo=picked[0].isoformat(), hi=picked[1].isoformat())
+        return spec
     picked = value_col.date_input(
-        label, value=bounds[0] if operator == "on or after" else bounds[1],
+        label,
+        value=bounds[0] if operator in ("on", "on or after") else bounds[1],
         key=f"{key}:one", label_visibility="collapsed")
     if picked is None:
         return None
-    sql_op = ">=" if operator == "on or after" else "<="
-    return f"{column} {sql_op} {bag.add(picked.isoformat())}"
+    spec["value"] = picked.isoformat()
+    return spec
 
 
 def _date_bounds(profile: dict):
@@ -688,6 +1097,337 @@ def _date_bounds(profile: dict):
     except (TypeError, ValueError):
         return None
     return (lo, hi) if lo <= hi else None
+
+
+# ---------------------------------------------- filter panel: groups (B)
+
+def _clause_count(conn, table: str, clause: str, params: dict,
+                  revision) -> int | None:
+    """COUNT(*) for one compiled clause, through st.connection's cache.
+
+    ``conn.query`` caches on (sql, params); the revision comment folds the
+    file's identity into the key, exactly as run_query does. Returns None
+    rather than raising -- a count badge must never be the thing that
+    breaks the panel.
+    """
+    try:
+        frame = conn.query(
+            f"SELECT COUNT(*) AS n FROM {_quote_ident(table)} "
+            f"WHERE {clause} /* rev {revision} */",
+            params=params, ttl=600)
+        return 0 if frame.empty else int(frame.at[0, "n"])
+    except Exception:
+        return None
+
+
+def _condition_count(conn, table: str, spec: dict, known_columns,
+                     revision) -> int | None:
+    """How many rows one condition matches on its own.
+
+    The spec compiles into a bag of its own here, so the count query's
+    placeholders are self-contained and cache-stable whatever position
+    the condition holds in the full query.
+    """
+    bag = ParamBag()
+    try:
+        clause = compile_condition(spec, known_columns, bag)
+    except ValueError:
+        return None
+    if clause is None:
+        return None
+    return _clause_count(conn, table, clause, bag.values, revision)
+
+
+def _groups_state(sport, table: str) -> dict:
+    """The filter panel's one session dict, per table.
+
+    groups -- the panel's shape only: a list of ``{"gid": n}``. Everything
+              a group *says* (its joiner, match rule, chosen columns,
+              operator settings) lives in widget state under keys derived
+              from the gid, so widgets stay the single source of truth.
+    next   -- the next gid to mint. Gids are never reused: a widget key
+              built from a gid must never resurrect the values of a group
+              that was deleted, and a restore must land on keys no widget
+              has rendered yet.
+    """
+    return st.session_state.setdefault(
+        sport.k("qbf_state", table), {"groups": [{"gid": 0}], "next": 1})
+
+
+def _match_rule(label: str | None) -> str:
+    return "AND" if not label or label.startswith("all") else "OR"
+
+
+def _filter_groups(sport, table: str, cols, profiles: dict, conn, revision,
+                   bag: ParamBag) -> tuple[str | None, list[dict]]:
+    """The nested condition groups UI, compiled to one WHERE expression.
+
+    Each bordered card is a group: any number of column conditions,
+    matched with the group's own ALL (AND) / ANY (OR) rule; each card
+    after the first chooses how it joins the combined groups above it.
+    Columns are picked from a category-grouped list (the BUILDER_GROUPS
+    shelves), every active condition and every multi-condition group shows
+    a live count of the rows it matches alone, and the panel's whole state
+    round-trips through a shareable token.
+
+    Returns ``(where, payload)``: the compiled expression (None while
+    nothing filters) with its parameters in ``bag``, and the JSON-able
+    ``[{joiner, match, conditions: [spec, ...]}, ...]`` the token stores.
+    """
+    state = _groups_state(sport, table)
+    by_name = {c.name: c for c in cols}
+    names = list(by_name)
+    known = set(names)
+    ordered = categorised_order(names)
+
+    def shelf_label(name):
+        return f"{labels.words(name)} — {column_category(name)}"
+
+    pairs: list[tuple[str, str | None]] = []
+    payload: list[dict] = []
+    for gi, group in enumerate(list(state["groups"])):
+        gid = group["gid"]
+        base = sport.k("qbf", table, gid)
+
+        joiner = "AND"
+        if gi:
+            joiner = st.segmented_control(
+                "Joined with the groups above using", ["AND", "OR"],
+                default="OR", key=f"{base}:joiner",
+                help="How this group combines with everything above it: "
+                     "AND narrows, OR widens.") or "OR"
+
+        with st.container(border=True):
+            head = st.container(horizontal=True,
+                                vertical_alignment="center", gap="small")
+            with head:
+                with st.container(width="stretch"):
+                    st.markdown(f"**Group {gi + 1}**")
+                match_label = st.radio(
+                    "Match", ["all (AND)", "any (OR)"], horizontal=True,
+                    key=f"{base}:match", label_visibility="collapsed",
+                    help="Whether a row must satisfy all of this group's "
+                         "conditions, or any one of them.")
+                if len(state["groups"]) > 1 and st.button(
+                        ":material/delete:", key=f"{base}:drop",
+                        type="tertiary", help="Remove this group"):
+                    state["groups"] = [g for g in state["groups"]
+                                       if g["gid"] != gid]
+                    st.rerun()
+            chosen = st.multiselect(
+                "Conditions — columns are grouped by category", ordered,
+                key=f"{base}:cols", format_func=shelf_label,
+                placeholder="Type to search columns by name or category…")
+
+            match = _match_rule(match_label)
+            clauses: list[str] = []
+            specs: list[dict] = []
+            for name in chosen:
+                col = by_name[name]
+                box = st.container(border=True)
+                spec = _spec_widget(box, f"{base}:{name}", col,
+                                    profiles.get(name, {}))
+                if spec is None:
+                    box.caption("No filter yet — choose an operator and "
+                                "value.")
+                    continue
+                specs.append(spec)
+                alone = _condition_count(conn, table, spec, known, revision)
+                if alone is not None:
+                    box.caption(f":material/filter_alt: matches "
+                                f"{alone:,} row{'' if alone == 1 else 's'} "
+                                f"on its own")
+                try:
+                    clause = compile_condition(spec, known, bag)
+                except ValueError as exc:
+                    box.error(str(exc))
+                    clause = None
+                if clause:
+                    clauses.append(clause)
+
+            group_clause = combine_condition_clauses(clauses, match)
+            if group_clause and len(clauses) > 1:
+                # The group's own live count, from a self-contained bag so
+                # the badge query is cache-stable.
+                group_bag = ParamBag()
+                shown = combine_condition_clauses(
+                    [compile_condition(s, known, group_bag)
+                     for s in specs], match)
+                n = _clause_count(conn, table, shown, group_bag.values,
+                                  revision)
+                if n is not None:
+                    st.caption(f"Group matches {n:,} "
+                               f"row{'' if n == 1 else 's'} on its own")
+            pairs.append((joiner, group_clause))
+            payload.append({"joiner": joiner, "match": match,
+                            "conditions": specs})
+
+    if st.button("Add a condition group", icon=":material/add:",
+                 key=sport.k("qbf_add", table),
+                 help="A new card of conditions, joined to the ones above "
+                      "with AND or OR — for queries like (played "
+                      "Collingwood AND 150+ games) OR (drafted Hawthorn "
+                      "AND premiership player)."):
+        state["groups"].append({"gid": state["next"]})
+        state["next"] += 1
+        st.rerun()
+
+    where = combine_group_clauses(pairs)
+    _share_controls(sport, table, payload)
+    return where, payload
+
+
+def _share_controls(sport, table: str, payload: list[dict]) -> None:
+    """Serialize the panel to a token; accept one back for restoring.
+
+    Restoring cannot touch widget keys mid-run -- most of them belong to
+    widgets already rendered above -- so the pasted token is parked in a
+    plain session slot and applied at the top of the *next* run, before
+    any widget exists (see the pending-restore hand-off in page()).
+    """
+    with st.expander("Share or restore this filter set"):
+        if any(g["conditions"] for g in payload):
+            token = serialize_state({"table": table, "groups": payload})
+            st.caption("This token reproduces the panel exactly — groups, "
+                       "operators and values. Paste it below on any "
+                       "session (URL sharing hooks onto the same string).")
+            st.code(token, language=None)
+        else:
+            st.caption("Set a condition and a token for the current "
+                       "panel appears here.")
+        pasted = st.text_area("Restore from a token",
+                              key=sport.k("qbf_token", table),
+                              placeholder="Paste a shared token…")
+        if st.button("Restore", key=sport.k("qbf_restore", table),
+                     icon=":material/settings_backup_restore:",
+                     disabled=not (pasted or "").strip()):
+            st.session_state[sport.k("qbf_pending")] = pasted.strip()
+            st.rerun()
+
+
+def _apply_restored_state(sport, payload: dict, schema: dict, conn,
+                          revision) -> None:
+    """Seed session state from a share token, before any widget renders.
+
+    Every name in the token passes the discovery gate against the *live*
+    schema -- a doctored token can only ever select real tables and
+    columns, and its values still ride as parameters when the seeded
+    widgets compile. Groups land on freshly minted gids, so every key
+    written here belongs to a widget that has never rendered (assigning a
+    rendered widget's key is a Streamlit error, and reusing an old gid
+    would collide with parked widget state).
+    """
+    table = _require_known(str(payload.get("table")), set(schema), "table")
+    by_name = {c.name: c for c in schema[table]}
+    prior = st.session_state.get(sport.k("qbf_state", table)) or {}
+    gid = int(prior.get("next", 0))
+
+    groups: list[dict] = []
+    for stored in payload.get("groups") or []:
+        if not isinstance(stored, dict):
+            continue
+        base = sport.k("qbf", table, gid)
+        joiner = stored.get("joiner")
+        if joiner in ("AND", "OR"):
+            st.session_state[f"{base}:joiner"] = joiner
+        st.session_state[f"{base}:match"] = (
+            "any (OR)" if stored.get("match") == "OR" else "all (AND)")
+        chosen: list[str] = []
+        for spec in stored.get("conditions") or []:
+            if not isinstance(spec, dict):
+                continue
+            col = by_name.get(spec.get("column"))
+            if col is None:
+                continue
+            profile = column_profile(conn, sport.db, revision, table,
+                                     col.name, col.kind)
+            if _seed_spec_state(f"{base}:{col.name}", col, spec, profile):
+                chosen.append(col.name)
+        st.session_state[f"{base}:cols"] = chosen
+        groups.append({"gid": gid})
+        gid += 1
+
+    if not groups:
+        raise ValueError("The token holds no conditions.")
+    st.session_state[sport.k("qbf_state", table)] = {"groups": groups,
+                                                     "next": gid}
+    st.session_state[sport.k("qb_table")] = table
+
+
+def _seed_spec_state(base: str, col: Column, spec: dict,
+                     profile: dict) -> bool:
+    """Write one condition spec into its widgets' session keys.
+
+    Returns False (and writes nothing load-bearing) when the spec cannot
+    drive this column's widgets -- an operator outside the kind's
+    vocabulary, values that don't parse -- so a stale or doctored token
+    degrades to a dropped condition, never a crashed page.
+    """
+    op, kind = spec.get("op"), spec.get("kind")
+
+    if col.kind == "boolean":
+        choice = {"is true": "Yes", "is false": "No",
+                  "is missing": "Missing", "is present": "Present"}.get(op)
+        if not choice:
+            return False
+        st.session_state[f"{base}:bool"] = choice
+        return True
+
+    if col.kind in ("date", "datetime"):
+        if kind == "text":       # the unreadable-bounds fallback
+            if op != "contains" or not spec.get("value"):
+                return False
+            st.session_state[f"{base}:txt"] = str(spec["value"])
+            return True
+        if op not in _DATE_OPS:
+            return False
+        st.session_state[f"{base}:op"] = op
+        try:
+            if op == "between":
+                lo = dt.date.fromisoformat(str(spec["lo"])[:10])
+                hi = dt.date.fromisoformat(str(spec["hi"])[:10])
+                st.session_state[f"{base}:range"] = (lo, hi)
+            elif op not in ("is missing", "is present"):
+                st.session_state[f"{base}:one"] = \
+                    dt.date.fromisoformat(str(spec["value"])[:10])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return True
+
+    if col.kind in ("integer", "float"):
+        if op not in _NUMERIC_OPS:
+            return False
+        cast = int if col.kind == "integer" else float
+        st.session_state[f"{base}:op"] = op
+        try:
+            if op == "between":
+                st.session_state[f"{base}:lo"] = cast(spec["lo"])
+                st.session_state[f"{base}:hi"] = cast(spec["hi"])
+            elif op == "one of":
+                st.session_state[f"{base}:in"] = ", ".join(
+                    str(v) for v in spec.get("values") or [])
+            elif op not in ("is missing", "is present"):
+                st.session_state[f"{base}:val"] = cast(spec["value"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return True
+
+    if op not in _TEXT_OPS:      # text
+        return False
+    st.session_state[f"{base}:op"] = op
+    if op == "one of":
+        values = [str(v) for v in spec.get("values") or []]
+        offered = profile.get("values")
+        if offered is not None:
+            # The multiselect refuses values outside its options; keep
+            # the intersection so a stale token still restores cleanly.
+            st.session_state[f"{base}:pick"] = \
+                [v for v in values if v in offered]
+        else:
+            st.session_state[f"{base}:list"] = ", ".join(values)
+    elif op not in ("is missing", "is present"):
+        st.session_state[f"{base}:val"] = str(spec.get("value") or "")
+    return True
 
 
 # ------------------------------------------------- grid-constraint mode
@@ -1184,6 +1924,22 @@ def page(sport, heading=True):
         st.error(f"Could not read the {sport.label} database: {exc}")
         return
 
+    # A pasted share token is parked by _share_controls and applied HERE,
+    # before any widget renders: seeding a widget's session key is only
+    # legal while its widget does not yet exist this run. Parsing needs no
+    # database; validation against the live schema happens after discovery
+    # below, still ahead of the widgets it seeds.
+    restored = None
+    pending = st.session_state.pop(sport.k("qbf_pending"), None)
+    if pending is not None:
+        try:
+            restored = deserialize_state(pending)
+        except ValueError:
+            st.warning("That token could not be read — it may be "
+                       "truncated or from an incompatible version.")
+        else:
+            st.session_state[sport.k("qb_mode")] = MODE_FILTERS
+
     modes = [MODE_CONSTRAINTS] \
         + ([MODE_TREE] if HAS_CONDITION_TREE else []) + [MODE_FILTERS]
     mode = st.segmented_control(
@@ -1215,6 +1971,13 @@ def page(sport, heading=True):
     if not schema:
         st.error("The database contains no tables.")
         return
+
+    if restored is not None:
+        try:
+            _apply_restored_state(sport, restored, schema, conn, revision)
+        except (ValueError, sqlite3.Error, SQLAlchemyError,
+                pd.errors.DatabaseError) as exc:
+            st.warning(f"Could not restore that query: {exc}")
 
     tables = list(schema)
     default_table = getattr(sport.schema, "players", None)
@@ -1261,6 +2024,10 @@ def page(sport, heading=True):
         st.error(f"Could not profile {table}: {exc}")
         return
 
+    # One bag per script run, written by exactly one mode: the branch
+    # below renders (and compiles) only the active mode's widgets, so the
+    # inactive mode's parked session state can never reach this bag or
+    # the SQL built from it.
     bag = ParamBag()
     predicates: list[str] = []
     combinator = "AND"
@@ -1288,27 +2055,30 @@ def page(sport, heading=True):
             except ValueError:
                 tree = None
     else:
-        with st.container(border=True):
-            fbar = st.container(horizontal=True,
-                                vertical_alignment="center", gap="small")
-            with fbar:
-                with st.container(width="stretch"):
-                    chosen = st.multiselect(
-                        "Filter on columns", names,
-                        key=sport.k("qb_filter_cols", table))
-                combinator = st.radio("Combine with", ["AND", "OR"],
-                                      horizontal=True,
-                                      key=sport.k("qb_combine", table))
-            for col in (c for c in cols if c.name in chosen):
-                box = st.container(border=True)
-                predicate = _filter_widget(box, sport, table, col,
-                                           profiles[col.name], bag)
-                if predicate:
-                    predicates.append(predicate)
+        st.markdown(
+            f"Build condition groups over **{table}**. A group matches "
+            f"all or any of its conditions; groups join with AND or OR, "
+            f"so *(played Collingwood AND 150+ games) OR (drafted "
+            f"Hawthorn AND premiership player)* is two cards.")
+        try:
+            where_clause, _payload = _filter_groups(
+                sport, table, cols, profiles, conn, revision, bag)
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        if where_clause:
+            # The nested expression carries its own parenthesised AND/OR
+            # structure; it enters build_select as a single predicate, so
+            # the legacy flat combinator no longer shapes anything.
+            predicates = [where_clause]
 
     # -- compile ----------------------------------------------------------
     try:
         if mode == MODE_TREE and tree:
+            # The tree is a component return value -- a websocket message a
+            # hostile client can set to anything -- so bound its shape
+            # before the recursive compile walks it.
+            validate_tree(tree)
             clause = compile_tree_node(tree, set(names), bag)
             if clause:
                 predicates = [clause]

@@ -311,7 +311,7 @@ def _constraint_fixture():
                                    (3,'Gamma',120), (4,'Delta',300);
         INSERT INTO games VALUES (1,'A'), (2,'A'), (3,'B'), (4,'C');
     """)
-    return con, core.Schema()
+    return con, core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals")
 
 
 def _played(club):
@@ -359,3 +359,95 @@ def test_a_row_marked_constraint_survives_an_or_group():
         f"SELECT p.player FROM players p WHERE {where} ORDER BY p.player",
         params).fetchall()
     assert [r[0] for r in rows] == ["Delta", "Gamma"]
+
+
+# ------------------------------------------------- share-token and tree bounds
+#
+# The token rides in a URL and the visual tree rides in a websocket message,
+# so both are attacker-shaped inputs. These tests hold the resource bounds:
+# no decompression bomb, no deep recursion, no node flood, and no scalar
+# that downstream iteration could amplify into millions of objects.
+
+def test_a_share_token_round_trips():
+    payload = {"table": "players",
+               "groups": [{"match": "AND", "conditions": [
+                   {"column": "goals", "kind": "integer", "op": ">=",
+                    "value": 30}]}]}
+    assert QB.deserialize_state(QB.serialize_state(payload)) == payload
+
+
+def test_a_decompression_bomb_dies_as_a_value_error_not_as_memory():
+    import base64
+    import zlib
+
+    bomb = base64.urlsafe_b64encode(zlib.compress(
+        b'{"a":"' + b"A" * (30 * QB.MAX_STATE_BYTES) + b'"}', 9)).decode()
+    with pytest.raises(ValueError):
+        QB.deserialize_state(bomb)
+
+
+def test_an_oversized_compressed_token_is_refused_before_zlib_sees_it():
+    with pytest.raises(ValueError):
+        QB.deserialize_state("A" * (QB.MAX_TOKEN_CHARS + 1))
+
+
+def test_a_deeply_nested_payload_is_refused():
+    deep = node = {"table": "t"}
+    for _ in range(QB.MAX_TREE_DEPTH + 5):
+        node["groups"] = [{}]
+        node = node["groups"][0]
+    with pytest.raises(ValueError):
+        QB.deserialize_state(QB.serialize_state(deep))
+
+
+def test_a_node_flood_is_refused():
+    with pytest.raises(ValueError):
+        QB.validate_tree({"values": list(range(QB.MAX_TREE_NODES + 1))})
+
+
+def test_an_oversized_scalar_is_refused_even_as_a_single_node():
+    """One 100 MB string is one 'node'; a node count alone would pass it,
+    and list()/join()/LIKE-escaping downstream would amplify it."""
+    with pytest.raises(ValueError):
+        QB.validate_tree({"x": "A" * (QB.MAX_SCALAR_CHARS + 1)})
+
+
+def test_string_children_are_refused_not_exploded_into_characters():
+    """list("x" * N) is N single-character nodes -- the amplification the
+    review demonstrated. The shape is enforced, never coerced."""
+    hostile = {"type": "group", "children1": "x" * 1000}
+    with pytest.raises(ValueError):
+        QB.compile_tree_node(hostile, {"player"}, QB.ParamBag())
+
+
+def test_a_string_rule_value_is_refused_not_exploded():
+    hostile = {"type": "rule", "properties": {
+        "field": "player", "operator": "select_any_in",
+        "value": "not-a-list"}}
+    with pytest.raises(ValueError):
+        QB.compile_tree_node(hostile, {"player"}, QB.ParamBag())
+
+
+def test_a_rule_value_flood_is_refused():
+    hostile = {"type": "rule", "properties": {
+        "field": "player", "operator": "select_any_in",
+        "value": [list(range(QB.MAX_RULE_VALUES + 1))]}}
+    with pytest.raises(ValueError):
+        QB.compile_tree_node(hostile, {"player"}, QB.ParamBag())
+
+
+def test_a_legitimate_tree_still_compiles_under_the_bounds():
+    tree = {"type": "group", "properties": {"conjunction": "AND"},
+            "children1": [
+                {"type": "rule", "properties": {
+                    "field": "player", "operator": "select_any_in",
+                    "value": [["Alpha", "Beta"]]}},
+                {"type": "rule", "properties": {
+                    "field": "goals", "operator": "greater",
+                    "value": [5]}},
+            ]}
+    QB.validate_tree(tree)
+    bag = QB.ParamBag()
+    clause = QB.compile_tree_node(tree, {"player", "goals"}, bag)
+    assert '"player" IN' in clause and '"goals" >' in clause
+    assert len(bag.values) == 3

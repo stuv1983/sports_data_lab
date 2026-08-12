@@ -459,27 +459,31 @@ def draft_pick_between(lo, hi):
     Draftguru restarts pick numbering for the Rookie, Pre-Season and
     Mid-Season drafts. Without the draft-type predicate, a normal "top-10
     draft pick" square silently includes all of those separate pick 1-10s.
+
+    The column stays bare (no LOWER() wrapper): SQLite's LIKE is already
+    case-insensitive for ASCII, and wrapping the column in a function
+    blinds the planner to any index on it.
     """
     return (f"""{_DRAFT_JOIN}
-                  AND LOWER(d.draft_type) LIKE '%national%'
+                  AND d.draft_type LIKE '%national%'
                   AND d.pick BETWEEN ? AND ?""", [lo, hi])
 
 
 def draft_of_type(kind):
     """National / Rookie / Pre-Season / Mid-Season / Trade / Free Agency."""
     return (f"""{_DRAFT_JOIN}
-                  AND LOWER(d.draft_type) LIKE ?""", [f"%{kind.lower()}%"])
+                  AND d.draft_type LIKE ?""", [f"%{kind.lower()}%"])
 
 
 def drafted_by(club):
     return (f"""{_DRAFT_JOIN}
-                  AND LOWER(d.club) LIKE ?""", [f"%{club.lower()}%"])
+                  AND d.club LIKE ?""", [f"%{club.lower()}%"])
 
 
 def drafted_by_but_never_played_for(club):
     """Drafted by a club, never played a senior game for it."""
     return (f"""{_DRAFT_JOIN}
-                  AND LOWER(d.club) LIKE ?
+                  AND d.club LIKE ?
                   AND l.player_id NOT IN (
                       SELECT player_id FROM games
                       WHERE club_now = ? OR club_hist = ?)""",
@@ -535,7 +539,7 @@ def traded_min(times=1):
     """Changed clubs by trade at least `times` times (Draftguru records
     trades from 1988). Free agency is its own signing kind and stays out."""
     return (f"""{_DRAFT_JOIN}
-                  AND LOWER(d.draft_type) LIKE '%trade%'
+                  AND d.draft_type LIKE '%trade%'
                 GROUP BY l.player_id HAVING COUNT(*) >= ?""", [times])
 
 

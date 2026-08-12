@@ -53,6 +53,7 @@ VENUE_ALIASES = {
 
 SCHEMA = core.Schema(
     career_score="career_goals",
+    career_postseason="finals_played",
     game_score="goals",
     is_final="is_final",
     #: A box score reads left to right the way AFL Tables prints one --

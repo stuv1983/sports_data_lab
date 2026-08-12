@@ -57,7 +57,8 @@ def fixture():
           (2,'Beta Two',2002,'1','A','B','B','SCG',1,1,10,0,'W');
         INSERT INTO captaincies VALUES (1,1996,'B','unique');
     """)
-    schema = core.Schema(
+    schema = core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals",
+
         stats=("goals", "disposals"), clubs=("A", "B"),
         required_games_cols=(), required_player_cols=(),
     )
@@ -122,7 +123,8 @@ _PHYSICALS_SCHEMA = """
 
 
 def _physicals_schema():
-    return core.Schema(
+    return core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals",
+
         stats=("goals", "disposals"), clubs=("A", "B"),
         required_games_cols=(), required_player_cols=(),
     )

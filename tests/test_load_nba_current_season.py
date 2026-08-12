@@ -153,6 +153,9 @@ def test_a_matched_player_keeps_their_existing_id(base_db):
     existing_id = con.execute(
         "SELECT player_id FROM players WHERE source_player_id='p3'"
     ).fetchone()[0]
+    # Closed before the load: the loader promotes atomically with
+    # os.replace, and Windows refuses to swap a file with an open handle.
+    con.close()
 
     source = FakeSource(
         matches_by_season={2010: [_match("g2010new", 2010, "2010-12-01",
@@ -171,6 +174,7 @@ def test_a_new_player_gets_a_fresh_id_without_disturbing_anyone_elses(base_db):
     con = sqlite3.connect(base_db)
     before_ids = {row[0] for row in con.execute(
         "SELECT player_id FROM players")}
+    con.close()          # os.replace cannot swap an open file on Windows
 
     source = FakeSource(
         matches_by_season={2010: [_match("g2010new", 2010, "2010-12-01",
@@ -329,6 +333,7 @@ def test_the_builds_indexes_survive_a_load(base_db):
         "SELECT name FROM sqlite_master WHERE type='index' "
         "AND name NOT LIKE 'sqlite_%'")}
     assert {"ix_players_key", "ix_players_obsc", "ix_pseasons"} <= before
+    con.close()          # os.replace cannot swap an open file on Windows
 
     source = FakeSource(
         matches_by_season={2010: [_match("g2010new", 2010, "2010-12-01",
@@ -351,6 +356,7 @@ def test_franchises_and_teams_are_never_touched(base_db):
     before_franchises = con.execute(
         "SELECT franchise_id, current_name FROM franchises "
         "ORDER BY franchise_id").fetchall()
+    con.close()          # os.replace cannot swap an open file on Windows
 
     source = FakeSource(
         matches_by_season={2010: [_match("g2010new", 2010, "2010-12-01",
@@ -428,3 +434,107 @@ def test_dry_run_reports_without_writing(base_db):
     after = sqlite3.connect(base_db).execute(
         "SELECT COUNT(*) FROM games").fetchone()[0]
     assert after == before
+
+
+# ---------------------------------------------------- snapshot validation
+#
+# _replace_season deletes before it inserts, so validate_snapshot is the
+# only thing standing between an upstream outage and a wiped season.
+
+def _season_store(matches=0, games=0, season=2020):
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE matches (match_id TEXT, season INT)")
+    con.execute("CREATE TABLE games (player_id INT, season INT)")
+    con.executemany("INSERT INTO matches VALUES (?, ?)",
+                    [(f"m{i}", season) for i in range(matches)])
+    con.executemany("INSERT INTO games VALUES (?, ?)",
+                    [(i, season) for i in range(games)])
+    return con
+
+
+def _frames(matches, games):
+    m = pd.DataFrame({"match_id": [f"m{i}" for i in range(matches)]}) \
+        if matches else None
+    g = pd.DataFrame({"player_id": list(range(games))}) if games else None
+    return m, g
+
+
+def test_an_empty_fetch_for_a_stored_season_is_rejected():
+    con = _season_store(matches=60, games=600)
+    verdict, reason = lcs.validate_snapshot(con, 2020, *_frames(0, 0))
+    assert verdict == "reject"
+    assert "no matches" in reason
+
+
+def test_an_empty_fetch_for_an_unstored_season_is_a_harmless_skip():
+    con = _season_store(matches=0, games=0)
+    verdict, _ = lcs.validate_snapshot(con, 2020, *_frames(0, 0))
+    assert verdict == "skip"
+
+
+def test_a_complete_schedule_with_a_gutted_game_log_is_rejected():
+    """The sneaky failure: matches pass their ratio while the player-game
+    fetch came back one page short of everything."""
+    con = _season_store(matches=60, games=600)
+    verdict, reason = lcs.validate_snapshot(con, 2020, *_frames(60, 10))
+    assert verdict == "reject"
+    assert "player-games" in reason
+
+
+def test_a_normally_grown_snapshot_passes():
+    con = _season_store(matches=60, games=600)
+    verdict, _ = lcs.validate_snapshot(con, 2020, *_frames(65, 700))
+    assert verdict == "ok"
+
+
+def test_small_stored_seasons_are_replaceable_without_ratio_noise():
+    """Below the guard floors a ratio is noise: the synthetic fixtures
+    replace a two-game season with one corrected game routinely."""
+    con = _season_store(matches=2, games=4)
+    verdict, _ = lcs.validate_snapshot(con, 2020, *_frames(1, 1))
+    assert verdict == "ok"
+
+
+def test_an_empty_fetch_never_wipes_a_stored_season(base_db):
+    """End to end: a source that returns nothing for a stored season must
+    leave the live file byte-for-byte untouched and report the rejection,
+    and the CLI contract turns that rejection into a nonzero exit."""
+    import hashlib
+
+    before = hashlib.sha256(base_db.read_bytes()).hexdigest()
+    result = _run(base_db, FakeSource(), [2010])
+
+    assert hashlib.sha256(base_db.read_bytes()).hexdigest() == before
+    assert result["rejected_seasons"] == 1
+    assert "rejected" in result["seasons"][0]
+
+
+def test_two_updaters_cannot_race_the_same_database(base_db):
+    """The lock guards the whole copy/verify/promote sequence, so a second
+    direct CLI invocation refuses rather than scribbling on the first."""
+    lock = lcs._acquire_update_lock(base_db)
+    try:
+        with pytest.raises(RuntimeError):
+            _run(base_db, FakeSource(
+                matches_by_season={2010: [_match("g2010new", 2010,
+                                                 "2010-12-01", "okc", "bos",
+                                                 100, 90)]},
+                games_by_season={2010: [_row("p3", "g2010new", "okc", 20)]}),
+                [2010])
+    finally:
+        lock.unlink()
+
+
+def test_an_abandoned_lock_is_taken_over(base_db):
+    """A crashed run cannot release its lock; a fresh run must not be
+    blocked forever by a corpse."""
+    import os
+    import time as _time
+
+    lock = lcs._acquire_update_lock(base_db)
+    old = _time.time() - lcs.LOCK_STALE_SECONDS - 60
+    os.utime(lock, (old, old))
+
+    taken = lcs._acquire_update_lock(base_db)
+    assert taken.exists()
+    taken.unlink()

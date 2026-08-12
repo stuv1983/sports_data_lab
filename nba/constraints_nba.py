@@ -104,25 +104,29 @@ def _venue(name):
 # `champion` and `made_playoffs_season` read team_seasons rather than
 # scanning box scores, which is what that table is for.
 
+# Compared bare (`round = ?`), never as UPPER(TRIM(round)): wrapping the
+# column blinds SQLite to the round indexes and forces a full games scan.
+# The build stores codes already normalised, and the round/result hygiene
+# test fails the moment any build stops doing so.
 FINALS_ROUND = "F"
 
 
 def played_in_the_finals():
     """Appeared in an NBA Finals game."""
     return ("SELECT DISTINCT player_id FROM games "
-            "WHERE UPPER(TRIM(round)) = ?", [FINALS_ROUND])
+            "WHERE round = ?", [FINALS_ROUND])
 
 
 def won_the_finals():
     """Won an NBA Finals game. Not the same as winning the title."""
     return ("SELECT DISTINCT player_id FROM games "
-            "WHERE UPPER(TRIM(round)) = ? AND result = 'W'", [FINALS_ROUND])
+            "WHERE round = ? AND result = 'W'", [FINALS_ROUND])
 
 
 def never_made_the_finals():
     """Played, but never in a Finals game."""
     return ("SELECT DISTINCT player_id FROM games WHERE player_id NOT IN "
-            "(SELECT player_id FROM games WHERE UPPER(TRIM(round)) = ?)",
+            "(SELECT player_id FROM games WHERE round = ?)",
             [FINALS_ROUND])
 
 
@@ -135,7 +139,7 @@ def championships_won_min(times):
                JOIN team_seasons t
                  ON t.season = g.season AND t.club_now = g.club_now
                 AND t.phase = 'regular'
-               WHERE UPPER(TRIM(g.round)) = ? AND t.champion = 1
+               WHERE g.round = ? AND t.champion = 1
                GROUP BY g.player_id
                HAVING COUNT(DISTINCT g.season) >= ?""",
             [FINALS_ROUND, times])
@@ -146,7 +150,7 @@ def finals_lost_min(times):
                JOIN team_seasons t
                  ON t.season = g.season AND t.club_now = g.club_now
                 AND t.phase = 'regular'
-               WHERE UPPER(TRIM(g.round)) = ? AND t.champion = 0
+               WHERE g.round = ? AND t.champion = 0
                GROUP BY g.player_id
                HAVING COUNT(DISTINCT g.season) >= ?""",
             [FINALS_ROUND, times])

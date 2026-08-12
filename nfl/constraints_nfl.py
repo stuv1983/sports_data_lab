@@ -94,6 +94,9 @@ touchdowns_average_in_playoffs = _G.score_average_in_postseason
 # so these read `round` -- the game type patch_nfl_db.py copies from
 # `matches` -- rather than the is_playoff flag.
 
+# Compared bare (`round = ?`), never as UPPER(TRIM(round)): wrapping the
+# column blinds SQLite to the round indexes. The build stores codes already
+# normalised, and the round/result hygiene test guards that invariant.
 SUPER_BOWL_ROUND = "SB"
 CONFERENCE_ROUND = "CON"
 
@@ -101,7 +104,7 @@ CONFERENCE_ROUND = "CON"
 def played_in_the_super_bowl():
     """Appeared in a Super Bowl."""
     return ("SELECT DISTINCT player_id FROM games "
-            "WHERE UPPER(TRIM(round)) = ?", [SUPER_BOWL_ROUND])
+            "WHERE round = ?", [SUPER_BOWL_ROUND])
 
 
 def won_the_super_bowl():
@@ -112,14 +115,14 @@ def won_the_super_bowl():
     question and the database cannot see it.
     """
     return ("SELECT DISTINCT player_id FROM games "
-            "WHERE UPPER(TRIM(round)) = ? AND result = 'W'",
+            "WHERE round = ? AND result = 'W'",
             [SUPER_BOWL_ROUND])
 
 
 def never_played_in_the_super_bowl():
     """Played, but never in a Super Bowl."""
     return ("SELECT DISTINCT player_id FROM games WHERE player_id NOT IN "
-            "(SELECT player_id FROM games WHERE UPPER(TRIM(round)) = ?)",
+            "(SELECT player_id FROM games WHERE round = ?)",
             [SUPER_BOWL_ROUND])
 
 
@@ -137,7 +140,7 @@ def super_bowls_lost_min(times):
 
 def played_in_a_conference_championship():
     return ("SELECT DISTINCT player_id FROM games "
-            "WHERE UPPER(TRIM(round)) = ?", [CONFERENCE_ROUND])
+            "WHERE round = ?", [CONFERENCE_ROUND])
 
 
 # ------------------------------------------------------------------ draft
