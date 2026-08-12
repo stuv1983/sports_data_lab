@@ -908,3 +908,61 @@ def test_an_upload_name_that_reduces_to_no_leaf_is_rejected(tmp_path,
     monkeypatch.setattr(updates, "MANUAL_ROUND_UPLOADS", tmp_path / "uploads")
     with pytest.raises(ValueError):
         updates.upload_round_files(2026, "23", [("..", b"x")])
+
+
+# ------------------------------------------------ staging pre-seed
+#
+# The incident: a staged AFL rebuild starts from a fresh file, so
+# manual_round_games -- the hand-entered round store the builder replays
+# at the end of every rebuild -- was absent, the replay was a no-op, and
+# the strict health check failed the build on the lost round's players.
+# The store must ride *into* the fresh staging file before the builder
+# runs, so the builder's own replay step can see it.
+
+def _live_with_durables(path):
+    with closing(sqlite3.connect(path)) as con:
+        con.execute("CREATE TABLE manual_round_games (season INTEGER, "
+                    "round TEXT, source_name TEXT, player_id INTEGER, "
+                    "PRIMARY KEY (season, round, source_name))")
+        con.execute("INSERT INTO manual_round_games VALUES "
+                    "(2026, '23', 'Dattoli, Jesse', 13260)")
+        con.execute("CREATE TABLE historic_grids (grid_id TEXT PRIMARY KEY)")
+        con.execute("INSERT INTO historic_grids VALUES ('board-1')")
+        con.execute("CREATE TABLE games (season INTEGER)")
+        con.commit()
+    return path
+
+
+def test_a_rebuild_staging_is_seeded_with_the_manual_round_store(
+        tmp_path, monkeypatch):
+    live = _live_with_durables(tmp_path / "afl.db")
+    stage = tmp_path / "afl.db.update-building"
+    monkeypatch.setattr(updates.data_paths, "default_db",
+                        lambda sport: str(live))
+
+    updates._prepare_staging("regular", ["afl"], {"afl": stage})
+
+    with closing(sqlite3.connect(stage)) as con:
+        stored = con.execute(
+            "SELECT season, round, player_id FROM manual_round_games"
+        ).fetchall()
+        grids = con.execute("SELECT grid_id FROM historic_grids").fetchall()
+        tables = {row[0] for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert stored == [(2026, "23", 13260)], "the round store did not ride in"
+    assert grids == [("board-1",)]
+    assert "games" not in tables, \
+        "only the durable tables may seed a fresh rebuild"
+
+
+def test_a_first_ever_build_with_no_live_database_stays_clean(
+        tmp_path, monkeypatch):
+    live = tmp_path / "afl.db"          # never created
+    stage = tmp_path / "afl.db.update-building"
+    monkeypatch.setattr(updates.data_paths, "default_db",
+                        lambda sport: str(live))
+
+    updates._prepare_staging("regular", ["afl"], {"afl": stage})
+
+    assert not stage.exists(), \
+        "seeding must not conjure a staging file from a missing live one"

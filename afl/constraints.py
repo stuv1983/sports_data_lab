@@ -24,7 +24,7 @@ goalkickers, and the Draftguru draft layer.
 import core
 import sports
 
-from . import recruitment
+from . import draft_kinds, recruitment
 
 # The schema and vocabulary lists are declared once, in sports.py, because
 # the sport picker needs them before this module is imported.
@@ -457,22 +457,22 @@ def draft_pick_between(lo, hi):
     """National Draft selection between two pick numbers, inclusive.
 
     Draftguru restarts pick numbering for the Rookie, Pre-Season and
-    Mid-Season drafts. Without the draft-type predicate, a normal "top-10
+    Mid-Season drafts. Without the draft-kind predicate, a normal "top-10
     draft pick" square silently includes all of those separate pick 1-10s.
 
-    The column stays bare (no LOWER() wrapper): SQLite's LIKE is already
-    case-insensitive for ASCII, and wrapping the column in a function
-    blinds the planner to any index on it.
+    `draft_kind` is the canonical category the loader assigns at ingestion
+    (see afl/draft_kinds.py), so the comparison is a bare indexed equality
+    rather than the LIKE-over-label scan it used to be.
     """
     return (f"""{_DRAFT_JOIN}
-                  AND d.draft_type LIKE '%national%'
+                  AND d.draft_kind = '{draft_kinds.NATIONAL}'
                   AND d.pick BETWEEN ? AND ?""", [lo, hi])
 
 
 def draft_of_type(kind):
     """National / Rookie / Pre-Season / Mid-Season / Trade / Free Agency."""
     return (f"""{_DRAFT_JOIN}
-                  AND d.draft_type LIKE ?""", [f"%{kind.lower()}%"])
+                  AND d.draft_kind = ?""", [draft_kinds.draft_kind(kind)])
 
 
 def drafted_by(club):
@@ -539,7 +539,7 @@ def traded_min(times=1):
     """Changed clubs by trade at least `times` times (Draftguru records
     trades from 1988). Free agency is its own signing kind and stays out."""
     return (f"""{_DRAFT_JOIN}
-                  AND d.draft_type LIKE '%trade%'
+                  AND d.draft_kind = '{draft_kinds.TRADE}'
                 GROUP BY l.player_id HAVING COUNT(*) >= ?""", [times])
 
 

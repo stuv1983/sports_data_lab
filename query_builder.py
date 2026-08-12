@@ -793,11 +793,19 @@ _TREE_BINARY_OPS = {
 def _tree_children(node: dict) -> list:
     """A group's children, whichever container shape the component used.
 
-    Strictly a dict or a list: `list()` over any other iterable is an
-    amplifier -- a hostile string of N characters would become N child
-    "nodes" -- so anything else is refused, never coerced.
+    streamlit_condition_tree 0.3 renames the builder's `children1` to
+    `children` (and strips node ids) in the tree it hands back to Python,
+    while raw react-awesome-query-builder exports keep `children1` as a
+    list or an id-keyed object -- accept every shape it actually sends.
+    Strictly a dict or a list beyond that: `list()` over any other
+    iterable is an amplifier -- a hostile string of N characters would
+    become N child "nodes" -- so anything else is refused, never coerced.
     """
-    children = node.get("children1") or []
+    children = node.get("children")
+    if children is None:
+        children = node.get("children1")
+    if not children:
+        return []
     if isinstance(children, dict):
         return list(children.values())
     if not isinstance(children, (list, tuple)):

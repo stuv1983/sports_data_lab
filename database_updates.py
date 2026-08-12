@@ -575,11 +575,26 @@ def _prepare_staging(event: str, sports: Iterable[str],
         staging = paths[sport]
         staging.parent.mkdir(parents=True, exist_ok=True)
         staging.unlink(missing_ok=True)
+        live = Path(data_paths.default_db(sport))
         if sport not in rebuilt:
-            live = Path(data_paths.default_db(sport))
             if not live.exists():
                 raise RuntimeError(f"No live {sport.upper()} database at {live}")
             shutil.copy2(live, staging)
+        else:
+            # A rebuilt sport starts from a fresh file -- which is also how
+            # a staged rebuild silently lost every hand-entered round: the
+            # builder ends by replaying manual_round_games, but the store
+            # lives in the live database and a fresh staging file has no
+            # such table, so the replay was a no-op and the strict health
+            # check failed the build on the round's missing players. Seed
+            # the durable tables into the fresh file *before* the builder
+            # runs, so its own replay step sees them -- the exact
+            # equivalent of the designed in-place rebuild path.
+            seeded = _copy_tables(live, staging,
+                                  PRESEEDED_TABLES.get(sport, ()))
+            for table, count in seeded.items():
+                print(f"  seeded {table} into {sport} staging "
+                      f"({count:,} rows)")
 
 
 def _promote_in_place(staging: Path, live: Path) -> None:
@@ -613,10 +628,78 @@ def _promote_in_place(staging: Path, live: Path) -> None:
 #: ids and carried rows would point at the wrong people.
 CARRIED_TABLES: dict[str, tuple[str, ...]] = {"afl": ("historic_grids",)}
 
+#: Tables seeded into a *fresh* staging file before its builder runs.
+#:
+#: `manual_round_games` is the hand-entered round store. afl/build_db.py
+#: ends by replaying it (load_round_csv.apply_only), re-creating debutants
+#: under their stored ids and re-writing the round's games -- but only if
+#: the store is present in the file being built. It carries player ids, so
+#: it must ride *through* the build (whose replay step owns re-applying
+#: it), never be pasted over the finished build the way CARRIED_TABLES
+#: rows are.
+#:
+#: `historic_grids` is seeded here too so the build is complete before the
+#: health check runs; _carry_forward still copies it afterwards, which is
+#: idempotent, and keeps the non-rebuild paths covered.
+PRESEEDED_TABLES: dict[str, tuple[str, ...]] = {
+    "afl": ("manual_round_games", "historic_grids")}
+
 
 def _table_columns(con, table: str, schema: str = "main") -> list[str]:
     return [row[1] for row in
             con.execute(f"PRAGMA {schema}.table_info({table})")]
+
+
+def _copy_tables(source: Path, target: Path,
+                 tables: tuple[str, ...]) -> dict[str, int]:
+    """Column-wise copy of whole tables from one database into another.
+
+    Creates the table in the target from the source's own DDL when it is
+    missing, and copies only the columns the two shapes share -- if a
+    later build ever writes one of these tables itself, the two need not
+    agree. Returns {table: rows now in target}.
+    """
+    copied: dict[str, int] = {}
+    if not tables or not source.exists():
+        return copied
+    # Peek first, and only open the target if there is something to copy:
+    # connecting would create the target file, and a fresh staging path is
+    # meant to stay absent until its builder writes it.
+    with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as src:
+        marks = ",".join("?" for _ in tables)
+        present = tuple(row[0] for row in src.execute(
+            f"SELECT name FROM sqlite_master WHERE type='table' "
+            f"AND name IN ({marks})", tuple(tables)))
+    if not present:
+        return copied
+    with closing(sqlite3.connect(target)) as con:
+        con.execute("ATTACH DATABASE ? AS src", (str(source),))
+        try:
+            for table in present:
+                created = con.execute(
+                    "SELECT sql FROM src.sqlite_master WHERE type='table' "
+                    "AND name=?", (table,)).fetchone()
+                if not created or not created[0]:
+                    continue
+                if not con.execute(
+                        "SELECT 1 FROM main.sqlite_master WHERE type='table' "
+                        "AND name=?", (table,)).fetchone():
+                    con.execute(created[0])
+                shared = [column for column
+                          in _table_columns(con, table, "src")
+                          if column in _table_columns(con, table)]
+                if not shared:
+                    continue
+                names = ", ".join(f'"{column}"' for column in shared)
+                con.execute(
+                    f"INSERT OR REPLACE INTO main.{table} ({names}) "
+                    f"SELECT {names} FROM src.{table}")
+                copied[table] = con.execute(
+                    f"SELECT COUNT(*) FROM main.{table}").fetchone()[0]
+            con.commit()
+        finally:
+            con.execute("DETACH DATABASE src")
+    return copied
 
 
 def _carry_forward(sport: str, staging: Path, live: Path) -> dict[str, int]:
@@ -625,40 +708,7 @@ def _carry_forward(sport: str, staging: Path, live: Path) -> dict[str, int]:
     Runs before promotion, so what the health check validated is what is
     promoted plus rows the build never claimed to own.
     """
-    tables = CARRIED_TABLES.get(sport, ())
-    if not tables or not live.exists():
-        return {}
-    carried: dict[str, int] = {}
-    with closing(sqlite3.connect(staging)) as con:
-        con.execute("ATTACH DATABASE ? AS live", (str(live),))
-        try:
-            for table in tables:
-                created = con.execute(
-                    "SELECT sql FROM live.sqlite_master WHERE type='table' "
-                    "AND name=?", (table,)).fetchone()
-                if not created or not created[0]:
-                    continue
-                if not con.execute(
-                        "SELECT 1 FROM main.sqlite_master WHERE type='table' "
-                        "AND name=?", (table,)).fetchone():
-                    con.execute(created[0])
-                # Column-wise rather than SELECT *: if a later build ever
-                # does write this table, the two shapes need not agree.
-                shared = [column for column
-                          in _table_columns(con, table, "live")
-                          if column in _table_columns(con, table)]
-                if not shared:
-                    continue
-                names = ", ".join(f'"{column}"' for column in shared)
-                con.execute(
-                    f"INSERT OR REPLACE INTO main.{table} ({names}) "
-                    f"SELECT {names} FROM live.{table}")
-                carried[table] = con.execute(
-                    f"SELECT COUNT(*) FROM main.{table}").fetchone()[0]
-            con.commit()
-        finally:
-            con.execute("DETACH DATABASE live")
-    return carried
+    return _copy_tables(live, staging, CARRIED_TABLES.get(sport, ()))
 
 
 #: Sports whose builder writes a measured reference sidecar (franchise

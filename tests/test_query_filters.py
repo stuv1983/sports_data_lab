@@ -286,16 +286,19 @@ def _draft_fixture():
     con, schema = fixture()
     con.executescript("""
         CREATE TABLE draft (
-          player TEXT, draft_year INTEGER, draft_type TEXT, pick INTEGER,
-          club TEXT, original_club TEXT
+          player TEXT, draft_year INTEGER, draft_type TEXT, draft_kind TEXT,
+          pick INTEGER, club TEXT, original_club TEXT
         );
         CREATE TABLE draft_links (
           draft_rowid INTEGER, player_id INTEGER, match_status TEXT
         );
         INSERT INTO draft VALUES
-          ('Alpha One',1990,'National',3,'A','Glenelg / Sacred Heart College'),
-          ('Beta Two',2001,'National',40,'B','Greythorn / Oakleigh U18'),
-          ('Beta Two',2004,'Rookie',3,'B','Greythorn / Oakleigh U18');
+          ('Alpha One',1990,'National','national',3,'A',
+           'Glenelg / Sacred Heart College'),
+          ('Beta Two',2001,'National','national',40,'B',
+           'Greythorn / Oakleigh U18'),
+          ('Beta Two',2004,'Rookie','rookie',3,'B',
+           'Greythorn / Oakleigh U18');
         INSERT INTO draft_links VALUES (1,1,'unique'), (2,2,'unique'),
                                        (3,2,'ambiguous');
     """)

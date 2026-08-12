@@ -896,3 +896,78 @@ def test_counting_up_to_a_date_still_catches_a_false_debut(out_of_order):
         before="2026-08-01")
     assert len(notes) == 1
     assert "no player of that name" in notes[0]
+
+
+def test_a_debutant_lands_in_a_players_table_the_core_build_just_wrote(stored):
+    """Inside a rebuild the replay runs straight after the core build,
+    before the loaders that add club_path_* to players. Naming those
+    columns unconditionally aborted the whole replay -- which is how a
+    staged rebuild lost a hand-entered round and failed the strict health
+    check on the round's players."""
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE players (player_id INTEGER PRIMARY KEY, "
+                "player TEXT, dob TEXT, birth_year INTEGER, "
+                "birth_year_min INTEGER, birth_year_max INTEGER, "
+                "debut_season INTEGER, final_season INTEGER, "
+                "career_games INTEGER, career_goals REAL, "
+                "career_brownlow REAL, finals_played INTEGER, "
+                "clubs_hist TEXT, clubs_now TEXT, n_clubs INTEGER, "
+                "name_key TEXT)")            # no club_path_* yet
+    con.execute("CREATE TABLE manual_round_games (season INTEGER, "
+                "round TEXT, match_date TEXT, club_hist TEXT, "
+                "club_now TEXT, source_name TEXT, player TEXT, "
+                "player_id INTEGER, age_text TEXT, career_goals_text TEXT)")
+    con.execute(
+        "INSERT INTO manual_round_games (season, round, match_date, "
+        "club_hist, club_now, source_name, player, age_text, "
+        "career_goals_text) VALUES (2026, '23', '2026-08-09', 'Sydney', "
+        "'Sydney', 'Dattoli, Jesse', 'Jesse Dattoli', '20y 100d', NULL)")
+    con.commit()
+
+    created = L.create_debutants(con, 2026, "23")
+
+    assert [name for _pid, name in created] == ["Jesse Dattoli"]
+    row = con.execute("SELECT debut_season, clubs_now FROM players "
+                      "WHERE player = 'Jesse Dattoli'").fetchone()
+    assert row == (2026, "Sydney")
+
+
+def test_the_replay_writes_games_even_before_the_marquee_tagger_ran():
+    """games.match_event belongs to the marquee step, which runs after the
+    replay inside a rebuild. The INSERT must name only the columns the
+    table has, or the round is lost to a missing-column error."""
+    con = sqlite3.connect(":memory:")
+    stat_columns = ", ".join(f"{c} REAL" for c in L.STAT_COLUMNS.values())
+    con.execute(f"CREATE TABLE games (player_id INTEGER, player TEXT, "
+                f"season INTEGER, round TEXT, date TEXT, venue TEXT, "
+                f"club_hist TEXT, club_now TEXT, career_game_no INTEGER, "
+                f"dob TEXT, birth_est TEXT, birth_year_est INTEGER, "
+                f"{stat_columns}, opponent TEXT, is_home INTEGER, "
+                f"result TEXT, points_for INTEGER, points_against INTEGER, "
+                f"is_final INTEGER, match_id TEXT)")  # no match_event yet
+    con.execute("CREATE TABLE players (player_id INTEGER PRIMARY KEY, "
+                "dob TEXT, birth_year INTEGER)")
+    store_stats = ", ".join(f"{c} REAL" for c in L.STAT_COLUMNS.values())
+    con.execute(f"CREATE TABLE manual_round_games (season INTEGER, "
+                f"round TEXT, match_date TEXT, venue TEXT, club_hist TEXT, "
+                f"club_now TEXT, source_name TEXT, player TEXT, "
+                f"player_id INTEGER, career_game_no INTEGER, "
+                f"{store_stats}, opponent TEXT, is_home INTEGER, "
+                f"result TEXT, points_for INTEGER, points_against INTEGER, "
+                f"is_final INTEGER)")
+    con.execute("INSERT INTO players (player_id) VALUES (13260)")
+    con.execute(
+        "INSERT INTO manual_round_games (season, round, match_date, venue, "
+        "club_hist, club_now, source_name, player, player_id, "
+        "career_game_no, goals, opponent, is_home, result, points_for, "
+        "points_against, is_final) VALUES (2026, '23', '2026-08-09', "
+        "'S.C.G.', 'Sydney', 'Sydney', 'Dattoli, Jesse', 'Jesse Dattoli', "
+        "13260, 4, 2.0, 'Brisbane Lions', 1, 'W', 90, 60, 0)")
+    con.commit()
+
+    written = L.apply_games(con, 2026, "23")
+
+    assert written == 1
+    row = con.execute("SELECT player_id, season, round, goals, match_id "
+                      "FROM games").fetchone()
+    assert row == (13260, 2026, "23", 2.0, None)

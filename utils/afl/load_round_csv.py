@@ -1139,6 +1139,15 @@ def create_debutants(con: sqlite3.Connection, season: int,
 
     next_id = (con.execute(
         "SELECT MAX(player_id) FROM players").fetchone()[0] or 0) + 1
+    # Insert only the columns this players table actually has. The replay
+    # runs at two very different moments: over the live database (which
+    # carries every later loader's columns, club_path_* included) and
+    # inside a rebuild, straight after the core build -- where those
+    # columns do not exist yet and naming them aborted the whole replay,
+    # losing the round. The later loaders derive their own columns for
+    # every player, debutants included, so omitting them here is not a
+    # gap.
+    present = {row[1] for row in con.execute("PRAGMA table_info(players)")}
     created = []
     for (stored_id, source_name, display, club_hist, club_now, match_date,
          age_text, goals_text) in pending:
@@ -1151,17 +1160,23 @@ def create_debutants(con: sqlite3.Connection, season: int,
             found = CAREER_RE.match(goals_text)
             goals = float(found.group("games")) if found else 0.0
         year = int(born[:4]) if born else None
+        values = {
+            "player_id": player_id, "player": display,
+            "dob": _afltables_dob(born),
+            "birth_year": year, "birth_year_min": year,
+            "birth_year_max": year,
+            "debut_season": season, "final_season": season,
+            "career_games": 0, "career_goals": goals,
+            "career_brownlow": None, "finals_played": 0,
+            "clubs_hist": club_hist, "clubs_now": club_now, "n_clubs": 1,
+            "name_key": normalise_name(display),
+            "club_path_hist": club_hist, "club_path_now": club_now,
+        }
+        columns = [column for column in values if column in present]
         con.execute(
-            "INSERT INTO players (player_id, player, dob, birth_year, "
-            "birth_year_min, birth_year_max, debut_season, final_season, "
-            "career_games, career_goals, career_brownlow, finals_played, "
-            "clubs_hist, clubs_now, n_clubs, name_key, club_path_hist, "
-            "club_path_now) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (player_id, display,
-             _afltables_dob(born), year, year, year,
-             season, season, 0, goals, None, 0,
-             club_hist, club_now, 1, normalise_name(display),
-             club_hist, club_now))
+            f"INSERT INTO players ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            [values[column] for column in columns])
         con.execute(
             "UPDATE manual_round_games SET player_id = ? "
             "WHERE season = ? AND round = ? AND source_name = ?",
@@ -1180,7 +1195,16 @@ def _afltables_dob(iso: str | None) -> str | None:
 
 
 def apply_games(con: sqlite3.Connection, season: int, round_name: str) -> int:
-    """Write the stored round into `games`, replacing any earlier attempt."""
+    """Write the stored round into `games`, replacing any earlier attempt.
+
+    The INSERT names only the columns this games table actually has. The
+    replay runs at two very different moments: over the live database,
+    whose games table carries every later step's columns (match_id from
+    derive_matches, match_event from the marquee tagger), and inside a
+    rebuild straight after the core build, where match_event does not
+    exist yet and naming it aborted the whole replay. A column a later
+    step owns is simply left for that step.
+    """
     con.execute("DELETE FROM games WHERE season = ? AND round = ?",
                 (season, round_name))
     rows = con.execute(
@@ -1200,11 +1224,16 @@ def apply_games(con: sqlite3.Connection, season: int, round_name: str) -> int:
         payload.append(tuple(list(row[:9]) + list(birth_cache[player_id])
                              + list(row[9:]) + [None, None]))
 
+    present = {row[1] for row in con.execute("PRAGMA table_info(games)")}
+    columns = [c for c in GAME_COLUMNS if c in present]
+    index_of = {c: i for i, c in enumerate(GAME_COLUMNS)}
+    projected = [tuple(full[index_of[c]] for c in columns)
+                 for full in payload]
     con.executemany(
-        f"INSERT INTO games ({', '.join(GAME_COLUMNS)}) "
-        f"VALUES ({', '.join('?' for _ in GAME_COLUMNS)})", payload)
+        f"INSERT INTO games ({', '.join(columns)}) "
+        f"VALUES ({', '.join('?' for _ in columns)})", projected)
     con.commit()
-    return len(payload)
+    return len(projected)
 
 
 def refresh_player_totals(con: sqlite3.Connection, season: int,
@@ -1300,12 +1329,21 @@ def apply_stored(con: sqlite3.Connection, db_path: Path, season: int,
     report("Deriving matches")
     derive_matches.run(str(db_path))
 
-    report("Restoring crowds and quarter scores")
-    counts = load_club_all_games.link_sources(con)
-    print("  link: " + ", ".join(f"{k}={v}" for k, v in counts.items() if v))
-    stats = load_club_all_games.apply_details(con)
-    print("  details: " + ", ".join(f"{k}={v}" for k, v in stats.items() if v))
-    load_club_all_games.mirror_onto_matches(con)
+    # Only where the club-page layer exists. Inside a rebuild the replay
+    # runs before that layer has loaded, and its own loader re-links and
+    # re-mirrors everything when it does -- skipping here loses nothing.
+    if table_exists(con, "club_match_sources"):
+        report("Restoring crowds and quarter scores")
+        counts = load_club_all_games.link_sources(con)
+        print("  link: " + ", ".join(
+            f"{k}={v}" for k, v in counts.items() if v))
+        stats = load_club_all_games.apply_details(con)
+        print("  details: " + ", ".join(
+            f"{k}={v}" for k, v in stats.items() if v))
+        load_club_all_games.mirror_onto_matches(con)
+    else:
+        print("  crowds and quarter scores left for the club-page loader "
+              "(club_match_sources not loaded yet)")
     touched = refresh_player_totals(con, season, round_name)
     print(f"  refreshed career totals for {touched:,} players")
     return {"skipped": False, "games": written, "created": created}

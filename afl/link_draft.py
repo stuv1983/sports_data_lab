@@ -219,6 +219,15 @@ def main():
                        ).fetchall():
         sys.exit("No draft table. Run afl/load_draftguru.py first.")
 
+    # Migration ride-along: a draft table loaded before draft_kind existed
+    # gains the column here, since this is the pipeline step that already
+    # holds a read-write connection. Fresh loads carry it already.
+    try:
+        from afl.draft_kinds import ensure_draft_kind
+    except ImportError:           # run as a script with afl/ on sys.path
+        from draft_kinds import ensure_draft_kind
+    ensure_draft_kind(con)
+
     by_key = load_players(con)
     draft = con.execute(
         "SELECT rowid, player, draft_year, pick, draft_type, club, draft_age "

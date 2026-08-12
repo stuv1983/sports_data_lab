@@ -165,10 +165,12 @@ class DraftTokens(SearchExtension):
                 # National draft only: Draftguru restarts pick numbering
                 # for the rookie, pre-season and mid-season drafts, so an
                 # unqualified pick:1..10 sweeps in four different pick 1s.
+                # draft_kind is the ingestion-assigned category -- a bare
+                # indexed equality, where LIKE over the raw label scanned.
                 lo, hi = value
                 out.append((
                     f"p.{schema.player_id} IN ({_DRAFTED} "
-                    "AND LOWER(d.draft_type) LIKE '%national%' "
+                    "AND d.draft_kind = 'national' "
                     "AND d.pick BETWEEN ? AND ?)", [lo, hi]))
             elif kind == "year":
                 lo, hi = value

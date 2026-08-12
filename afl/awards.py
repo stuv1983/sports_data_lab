@@ -337,7 +337,7 @@ def national_draft_pick_between(lo, hi):
     an unqualified `pick BETWEEN 1 AND 10` sweeps in rookie and pre-season
     selections numbered 1-10 as well.
     """
-    return _draft("LOWER(d.draft_type) LIKE '%national%' "
+    return _draft("d.draft_kind = 'national' "
                   "AND d.pick BETWEEN ? AND ?", [lo, hi])
 
 

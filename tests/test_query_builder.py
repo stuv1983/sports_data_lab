@@ -296,6 +296,69 @@ def test_a_half_built_tree_filters_nothing_instead_of_erroring():
     assert bag.values == {}
 
 
+def test_the_wire_format_the_component_actually_sends_compiles():
+    """streamlit_condition_tree 0.3 does not hand Python the builder's own
+    export: its frontend strips node ids and renames `children1` to
+    `children` before setComponentValue. A walker that only reads
+    `children1` sees every group as empty and silently compiles no WHERE
+    at all -- the regression where the visual tree filtered nothing."""
+    tree = {  # verbatim shape from st.session_state[key], v0.3.0
+        "type": "group",
+        "properties": {"conjunction": "AND", "not": True},
+        "children": [
+            {"type": "rule", "properties": {
+                "field": "birth_year", "operator": "between",
+                "value": [1983, 1985],
+                "valueSrc": ["value", "value"],
+                "valueType": ["number", "number"]}},
+        ],
+    }
+    QB.validate_tree(tree)
+    bag = QB.ParamBag()
+    clause = QB.compile_tree_node(tree, {"birth_year"}, bag)
+    assert clause == 'NOT ("birth_year" BETWEEN :p0 AND :p1)'
+    assert bag.values == {"p0": 1983, "p1": 1985}
+
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE players (player TEXT, birth_year INT)")
+    con.executemany("INSERT INTO players VALUES (?, ?)",
+                    [("Scott Lee", 1963), ("Hayden Skipworth", 1983),
+                     ("Ryan Lonie", 1983), ("Journey Mann", 1990)])
+    rows = con.execute(
+        f"SELECT player FROM players WHERE {clause} ORDER BY player",
+        bag.values).fetchall()
+    assert [r[0] for r in rows] == ["Journey Mann", "Scott Lee"]
+
+
+def test_wire_format_groups_nest_and_id_keyed_children_still_compile():
+    """Nested groups arrive in the same renamed shape; older component
+    versions ship raw exports where children1 is an id-keyed object.
+    Both must keep compiling."""
+    bag = QB.ParamBag()
+    nested = {"type": "group",
+              "properties": {"conjunction": "OR"},
+              "children": [
+                  {"type": "rule", "properties": {
+                      "field": "goals", "operator": "greater",
+                      "value": [50]}},
+                  {"type": "group",
+                   "properties": {"conjunction": "AND"},
+                   "children": [
+                       {"type": "rule", "properties": {
+                           "field": "club", "operator": "select_equals",
+                           "value": ["Fitzroy"]}},
+                   ]},
+              ]}
+    clause = QB.compile_tree_node(nested, {"goals", "club"}, bag)
+    assert clause == '("goals" > :p0 OR ("club" = :p1))'
+
+    keyed = {"type": "group", "properties": {"conjunction": "AND"},
+             "children1": {"a1b2": {"type": "rule", "properties": {
+                 "field": "goals", "operator": "equal", "value": [3]}}}}
+    assert QB.compile_tree_node(keyed, {"goals"}, QB.ParamBag()) \
+        == '("goals" = :p0)'
+
+
 # ------------------------------------------------- grid-constraint mode
 
 def _constraint_fixture():
@@ -416,6 +479,10 @@ def test_string_children_are_refused_not_exploded_into_characters():
     """list("x" * N) is N single-character nodes -- the amplification the
     review demonstrated. The shape is enforced, never coerced."""
     hostile = {"type": "group", "children1": "x" * 1000}
+    with pytest.raises(ValueError):
+        QB.compile_tree_node(hostile, {"player"}, QB.ParamBag())
+    # The component's renamed key is bound by the same wall.
+    hostile = {"type": "group", "children": "x" * 1000}
     with pytest.raises(ValueError):
         QB.compile_tree_node(hostile, {"player"}, QB.ParamBag())
 
