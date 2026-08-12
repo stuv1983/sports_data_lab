@@ -101,8 +101,8 @@ above changes how fast a name appears, never whether it can be found.
 Drop PNGs into `static/icons/` to set the browser tab icon and the icon iOS
 uses when the app is saved to a home screen. Per sport (`nba.png`,
 `nba-180.png`) or for all of them (`default.png`, `default-180.png`); see
-[`static/icons/README.md`](static/icons/README.md). With the folder empty each
-sport keeps the emoji from its registry entry, so nothing needs to be added.
+[`static/icons/README.md`](static/icons/README.md). The app ships with its
+default favicon and Apple touch icon set; a sport-specific file overrides it.
 
 `branding.py` handles this. The tab icon goes through Streamlit; the
 home-screen icon does not, because Streamlit renders the `<head>` itself and
