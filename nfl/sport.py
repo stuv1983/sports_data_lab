@@ -167,6 +167,16 @@ SPORT = Sport(
     #: before the weekly statistics begin. A player with no game is not an
     #: answer to any square, and scoring him is scoring an absence.
     obscurity_population="career_games >= 1",
+    query_tables=(
+        "players", "games", "matches", "teams", "arenas", "arena_teams",
+        "draft_picks", "player_seasons", "player_teams", "rosters",
+        "team_games", "team_seasons",
+    ),
+    query_column_kinds={
+        "players.birth_date": "date",
+        "games.date": "date", "games.is_playoff": "boolean",
+        "matches.gameday": "date",
+    },
     search_examples=(
         'club:"Kansas City Chiefs" games>=100 sort:obscurity',
         'game.passing_yards>=400 postseason:true',

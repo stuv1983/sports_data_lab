@@ -95,6 +95,17 @@ SPORT = Sport(
     }),
     club_data_hint=("Run `python utils/derive_club_tables.py --sport nba` "
                     "for Team Explorer."),
+    query_tables=(
+        "players", "games", "matches", "clubs", "teams", "franchises",
+        "arenas", "arena_teams", "player_seasons", "player_team_history",
+        "team_seasons", "nba_all_nba", "wiki_awards",
+        "club_player_register", "club_player_totals",
+        "club_player_records",
+    ),
+    query_column_kinds={
+        "games.date": "date", "games.is_home": "boolean",
+        "games.is_playoff": "boolean", "matches.date": "date",
+    },
     search_examples=(
         'club:"Boston Celtics" games>=500 sort:obscurity',
         'game.points>=50 postseason:true',

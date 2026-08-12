@@ -141,7 +141,15 @@ def search_page(sport, con, heading=True):
     """Render the reusable, URL-addressable player search page."""
     V = sport.vocab
     examples = _examples(sport)
-    has_family = getattr(sport.C, "family_relationships_available", None)
+    # The availability probe is a function returning whether the family
+    # tables are actually loaded; documenting the syntax on the strength
+    # of the function merely *existing* advertised filters whose only
+    # possible answer was "not loaded".
+    family_probe = getattr(sport.C, "family_relationships_available", None)
+    try:
+        has_family = bool(family_probe and family_probe(con))
+    except Exception:
+        has_family = False
 
     if heading:
         st.markdown("# Advanced Search")
@@ -151,17 +159,26 @@ def search_page(sport, con, heading=True):
         "become SQL."
     )
 
-    initial = Q.query_from_params(_all_query_params(st.query_params))
+    # The URL is re-read every run, not only at first render: navigating
+    # to a different ?q= in the same tab must update the query, while an
+    # unchanged URL must not stamp over what the reader is typing. The
+    # seen-key remembers the last URL value this session consumed.
+    url_value = Q.query_from_params(_all_query_params(st.query_params))
     state_key = sport.k("advanced_query")
-    if state_key not in st.session_state:
-        st.session_state[state_key] = initial
+    seen_key = sport.k("advanced_url_query_seen")
+    if url_value and url_value != st.session_state.get(seen_key):
+        st.session_state[state_key] = url_value
+    st.session_state[seen_key] = url_value
+    st.session_state.setdefault(state_key, url_value)
 
     with st.form(sport.k("advanced_search_form")):
         query = st.text_area(
             "Query",
             key=state_key,
             height=90,
+            max_chars=Q.MAX_QUERY_CHARS,
             placeholder=examples[0],
+            persist_state="session",
         )
         st.form_submit_button("Search", type="primary")
 

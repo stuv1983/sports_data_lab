@@ -52,13 +52,26 @@ def test_unknown_identifiers_are_refused_not_quoted():
     """Quoting an attacker-chosen name would still leak it into SQL; the
     gate is membership in what discovery returned."""
     with pytest.raises(ValueError):
-        QB.build_select("players; DROP TABLE players", ["player"], [], "AND",
+        QB.build_select("players; DROP TABLE players", ["player"], None,
                         None, False, 10, QB.ParamBag(),
                         known_tables={"players"}, known_columns={"player"})
     with pytest.raises(ValueError):
-        QB.build_select("players", ["player) FROM sqlite_master --"], [],
-                        "AND", None, False, 10, QB.ParamBag(),
+        QB.build_select("players", ["player) FROM sqlite_master --"], None,
+                        None, False, 10, QB.ParamBag(),
                         known_tables={"players"}, known_columns={"player"})
+
+
+def test_duplicate_display_and_group_columns_are_refused():
+    """Duplicates can only come from forged widget state; ambiguity is an
+    error, not a shrug."""
+    with pytest.raises(ValueError):
+        QB.build_select("players", ["player", "player"], None, None,
+                        False, 10, QB.ParamBag(),
+                        known_tables={"players"}, known_columns={"player"})
+    with pytest.raises(ValueError):
+        QB.build_group_select("players", ["club", "club"], None, 10,
+                              QB.ParamBag(), known_tables={"players"},
+                              known_columns={"club"})
 
 
 # ------------------------------------------------------------------ values
@@ -129,9 +142,9 @@ def test_a_numeric_list_parses_forgivingly():
 
 def test_group_select_counts_per_group_and_still_gates_identifiers():
     bag = QB.ParamBag()
-    predicates = [QB.comparison_clause("games", ">=", 100, bag)]
+    where = QB.comparison_clause("games", ">=", 100, bag)
     sql = QB.build_group_select(
-        "players", ["club"], predicates, "AND", 50, bag,
+        "players", ["club"], where, 50, bag,
         known_tables={"players"}, known_columns={"club", "games"})
     assert 'COUNT(*) AS total' in sql and 'GROUP BY "club"' in sql
 
@@ -144,11 +157,11 @@ def test_group_select_counts_per_group_and_still_gates_identifiers():
     assert rows == [("Fitzroy", 2), ("Carlton", 1)]
 
     with pytest.raises(ValueError):
-        QB.build_group_select("players", ["club) --"], [], "AND", 10,
+        QB.build_group_select("players", ["club) --"], None, 10,
                               QB.ParamBag(), known_tables={"players"},
                               known_columns={"club"})
     with pytest.raises(ValueError):
-        QB.build_group_select("players", [], [], "AND", 10, QB.ParamBag(),
+        QB.build_group_select("players", [], None, 10, QB.ParamBag(),
                               known_tables={"players"},
                               known_columns={"club"})
 
@@ -160,10 +173,15 @@ def test_build_select_assembles_and_the_statement_actually_runs():
     table, because a quoting bug survives string assertions but not the
     parser."""
     bag = QB.ParamBag()
-    predicates = [QB.in_clause("club", ["Fitzroy"], bag),
-                  QB.between_clause("games", 10, 300, bag)]
+    where = QB.compile_condition_node(
+        {"type": "group", "op": "AND", "children": [
+            {"column": "club", "kind": "text", "op": "one of",
+             "values": ["Fitzroy"]},
+            {"column": "games", "kind": "integer", "op": "between",
+             "lo": 10, "hi": 300},
+        ]}, {"club", "games"}, bag)
     sql = QB.build_select(
-        "players", ["player", "games"], predicates, "AND",
+        "players", ["player", "games"], where,
         "games", True, 5, bag,
         known_tables={"players"}, known_columns={"player", "games", "club"})
 
@@ -178,25 +196,106 @@ def test_build_select_assembles_and_the_statement_actually_runs():
 
 def test_the_row_limit_is_bound_and_capped():
     bag = QB.ParamBag()
-    sql = QB.build_select("players", ["player"], [], "AND", None, False,
+    sql = QB.build_select("players", ["player"], None, None, False,
                           10 ** 9, bag, known_tables={"players"},
                           known_columns={"player"})
     assert "LIMIT :p0" in sql
     assert bag.values["p0"] == QB.MAX_ROWS
 
 
-def test_or_combines_and_anything_else_is_refused():
+def test_a_negative_or_malformed_limit_cannot_reach_sqlite():
+    """SQLite reads LIMIT -1 as *unlimited*: the exact opposite of a
+    ceiling. The widget's min is browser advice; the compiler clamps."""
+    for hostile in (-1, 0):
+        bag = QB.ParamBag()
+        QB.build_select("players", ["player"], None, None, False,
+                        hostile, bag,
+                        known_tables={"players"}, known_columns={"player"})
+        assert bag.values["p0"] == 1
+    assert QB._bounded_limit(-1) == 1
+    assert QB._bounded_limit(0) == 1
+    assert QB._bounded_limit(250) == 250
+    assert QB._bounded_limit(QB.MAX_ROWS + 1) == QB.MAX_ROWS
+    assert QB._bounded_limit(10 ** 30) == QB.MAX_ROWS
+    for junk in ("abc", None, 1.5, float("nan"), float("inf"), [10], True):
+        with pytest.raises(ValueError):
+            QB._bounded_limit(junk)
+
+
+def test_nested_condition_groups_compile_with_explicit_parentheses():
+    """(A AND B) OR (C AND D) and deeper shapes are first-class."""
     bag = QB.ParamBag()
-    predicates = [QB.equals_clause("club", "Fitzroy", bag),
-                  QB.equals_clause("club", "Carlton", bag)]
-    sql = QB.build_select("players", ["player"], predicates, "OR", None,
-                          False, 10, bag, known_tables={"players"},
-                          known_columns={"player", "club"})
-    assert "OR" in sql
+    clause = QB.compile_condition_node(
+        {"type": "group", "op": "OR", "children": [
+            {"type": "group", "op": "AND", "children": [
+                {"column": "club", "kind": "text", "op": "equals",
+                 "value": "Fitzroy"},
+                {"column": "games", "kind": "integer", "op": "≥",
+                 "value": 150},
+            ]},
+            {"type": "group", "op": "AND", "children": [
+                {"column": "club", "kind": "text", "op": "equals",
+                 "value": "Carlton"},
+                {"column": "games", "kind": "integer", "op": "≥",
+                 "value": 200},
+            ]},
+        ]}, {"club", "games"}, bag)
+    assert clause == ('(("club" = :p0 AND "games" >= :p1) OR '
+                      '("club" = :p2 AND "games" >= :p3))')
+
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE players (player TEXT, club TEXT, games INT)")
+    con.executemany("INSERT INTO players VALUES (?,?,?)",
+                    [("A", "Fitzroy", 150), ("B", "Carlton", 200),
+                     ("C", "Fitzroy", 5), ("D", "Carlton", 50)])
+    rows = con.execute(
+        f"SELECT player FROM players WHERE {clause} ORDER BY player",
+        bag.values).fetchall()
+    assert [r[0] for r in rows] == ["A", "B"]
+
+
+def test_condition_groups_nest_three_deep_and_are_bounded():
+    """A AND (B OR (C AND D)) compiles; hostile shapes are ValueError."""
+    bag = QB.ParamBag()
+    clause = QB.compile_condition_node(
+        {"type": "group", "op": "AND", "children": [
+            {"column": "games", "kind": "integer", "op": "≥", "value": 1},
+            {"type": "group", "op": "OR", "children": [
+                {"column": "club", "kind": "text", "op": "equals",
+                 "value": "A"},
+                {"type": "group", "op": "AND", "children": [
+                    {"column": "club", "kind": "text", "op": "equals",
+                     "value": "B"},
+                    {"column": "games", "kind": "integer", "op": "≥",
+                     "value": 100},
+                ]},
+            ]},
+        ]}, {"club", "games"}, bag)
+    assert clause == ('("games" >= :p0 AND ("club" = :p1 OR '
+                      '("club" = :p2 AND "games" >= :p3)))')
+
     with pytest.raises(ValueError):
-        QB.build_select("players", ["player"], predicates, "AND --", None,
-                        False, 10, QB.ParamBag(), known_tables={"players"},
-                        known_columns={"player", "club"})
+        QB.compile_condition_node({"type": "group", "op": "NAND",
+                                   "children": []}, {"club"}, QB.ParamBag())
+    with pytest.raises(ValueError):
+        QB.compile_condition_node({"type": "group", "op": "AND",
+                                   "children": "xx"}, {"club"},
+                                  QB.ParamBag())
+    with pytest.raises(ValueError):
+        QB.compile_condition_node(["not", "a", "node"], {"club"},
+                                  QB.ParamBag())
+
+    deep = {"column": "games", "kind": "integer", "op": "≥", "value": 1}
+    for _ in range(QB.MAX_GROUP_DEPTH + 1):
+        deep = {"type": "group", "op": "AND", "children": [deep]}
+    with pytest.raises(ValueError):
+        QB.compile_condition_node(deep, {"games"}, QB.ParamBag())
+
+    wide = {"type": "group", "op": "AND", "children": [
+        {"column": "games", "kind": "integer", "op": "≥", "value": 1}
+        for _ in range(QB.MAX_GROUP_CHILDREN + 1)]}
+    with pytest.raises(ValueError):
+        QB.compile_condition_node(wide, {"games"}, QB.ParamBag())
 
 
 # ------------------------------------------------------------- visual mode
@@ -501,6 +600,150 @@ def test_a_rule_value_flood_is_refused():
         "value": [list(range(QB.MAX_RULE_VALUES + 1))]}}
     with pytest.raises(ValueError):
         QB.compile_tree_node(hostile, {"player"}, QB.ParamBag())
+
+
+# ------------------------------------------------------------ date operators
+#
+# Every build stores dates as TEXT; ISO-8601 text compares correctly as
+# plain strings, so the compiled predicates keep the bare column on the
+# left and each operator means exactly what it says -- including the
+# strict after/before the vocabulary used to lack entirely.
+
+def _date_rows():
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE games (player TEXT, date TEXT)")
+    con.executemany("INSERT INTO games VALUES (?, ?)", [
+        ("early", "2020-06-01"), ("on_day", "2020-06-15"),
+        ("late", "2020-06-30"), ("missing", None)])
+    return con
+
+
+def _date_matches(con, op, value=None, lo=None, hi=None, ceiling=False):
+    spec = {"column": "date", "kind": "date", "op": op,
+            "day_ceiling": ceiling}
+    if value is not None:
+        spec["value"] = value
+    if lo is not None:
+        spec.update(lo=lo, hi=hi)
+    bag = QB.ParamBag()
+    clause = QB.compile_condition(spec, {"date"}, bag)
+    rows = con.execute(
+        f"SELECT player FROM games WHERE {clause} ORDER BY player",
+        bag.values).fetchall()
+    return [r[0] for r in rows]
+
+
+def test_text_backed_iso_dates_answer_every_operator():
+    con = _date_rows()
+    assert _date_matches(con, "on", "2020-06-15") == ["on_day"]
+    assert _date_matches(con, "after", "2020-06-15") == ["late"]
+    assert _date_matches(con, "before", "2020-06-15") == ["early"]
+    assert _date_matches(con, "on or after", "2020-06-15") == \
+        ["late", "on_day"]
+    assert _date_matches(con, "on or before", "2020-06-15") == \
+        ["early", "on_day"]
+    assert _date_matches(con, "between", lo="2020-06-10",
+                         hi="2020-06-20") == ["on_day"]
+    assert _date_matches(con, "is missing") == ["missing"]
+    assert _date_matches(con, "is present") == \
+        ["early", "late", "on_day"]
+
+
+def test_strict_after_and_before_shift_correctly_on_datetime_columns():
+    """"after the 15th" must exclude 14:30 *on* the 15th; "before" already
+    excludes every moment of the day by plain string comparison."""
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE games (player TEXT, date TEXT)")
+    con.executemany("INSERT INTO games VALUES (?, ?)", [
+        ("mid_day", "2020-06-15T14:30:00"),
+        ("next_day", "2020-06-16T09:00:00")])
+    assert _date_matches(con, "after", "2020-06-15",
+                         ceiling=True) == ["next_day"]
+    assert _date_matches(con, "before", "2020-06-16",
+                         ceiling=True) == ["mid_day"]
+    assert _date_matches(con, "on", "2020-06-15",
+                         ceiling=True) == ["mid_day"]
+
+
+def test_no_date_predicate_wraps_the_column_in_a_function():
+    bag = QB.ParamBag()
+    for op in ("on", "after", "before", "on or after", "on or before"):
+        clause = QB.compile_condition(
+            {"column": "date", "kind": "date", "op": op,
+             "value": "2020-06-15"}, {"date"}, bag)
+        assert "DATE(" not in clause and clause.startswith('"date"')
+
+
+def test_kind_overrides_reach_discovery():
+    """A sport's declared truth beats the DDL's TEXT/INTEGER claims."""
+    assert QB.type_kind("TEXT") == "text"
+    # The override tuple shape discover_schema consumes:
+    overrides = dict((("games.date", "date"), ("games.is_final",
+                                               "boolean")))
+    assert overrides.get("games.date", QB.type_kind("TEXT")) == "date"
+    assert overrides.get("games.other", QB.type_kind("TEXT")) == "text"
+
+
+# --------------------------------------------- hostile tree shapes / kinds
+
+def test_hostile_tree_shapes_become_value_errors_not_type_errors():
+    """A list-valued properties/field used to leak AttributeError and
+    TypeError past page()'s ValueError handling."""
+    with pytest.raises(ValueError):
+        QB.compile_tree_node([1, 2], {"games"}, QB.ParamBag())
+    with pytest.raises(ValueError):
+        QB.compile_tree_node({"type": "rule", "properties": ["x"]},
+                             {"games"}, QB.ParamBag())
+    with pytest.raises(ValueError):
+        QB.compile_tree_node(
+            {"type": "rule", "properties": {
+                "field": ["games"], "operator": "equal", "value": [1]}},
+            {"games"}, QB.ParamBag())
+    with pytest.raises(ValueError):
+        QB.compile_tree_node(
+            {"type": "rule", "properties": {
+                "field": "games", "operator": ["equal"], "value": [1]}},
+            {"games"}, QB.ParamBag())
+
+
+def test_tree_operators_are_gated_by_column_kind_when_metadata_given():
+    """LIKE on a number or arithmetic on text is a doctored payload."""
+    columns = {"games": QB.Column("games", "INTEGER", "integer"),
+               "club": QB.Column("club", "TEXT", "text")}
+    with pytest.raises(ValueError):
+        QB.compile_tree_node(_rule("games", "like", "abc"), columns,
+                             QB.ParamBag())
+    with pytest.raises(ValueError):
+        QB.compile_tree_node(_rule("club", "greater_or_equal", 5),
+                             columns, QB.ParamBag())
+    # The same operators stay legal on the kinds they belong to.
+    assert QB.compile_tree_node(_rule("club", "like", "abc"), columns,
+                                QB.ParamBag())
+    assert QB.compile_tree_node(_rule("games", "greater_or_equal", 5),
+                                columns, QB.ParamBag())
+
+
+def test_is_empty_no_longer_wraps_the_column_in_coalesce():
+    bag = QB.ParamBag()
+    clause = QB.compile_tree_node(_rule("club", "is_empty"), {"club"}, bag)
+    assert "COALESCE" not in clause
+    assert clause == '("club" IS NULL OR "club" = :p0)'
+
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE players (player TEXT, club TEXT)")
+    con.executemany("INSERT INTO players VALUES (?, ?)",
+                    [("A", "Fitzroy"), ("B", ""), ("C", None)])
+    rows = con.execute(
+        f"SELECT player FROM players WHERE {clause} ORDER BY player",
+        bag.values).fetchall()
+    assert [r[0] for r in rows] == ["B", "C"]
+
+    bag = QB.ParamBag()
+    clause = QB.compile_tree_node(_rule("club", "is_not_empty"),
+                                  {"club"}, bag)
+    rows = con.execute(
+        f"SELECT player FROM players WHERE {clause}", bag.values).fetchall()
+    assert [r[0] for r in rows] == ["A"]
 
 
 def test_a_legitimate_tree_still_compiles_under_the_bounds():

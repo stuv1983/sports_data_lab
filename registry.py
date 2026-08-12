@@ -196,6 +196,19 @@ class Sport:
     #: The AFL declares afl.search_tokens for its captaincy, draft and
     #: family filters; the shared compiler itself knows no sport's tables.
     search_extension_modules: tuple = ()
+    #: Tables the Advanced Search query builder may expose. Discovery
+    #: finds *everything* in the file -- staging, manifests, link tables,
+    #: sqlite_stat1 -- and read-only access prevents modification, not
+    #: disclosure or expensive scans, so what is queryable is an explicit
+    #: allowlist. A sport that declares nothing offers only its core
+    #: players/games/matches tables.
+    query_tables: tuple = ()
+    #: ``{"table.column": kind}`` overrides for the query builder's
+    #: type discovery, for columns whose declared SQL type misleads --
+    #: every build stores dates as TEXT and flags as INTEGER, and the
+    #: builder must offer date pickers and true/false controls there,
+    #: not substring matches and arbitrary arithmetic.
+    query_column_kinds: dict = field(default_factory=dict)
     search_examples: tuple = ()
     grid_defaults: tuple = ()
     venue_display: dict = field(default_factory=dict)

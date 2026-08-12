@@ -691,13 +691,17 @@ def criterion_inputs(key, kind, defaults, sport, db_revision):
                 "Decade", starts, index=idx, key=wk,
                 format_func=lambda d: f"{d}s ({d}–{d + 9})"))
         elif a in ("cm", "kg"):
-            label, lo, hi, fallback = {
-                "cm": ("Height (cm)", 150, 250, 190),
-                "kg": ("Weight (kg)", 50, 160, 90),
+            # No upper cap: the tallest or heaviest player on record is a
+            # fact about the data, not a bound on what may be asked --
+            # capping at 250 cm forbade the question "is anyone taller".
+            label, fallback = {
+                "cm": ("Height (cm)", 190),
+                "kg": ("Weight (kg)", 90),
             }[a]
             args.append(st.number_input(
-                label, min_value=lo, max_value=hi,
-                value=int(defaults.get(a, fallback)), step=1, key=wk))
+                label, min_value=1,
+                value=int(defaults.get(a, fallback)), step=1, key=wk,
+                help="Observed records are context, not an input cap."))
         else:
             year_kinds = {
                 "Played between seasons", "Debuted between seasons",

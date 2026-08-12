@@ -61,6 +61,12 @@ def compile_query(schema, query, con=None, extensions=()):
 
 def query_from_params(params: dict) -> str:
     query = _base.query_from_params(params)
+    if _values(params, "q"):
+        # `q=` is the canonical whole-query parameter; the base compiler
+        # returns it verbatim. Appending the structured family parameters
+        # after it duplicated filters (and grew the query on every
+        # canonicalisation pass) whenever a URL carried both forms.
+        return query.strip()
     extra: list[str] = []
     for key in sorted(_DRAFT_KEYS | _BROAD_KEYS):
         for value in _values(params, key):

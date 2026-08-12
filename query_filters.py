@@ -13,9 +13,11 @@ on its Sport entry, and callers pass ``sport.search_extensions()`` through
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 import math
 import re
 import shlex
+import sqlite3
 from typing import Any
 
 import core
@@ -24,6 +26,56 @@ import names
 
 class QuerySyntaxError(ValueError):
     """Raised when an Advanced Search token cannot be interpreted safely."""
+
+
+#: Server-side bounds on a free-form query. The text area mirrors
+#: MAX_QUERY_CHARS as a UX hint, but the compiler enforces them: widget
+#: limits are client-side and a crafted request bypasses them entirely.
+#: Without these, a 349 KB query of 20,000 club tokens compiled into
+#: megabytes of SQL and tens of thousands of bound parameters.
+MAX_QUERY_CHARS = 16_384
+MAX_QUERY_TOKENS = 256
+MAX_TOKEN_CHARS = 2_048
+
+#: SQLite binds integers as signed 64-bit. A Python int outside this range
+#: raises OverflowError at execution time -- far from the typed token that
+#: caused it -- so the parser owns the bound instead.
+SQLITE_INT_MIN = -(2 ** 63)
+SQLITE_INT_MAX = 2 ** 63 - 1
+
+
+def coerce_number(value, *, integer: bool = False) -> int | float:
+    """One number, parsed exactly, bounded to what SQLite can bind.
+
+    The shared numeric gate for both search systems (the query language
+    here, the query builder's widgets/token restores). Decimal, not float:
+    ``float("9007199254740993")`` silently returns ...92, and ``1e100``
+    becomes an integer SQLite refuses to bind -- both must be errors or
+    exact values, never quiet corruption. Raises ValueError (so
+    QuerySyntaxError callers can re-wrap it).
+    """
+    if isinstance(value, bool):
+        raise ValueError("Expected a number, got a boolean")
+    try:
+        number = Decimal(str(value).strip())
+    except InvalidOperation as exc:
+        raise ValueError(f"Expected a number, got {value!r}") from exc
+    if not number.is_finite():
+        raise ValueError(f"Expected a finite number, got {value!r}")
+
+    if number == number.to_integral_value():
+        parsed = int(number)
+        if not SQLITE_INT_MIN <= parsed <= SQLITE_INT_MAX:
+            raise ValueError(
+                f"{value!r} is outside the range a query can bind")
+        return parsed
+
+    if integer:
+        raise ValueError(f"Expected a whole number, got {value!r}")
+    floating = float(number)
+    if not math.isfinite(floating):
+        raise ValueError(f"{value!r} is outside the range a query can bind")
+    return floating
 
 
 @dataclass
@@ -50,20 +102,21 @@ def _boolean(value: str) -> bool:
 
 def _number(value: str) -> int | float:
     try:
-        number = float(value)
+        return coerce_number(value)
     except ValueError as exc:
-        raise QuerySyntaxError(f"Expected a number, got {value!r}") from exc
-    if not math.isfinite(number):
-        raise QuerySyntaxError(f"Expected a finite number, got {value!r}")
-    return int(number) if number.is_integer() else number
+        raise QuerySyntaxError(str(exc)) from exc
 
 
 def _range(value: str, label: str) -> tuple[int, int]:
     match = _RANGE.fullmatch(value.strip())
     if not match:
         raise QuerySyntaxError(f"{label} must be YEAR or FROM..TO")
-    lo = int(match.group(1))
-    hi = int(match.group(2) or match.group(1))
+    try:
+        lo = int(coerce_number(match.group(1), integer=True))
+        hi = int(coerce_number(match.group(2) or match.group(1),
+                               integer=True))
+    except ValueError as exc:
+        raise QuerySyntaxError(str(exc)) from exc
     return tuple(sorted((lo, hi)))
 
 
@@ -72,6 +125,19 @@ def _comparison(column: str, operator: str, value: str) -> tuple[str, list[Any]]
     if op not in {"=", ">", ">=", "<", "<="}:
         raise QuerySyntaxError(f"Unsupported comparison operator {operator!r}")
     return f"{column} {op} ?", [_number(value)]
+
+
+def _quote_ident(name: str) -> str:
+    """Standard SQL identifier quoting, doubling any embedded quote.
+
+    Every identifier this module interpolates is code-owned (schema
+    declarations, catalogue lookups), but the uniform rule is quote anyway:
+    an identifier wall with holes in it is a wall someone will eventually
+    walk through.
+    """
+    if not isinstance(name, str) or not name:
+        raise QuerySyntaxError("Invalid SQL identifier")
+    return '"' + name.replace('"', '""') + '"'
 
 
 def _table_exists(con, name: str) -> bool:
@@ -85,7 +151,10 @@ def _table_exists(con, name: str) -> bool:
 def _columns(con, table: str) -> set[str]:
     if con is None or not _table_exists(con, table):
         return set()
-    return {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+    # pragma_table_info is the table-valued form of PRAGMA table_info: the
+    # table name rides as a bound parameter instead of interpolated text.
+    return {row[0] for row in con.execute(
+        "SELECT name FROM pragma_table_info(?)", (table,))}
 
 
 def _has_values(con, table: str, column: str) -> bool:
@@ -94,20 +163,32 @@ def _has_values(con, table: str, column: str) -> bool:
     Column existence is not enough. club_player_register carries height_cm
     and weight_kg in every sport's schema but only the AFL import fills
     them, so an existence check compiled a filter that quietly matched
-    nobody instead of saying the layer is not loaded.
+    nobody instead of saying the layer is not loaded. Both identifiers are
+    validated against the live catalogue before they are interpolated, and
+    quoted; only sqlite3's own errors are treated as "no" so a programming
+    fault still surfaces.
     """
     if con is None:
         return True
+    if column not in _columns(con, table):
+        return False
     try:
         return bool(con.execute(
-            f"SELECT 1 FROM {table} WHERE {column} IS NOT NULL LIMIT 1"
+            f"SELECT 1 FROM {_quote_ident(table)} "
+            f"WHERE {_quote_ident(column)} IS NOT NULL LIMIT 1"
         ).fetchone())
-    except Exception:
+    except sqlite3.Error:
         return False
 
 
-#: Advanced Search key -> the column each sport stores it in.
-_PHYSICAL_COLUMNS = {"height": "height_cm", "weight": "weight_kg"}
+#: Advanced Search key -> the column the shared club_player_register layer
+#: stores it in. This is the *fallback* home of the physicals; a sport that
+#: declares its own player column (``schema.height`` / ``schema.weight`` --
+#: the NFL's are literally ``height`` and ``weight``, in inches and pounds)
+#: is compiled against that column first. Hardcoding these two names for
+#: every sport made ``height>=72`` answer "height data is not loaded" on an
+#: NFL database that carries height for every player.
+_REGISTER_PHYSICAL_COLUMNS = {"height": "height_cm", "weight": "weight_kg"}
 
 
 class SearchExtension:
@@ -170,15 +251,31 @@ def tokenize(query: str) -> list[str]:
     single quote is how half the surnames in the database are spelled --
     `name:o'brien` used to die with "No closing quotation" instead of
     finding anybody.
+
+    Size, token-count and token-length bounds are enforced here, at the
+    compiler's front door, because this is the one gate every query passes:
+    the page's text area mirrors MAX_QUERY_CHARS for UX, but a widget bound
+    is advice to a browser, not a limit on a request.
     """
+    if not isinstance(query, str):
+        raise QuerySyntaxError("Query must be text")
+    if len(query) > MAX_QUERY_CHARS:
+        raise QuerySyntaxError(
+            f"Query exceeds {MAX_QUERY_CHARS:,} characters")
     lex = shlex.shlex(query, posix=True)
     lex.whitespace_split = True
     lex.commenters = ""
     lex.quotes = '"'
     try:
-        return list(lex)
+        tokens = list(lex)
     except ValueError as exc:
         raise QuerySyntaxError(str(exc)) from exc
+    if len(tokens) > MAX_QUERY_TOKENS:
+        raise QuerySyntaxError(
+            f"Query exceeds {MAX_QUERY_TOKENS} filters")
+    if any(len(token) > MAX_TOKEN_CHARS for token in tokens):
+        raise QuerySyntaxError("A query value is too long")
+    return tokens
 
 
 def quote_token(token: str) -> str:
@@ -261,8 +358,10 @@ def _parse(query: str) -> tuple[list[tuple[str, str, str]], QuerySpec]:
         if value == "":
             raise QuerySyntaxError(f"{key} needs a value")
         if key == "sort":
+            _field_only(key, operator)
             spec.sort = value.lower().replace(" ", "_")
         elif key == "limit":
+            _field_only(key, operator)
             limit = _number(value)
             if not isinstance(limit, int):
                 raise QuerySyntaxError("limit must be a whole number")
@@ -319,20 +418,26 @@ def compile_query(schema, query: str, con=None, extensions=()):
             lo, hi = _range(value, "debut")
             player_where.append(f"p.{s.debut_season} BETWEEN ? AND ?")
             params.extend([lo, hi])
-        elif key in _PHYSICAL_COLUMNS:
-            # Where a sport keeps physicals differs. The NBA build puts them
-            # on `players`; the AFL import puts them on club_player_register,
-            # one row per club a player registered at. dg_people holds
-            # neither -- it is a name/URL index (dg_person_id, person_key,
-            # player_url, has_url, player, name_key) -- so compiling against
-            # it raised "no such column: height_cm" on every AFL search.
-            col = _PHYSICAL_COLUMNS[key]
-            if col in _columns(con, s.players):
-                fragment, bound = _comparison(f"p.{col}", operator, value)
+        elif key in _REGISTER_PHYSICAL_COLUMNS:
+            # Where a sport keeps physicals differs, in table AND name. The
+            # sport's own schema declaration wins: the NFL and NBA builds
+            # put them on `players` (`height`/`weight` in inches and pounds,
+            # `height_cm`/`weight_kg` in metric respectively), declared as
+            # schema.height / schema.weight. The AFL import instead fills
+            # height_cm/weight_kg on club_player_register, one row per club
+            # a player registered at, and declares nothing on `players`.
+            # Hardcoding the metric names made every NFL height search
+            # answer "not loaded" while the data sat in `players.height`.
+            player_col = getattr(s, key, "") or _REGISTER_PHYSICAL_COLUMNS[key]
+            register_col = _REGISTER_PHYSICAL_COLUMNS[key]
+            if player_col in _columns(con, s.players):
+                fragment, bound = _comparison(
+                    f"p.{player_col}", operator, value)
                 player_where.append(fragment)
-            elif (col in _columns(con, "club_player_register")
-                    and _has_values(con, "club_player_register", col)):
-                fragment, bound = _comparison(col, operator, value)
+            elif (register_col in _columns(con, "club_player_register")
+                    and _has_values(con, "club_player_register",
+                                    register_col)):
+                fragment, bound = _comparison(register_col, operator, value)
                 player_where.append(
                     f"p.{s.player_id} IN (SELECT player_id "
                     f"FROM club_player_register "
@@ -353,6 +458,7 @@ def compile_query(schema, query: str, con=None, extensions=()):
             # Python, registered on the connection the query executes on.
             # Wildcards in the typed text are escaped so "o_brien" is a
             # name, not a pattern.
+            _field_only(key, operator)
             folded = names.search_key(value)
             if not folded:
                 # Folding strips punctuation, so a query of nothing but
@@ -372,10 +478,13 @@ def compile_query(schema, query: str, con=None, extensions=()):
                     f"LOWER(p.{s.player}) LIKE ? ESCAPE '\\'")
                 params.append(names.like_contains(value.lower()))
         elif key == "club":
+            _field_only(key, operator)
             club_all.append(value)
         elif key == "club_any":
+            _field_only(key, operator)
             club_any.append(value)
         elif key in {"played", "season"}:
+            _field_only(key, operator)
             lo, hi = _range(value, key)
             player_where.append(
                 f"p.{s.player_id} IN (SELECT yr.{s.player_id} FROM {s.games} yr "
@@ -383,10 +492,12 @@ def compile_query(schema, query: str, con=None, extensions=()):
             )
             params.extend([lo, hi])
         elif key in {"debut_year", "debut_range"}:
+            _field_only(key, operator)
             lo, hi = _range(value, "debut")
             player_where.append(f"p.{s.debut_season} BETWEEN ? AND ?")
             params.extend([lo, hi])
         elif key == "postseason":
+            _field_only(key, operator)
             wanted = _boolean(value)
             predicate = (
                 f"p.{s.player_id} IN (SELECT pg.{s.player_id} FROM {s.games} pg "
@@ -452,56 +563,44 @@ def compile_query(schema, query: str, con=None, extensions=()):
 
     for club in club_all:
         names_list = _club_identities(s, club)
-        if names_list:
-            # UNION rather than OR, same as core.played_for: it lets SQLite
-            # use the separate club_now/club_hist indexes instead of
-            # scanning the games table once per club token.
-            marks = ",".join("?" for _ in names_list)
-            player_where.append(
-                f"p.{s.player_id} IN ("
-                f"SELECT ca.{s.player_id} FROM {s.games} ca "
-                f"WHERE ca.{s.club_now} IN ({marks}) "
-                f"UNION "
-                f"SELECT ca.{s.player_id} FROM {s.games} ca "
-                f"WHERE ca.{s.club_hist} IN ({marks}))"
-            )
-            params.extend([*names_list, *names_list])
-        else:
-            # A name the sport does not know: keep the forgiving
-            # case-insensitive scan rather than answering nothing.
-            player_where.append(
-                f"p.{s.player_id} IN (SELECT ca.{s.player_id} FROM {s.games} ca "
-                f"WHERE (LOWER(ca.{s.club_now})=LOWER(?) "
-                f"OR LOWER(ca.{s.club_hist})=LOWER(?)))"
-            )
-            params.extend([club, club])
+        if not names_list:
+            # Aliases and era names were already tried: _club_identities
+            # folds the sport's club list and every lineage name, case-
+            # insensitively. A miss is a typo or another sport's club, and
+            # the old forgiving fallback -- LOWER(col)=LOWER(?) over the
+            # whole games table -- was a full scan that almost always
+            # matched nothing anyway. Fail with the name, not silently.
+            raise QuerySyntaxError(f"Unknown club: {club!r}")
+        # UNION rather than OR, same as core.played_for: it lets SQLite
+        # use the separate club_now/club_hist indexes instead of
+        # scanning the games table once per club token.
+        marks = ",".join("?" for _ in names_list)
+        player_where.append(
+            f"p.{s.player_id} IN ("
+            f"SELECT ca.{s.player_id} FROM {s.games} ca "
+            f"WHERE ca.{s.club_now} IN ({marks}) "
+            f"UNION "
+            f"SELECT ca.{s.player_id} FROM {s.games} ca "
+            f"WHERE ca.{s.club_hist} IN ({marks}))"
+        )
+        params.extend([*names_list, *names_list])
 
     if club_any:
-        # Pure OR of memberships, so every resolved identity pools into one
-        # IN list; only unrecognised names fall back to the LOWER() scan.
+        # Pure OR of memberships, so every resolved identity pools into
+        # one IN list. Unknown names are rejected the same way club: is.
         any_names: list[str] = []
-        unresolved: list[str] = []
         for club in club_any:
             names_list = _club_identities(s, club)
-            if names_list:
-                any_names.extend(names_list)
-            else:
-                unresolved.append(club)
-        conditions = []
-        if any_names:
-            marks = ",".join("?" for _ in any_names)
-            conditions.append(f"co.{s.club_now} IN ({marks})")
-            conditions.append(f"co.{s.club_hist} IN ({marks})")
-            params.extend([*any_names, *any_names])
-        for club in unresolved:
-            conditions.append(f"LOWER(co.{s.club_now})=LOWER(?)")
-            conditions.append(f"LOWER(co.{s.club_hist})=LOWER(?)")
-            params.extend([club, club])
+            if not names_list:
+                raise QuerySyntaxError(f"Unknown club: {club!r}")
+            any_names.extend(names_list)
+        marks = ",".join("?" for _ in any_names)
         player_where.append(
             f"p.{s.player_id} IN (SELECT co.{s.player_id} FROM {s.games} co "
-            f"WHERE ("
-            + " OR ".join(conditions) + "))"
+            f"WHERE (co.{s.club_now} IN ({marks}) "
+            f"OR co.{s.club_hist} IN ({marks})))"
         )
+        params.extend([*any_names, *any_names])
 
     if game_conditions:
         player_where.append(

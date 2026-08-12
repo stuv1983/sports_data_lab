@@ -121,6 +121,16 @@ SPORT = Sport(
     }),
     club_data_hint=("Run `python utils/derive_club_tables.py --sport mlb` "
                     "for Team Explorer."),
+    query_tables=(
+        "players", "games", "clubs", "arenas", "arena_teams", "awards",
+        "hall_of_fame", "all_star", "player_positions",
+        "mlb_game_lineups", "mlb_player_rivalry_games",
+        "club_player_register", "club_player_totals",
+        "club_player_records",
+    ),
+    query_column_kinds={
+        "games.date": "date", "games.is_postseason": "boolean",
+    },
     search_examples=(
         'club:"New York Yankees" games>=1000 sort:obscurity',
         'season.home_runs>=40 debut:1990..1999',

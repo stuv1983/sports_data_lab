@@ -165,6 +165,29 @@ SPORT = Sport(
     family_hint=("Run `afl/scrape_wikipedia_families.py`, then "
                  "`python -m utils.afl.load_family_relationships` for family links."),
     search_extension_modules=("afl.search_tokens",),
+    #: The tables Advanced Search's query builder exposes: the analytical
+    #: layers a reader would ask about, not the scrape indexes, staging
+    #: snapshots, link tables and issue logs that share the file.
+    query_tables=(
+        "players", "games", "matches", "match_details", "clubs",
+        "captaincies", "draft", "brownlow_results", "brownlow_round_votes",
+        "all_australian", "all_australian_history", "awards",
+        "hall_of_fame", "rising_star_nominees", "season_goals",
+        "team_seasons", "team_selections", "family_relationships",
+        "venue_summary", "venue_match_records", "venue_player_records",
+        "venue_player_game_records", "venue_team_records",
+        "club_player_register", "club_player_totals",
+        "club_player_records", "club_player_averages", "historic_grids",
+    ),
+    #: The build declares dates as TEXT and flags as INTEGER; the query
+    #: builder needs the application-level truth to offer the right
+    #: operators.
+    query_column_kinds={
+        "players.dob": "date",
+        "games.date": "date", "games.dob": "date",
+        "games.is_home": "boolean", "games.is_final": "boolean",
+        "matches.match_date": "date", "matches.is_final": "boolean",
+    },
     search_examples=(
         'club:Hawthorn games>=200 sort:obscurity',
         'game.disposals>=40 postseason:true',

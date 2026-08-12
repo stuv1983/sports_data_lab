@@ -65,7 +65,10 @@ def fixture():
     return con, schema
 
 
-def run():
+def test_base_compiler_end_to_end():
+    """The end-to-end checks that used to hide inside a bare run()
+    helper pytest never collected -- a green suite said nothing about
+    them."""
     con, schema = fixture()
     sql, params, _ = Q.compile_query(
         schema,
@@ -89,13 +92,8 @@ def run():
     assert "games>=100" in query
     assert "game.disposals>=30" in query
 
-    try:
+    with pytest.raises(Q.QuerySyntaxError):
         Q.compile_query(schema, "game.hacks>=1", con=con)
-    except Q.QuerySyntaxError:
-        pass
-    else:
-        raise AssertionError("unknown stat should be rejected")
-    print("query filter tests: passed")
 
 
 @pytest.mark.parametrize("query", ["limit:1.5", "limit:nan", "games>=inf"])
@@ -375,5 +373,133 @@ def test_name_terms_reads_what_the_did_you_mean_needs():
     assert Q.name_terms('name:"unclosed') == []
 
 
+# ------------------------------------------------------- NFL-shaped physicals
+#
+# The NFL keeps height/weight on `players` under the names the schema
+# declares -- literally `height` and `weight`, in inches and pounds. The
+# compiler used to hardcode height_cm/weight_kg for every sport, so
+# `height>=72` answered "Height data is not loaded" on a database carrying
+# height for every player.
+
+def _nfl_shaped_fixture():
+    con = sqlite3.connect(":memory:")
+    con.executescript(_PHYSICALS_SCHEMA + """
+        CREATE TABLE players (
+          player_id INTEGER, player TEXT, debut_season INTEGER,
+          final_season INTEGER, career_games INTEGER, career_goals INTEGER,
+          finals_played INTEGER, clubs_hist TEXT, obscurity REAL,
+          height INTEGER, weight INTEGER
+        );
+        INSERT INTO players VALUES
+          (1,'Tall One',1999,2010,200,30,10,'A',80,78,320),
+          (2,'Short Two',2001,2005,50,2,0,'B',40,68,180);
+    """)
+    schema = core.Schema(
+        career_score="career_goals", career_postseason="finals_played",
+        game_score="goals", stats=("goals", "disposals"), clubs=("A", "B"),
+        height="height", weight="weight",
+        required_games_cols=(), required_player_cols=(),
+    )
+    return con, schema
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("height>=72", ["Tall One"]),
+    ("weight>=200", ["Tall One"]),
+    ("height<=70 weight<=190", ["Short Two"]),
+])
+def test_nfl_shaped_physicals_use_the_schema_declared_columns(
+        query, expected):
+    con, schema = _nfl_shaped_fixture()
+    sql, params, _ = Q.compile_query(schema, query, con=con)
+    assert [row[0] for row in con.execute(sql, params)] == expected
+
+
+# ------------------------------------------------------ operator strictness
+#
+# Field-only tokens used to accept relational operators and silently treat
+# them as ':' -- `limit>10` behaved as `limit:10`, `club>Hawthorn` as
+# `club:Hawthorn` -- misleading semantics the parser now refuses.
+
+@pytest.mark.parametrize("query", [
+    "sort>games", "limit>10", "limit>=100", "name>Smith", "player>Smith",
+    "club>A", "club_any>A", "played>1990", "season>1990",
+    "postseason>true", "debut_year>1990",
+])
+def test_field_only_tokens_reject_relational_operators(query):
+    con, schema = fixture()
+    with pytest.raises(Q.QuerySyntaxError, match="field:value"):
+        Q.compile_query(schema, query, con=con)
+
+
+@pytest.mark.parametrize("query", [
+    "captain_club>B", "captain_year>1995", "captain_season>1995",
+    "pick>3", "draft_pick>3", "draft_year>1990", "drafted_year>1990",
+])
+def test_afl_extension_tokens_reject_relational_operators(query):
+    con, schema = _draft_fixture()
+    with pytest.raises(Q.QuerySyntaxError, match="field:value"):
+        Q.compile_query(schema, query, con=con, extensions=_afl())
+
+
+def test_debut_still_accepts_genuine_comparisons():
+    """debut>=1990 is real relational syntax, not a field-only token."""
+    con, schema = fixture()
+    sql, params, _ = Q.compile_query(schema, "debut>=2000", con=con)
+    assert [row[0] for row in con.execute(sql, params)] == ["Beta Two"]
+
+
+# ------------------------------------------------------------ club identity
+
+def test_known_clubs_and_aliases_compile_to_exact_in_lists():
+    con, schema = fixture()
+    sql, params, _ = Q.compile_query(schema, "club:a", con=con)
+    assert "LOWER(" not in sql
+    assert [row[0] for row in con.execute(sql, params)] == ["Alpha One"]
+
+
+def test_unknown_clubs_are_rejected_not_scanned():
+    """The forgiving fallback was LOWER(col)=LOWER(?) over the whole
+    games table -- a full scan that almost always matched nothing. An
+    unknown name now names itself in the error."""
+    con, schema = fixture()
+    with pytest.raises(Q.QuerySyntaxError, match="Unknown club"):
+        Q.compile_query(schema, "club:Hogwarts", con=con)
+    with pytest.raises(Q.QuerySyntaxError, match="Unknown club"):
+        Q.compile_query(schema, "club_any:Hogwarts", con=con)
+
+
+def test_lineage_aliases_still_resolve():
+    """Era names from club_lineage expand exactly as the grid does."""
+    con, schema = fixture()
+    lineage_schema = core.Schema(
+        career_score="career_goals", career_postseason="finals_played",
+        game_score="goals", stats=("goals", "disposals"),
+        clubs=("A", "B"), club_lineage={"A": ("Old A",)},
+        required_games_cols=(), required_player_cols=(),
+    )
+    sql, params, _ = Q.compile_query(lineage_schema, 'club:"old a"',
+                                     con=con)
+    assert "LOWER(" not in sql
+    assert params.count("Old A") >= 1
+
+
+# ---------------------------------------------------------- family q= wins
+
+def test_family_facade_gives_q_precedence_over_structured_params():
+    """q= is the canonical whole-query parameter; appending the
+    structured family parameters after it duplicated filters and grew
+    the query on every canonicalisation pass."""
+    import query_filters_family as QF
+
+    assert QF.query_from_params(
+        {"q": ["games>=100"], "family_relation": ["brother"]}
+    ) == "games>=100"
+    assert QF.query_from_params(
+        {"family_relation": ["brother"], "related_to": ["Gary Ablett"]}
+    ) == 'family_relation:brother related_to:"Gary Ablett"'
+
+
 if __name__ == "__main__":
-    run()
+    test_base_compiler_end_to_end()
+    print("query filter tests: passed")

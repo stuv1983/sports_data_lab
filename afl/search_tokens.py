@@ -20,6 +20,7 @@ from query_filters import (
     QuerySyntaxError,
     SearchExtension,
     _boolean,
+    _club_identities,
     _field_only,
     _range,
     _table_exists,
@@ -66,10 +67,15 @@ class CaptainTokens(SearchExtension):
                 self.negated = True
             return True
         if key == "captain_club":
-            self.conditions.append("LOWER(cp.club)=LOWER(?)")
+            _field_only(key, operator)
+            # COLLATE NOCASE keeps the stored column bare -- the old
+            # LOWER(cp.club)=LOWER(?) wrapped the indexed side -- and can
+            # ride a NOCASE index if the captaincies loader ever adds one.
+            self.conditions.append("cp.club COLLATE NOCASE = ?")
             self.params.append(value)
             return True
         if key in {"captain_year", "captain_season"}:
+            _field_only(key, operator)
             lo, hi = _range(value, key)
             self.conditions.append("cp.season BETWEEN ? AND ?")
             self.params.extend([lo, hi])
@@ -135,9 +141,11 @@ class DraftTokens(SearchExtension):
             self.tokens.append(("recruited", value))
             return True
         if key in {"pick", "draft_pick"}:
+            _field_only(key, operator)
             self.tokens.append(("pick", _range(value, key)))
             return True
         if key in {"draft_year", "drafted_year"}:
+            _field_only(key, operator)
             self.tokens.append(("year", _range(value, key)))
             return True
         if key == "drafted_by":
@@ -352,6 +360,14 @@ class FamilyTokens(SearchExtension):
                 out.append((f"p.{s.player_id} IN ({sql})",
                             [f"%{value.lower()}%"]))
             else:                        # relative_club
+                # Same club-identity rule as the base compiler's club:
+                # aliases and era names resolve in Python to an exact,
+                # indexable IN; an unknown name is an error, not a
+                # LOWER()-wrapped scan of the games table.
+                identities = _club_identities(s, value)
+                if not identities:
+                    raise QuerySyntaxError(f"Unknown club: {value!r}")
+                marks = ",".join("?" for _ in identities)
                 sql = (
                     "SELECT DISTINCT self.player_id FROM family_members self "
                     "JOIN family_members relative "
@@ -362,10 +378,11 @@ class FamilyTokens(SearchExtension):
                     "WHERE self.player_id IS NOT NULL "
                     f"AND self.match_status IN {_TRUSTED} "
                     f"AND relative.match_status IN {_TRUSTED} "
-                    f"AND (LOWER(rg.{s.club_now})=LOWER(?) "
-                    f"OR LOWER(rg.{s.club_hist})=LOWER(?))"
+                    f"AND (rg.{s.club_now} IN ({marks}) "
+                    f"OR rg.{s.club_hist} IN ({marks}))"
                 )
-                out.append((f"p.{s.player_id} IN ({sql})", [value, value]))
+                out.append((f"p.{s.player_id} IN ({sql})",
+                            [*identities, *identities]))
         return out
 
 

@@ -221,48 +221,51 @@ def test_nested_groups(con) -> None:
     print("Nested groups: (Collingwood AND 150+ games) OR "
           "(drafted Hawthorn AND premiership):")
     bag = QB.ParamBag()
-    g1 = QB.combine_condition_clauses([
-        QB.compile_condition({"column": "club", "kind": "text",
-                              "op": "equals", "value": "Collingwood"},
-                             KNOWN, bag),
-        QB.compile_condition({"column": "career_games", "kind": "integer",
-                              "op": "≥", "value": 150}, KNOWN, bag),
-    ], "AND")
-    g2 = QB.combine_condition_clauses([
-        QB.compile_condition({"column": "drafted_by", "kind": "text",
-                              "op": "equals", "value": "Hawthorn"},
-                             KNOWN, bag),
-        QB.compile_condition({"column": "premierships", "kind": "integer",
-                              "op": "≥", "value": 1}, KNOWN, bag),
-    ], "AND")
-    where = QB.combine_group_clauses([("AND", g1), ("OR", g2)])
-    check("clause shape",
-          where == f"({g1} OR {g2})", where)
+    where = QB.compile_condition_node({
+        "type": "group", "op": "OR", "children": [
+            {"type": "group", "op": "AND", "children": [
+                {"column": "club", "kind": "text",
+                 "op": "equals", "value": "Collingwood"},
+                {"column": "career_games", "kind": "integer",
+                 "op": "≥", "value": 150},
+            ]},
+            {"type": "group", "op": "AND", "children": [
+                {"column": "drafted_by", "kind": "text",
+                 "op": "equals", "value": "Hawthorn"},
+                {"column": "premierships", "kind": "integer",
+                 "op": "≥", "value": 1},
+            ]},
+        ]}, KNOWN, bag)
+    check("clause shape", where.count("(") >= 2 and " OR " in where, where)
     check("row results", _names(con, where, bag.values) ==
           ["Cyril Rioli", "Luke Hodge", "Nathan Buckley",
            "Scott Pendlebury"], where)
 
-    # Mixed joiners fold left with explicit parentheses.
+    # Arbitrary nesting: A AND (B OR (C AND D)).
     bag = QB.ParamBag()
-    a = QB.compile_condition({"column": "club", "kind": "text",
-                              "op": "equals", "value": "Fitzroy"},
-                             KNOWN, bag)
-    b = QB.compile_condition({"column": "club", "kind": "text",
-                              "op": "equals", "value": "Hawthorn"},
-                             KNOWN, bag)
-    c = QB.compile_condition({"column": "career_games", "kind": "integer",
-                              "op": "≥", "value": 100}, KNOWN, bag)
-    where = QB.combine_group_clauses([("AND", a), ("OR", b), ("AND", c)])
-    check("((A OR B) AND C) parenthesisation",
-          where == f"(({a} OR {b}) AND {c})", where)
-    check("((A OR B) AND C) rows",
+    where = QB.compile_condition_node({
+        "type": "group", "op": "AND", "children": [
+            {"column": "career_games", "kind": "integer",
+             "op": "≥", "value": 100},
+            {"type": "group", "op": "OR", "children": [
+                {"column": "club", "kind": "text",
+                 "op": "equals", "value": "Fitzroy"},
+                {"type": "group", "op": "AND", "children": [
+                    {"column": "club", "kind": "text",
+                     "op": "equals", "value": "Hawthorn"},
+                    {"column": "premierships", "kind": "integer",
+                     "op": "≥", "value": 1},
+                ]},
+            ]},
+        ]}, KNOWN, bag)
+    check("A AND (B OR (C AND D)) rows",
           _names(con, where, bag.values) == ["Cyril Rioli", "Luke Hodge"],
           where)
-    # Empty groups drop out without consuming a joiner.
-    check("empty group drops out",
-          QB.combine_group_clauses([("AND", None), ("OR", b)]) == b)
-    check("all-empty is None",
-          QB.combine_group_clauses([("AND", None)]) is None)
+    # Empty groups compile to None instead of erroring.
+    check("empty group is None",
+          QB.compile_condition_node({"type": "group", "op": "AND",
+                                     "children": []},
+                                    KNOWN, QB.ParamBag()) is None)
 
 
 def test_half_built_specs() -> None:
@@ -298,10 +301,14 @@ def test_security_walls() -> None:
     except ValueError:
         check("unknown operator refused", True)
     try:
-        QB.combine_group_clauses([("AND", "1=1"), ("XOR --", "1=1")])
-        check("joiner outside AND/OR refused", False)
+        QB.compile_condition_node(
+            {"type": "group", "op": "XOR --",
+             "children": [{"column": "club", "kind": "text",
+                           "op": "equals", "value": "x"}]},
+            KNOWN, QB.ParamBag())
+        check("group op outside AND/OR refused", False)
     except ValueError:
-        check("joiner outside AND/OR refused", True)
+        check("group op outside AND/OR refused", True)
     bag = QB.ParamBag()
     hostile = "x' OR '1'='1"
     clause = QB.compile_condition({"column": "club", "kind": "text",
@@ -425,7 +432,7 @@ def render_ui() -> None:
                 format_func=lambda n:
                     f"{n.replace('_', ' ')} — {QB.column_category(n)}")
             match = "AND" if (match_label or "").startswith("all") else "OR"
-            clauses = []
+            specs = []
             for name in chosen:
                 box = st.container(border=True)
                 spec = QB._spec_widget(box, f"{base}:{name}",
@@ -441,16 +448,25 @@ def render_ui() -> None:
                         solo.values).fetchone()[0]
                     box.caption(f":material/filter_alt: matches {n:,} "
                                 f"row{'' if n == 1 else 's'} on its own")
-                    clauses.append(QB.compile_condition(spec,
-                                                        set(by_name), bag))
+                    specs.append(spec)
             pairs.append((joiner,
-                          QB.combine_condition_clauses(clauses, match)))
+                          {"type": "group", "op": match,
+                           "children": specs} if specs else None))
     if st.button("Add a condition group", icon=":material/add:"):
         state["groups"].append({"gid": state["next"]})
         state["next"] += 1
         st.rerun()
 
-    where = QB.combine_group_clauses(pairs)
+    # The old left-associative joiner fold, expressed as nesting: each
+    # group folds onto the expression so far under its own joiner.
+    query = None
+    for joiner, node in pairs:
+        if node is None:
+            continue
+        query = node if query is None else {
+            "type": "group", "op": joiner, "children": [query, node]}
+    where = (QB.compile_condition_node(query, set(by_name), bag)
+             if query else None)
     st.markdown("#### Compiled WHERE")
     st.code(where or "— nothing filters yet —", language="sql")
     st.code(repr(bag.values), language="python")

@@ -517,6 +517,47 @@ BUILDERS = {
     "X+ career WAR":              (career_war_min, ["war"]),
 }
 
+#: The category shelves the criterion pickers arrange BUILDERS on --
+#: the same names the AFL catalogue uses, so a reader who learned one
+#: sport's picker can navigate every sport's. A builder named nowhere
+#: here falls to the picker's "More" shelf.
+BUILDER_GROUPS = {
+    "Clubs & journeys": (
+        "Played for club", "First career game for club", "One-club player",
+        "Multi-club player", "Played for X+ clubs", "X+ goals at 2+ clubs",
+        "X+ games at 2+ clubs", "Winning record in a rivalry",
+        "X+ games in a rivalry",
+    ),
+    "Career milestones": (
+        "150+ / X+ career games", "Fewer than X career games",
+        "X+ career goals", "X or fewer career goals", "X+ career hits",
+        "X+ of a stat in a career", "Career average of a stat",
+        "X+ career WAR",
+    ),
+    "Season & era": (
+        "Played between seasons", "Debuted between seasons",
+        "X+ of a stat in one season", "Season average of a stat",
+        ".300+ batting average season", "Two stats in the same season",
+        "X+ WAR in a season",
+    ),
+    "Finals & premierships": (
+        "Played in a final", "Won a final", "X+ finals games",
+        "No finals wins (played finals)", "Never won a final",
+        "Never played finals", "Played in the World Series",
+        "Won the World Series", "Played in X+ World Series",
+        "Won X+ World Series", "Lost X+ World Series",
+        "Never played in the World Series",
+    ),
+    "Grounds & venues": (
+        "Played at venue", "Played in state", "Won a final at venue",
+    ),
+    "Physical": ("Played a position", "Born outside the US"),
+    "Awards & honours": (
+        "Won an award", "All-Star selection", "Hall of Fame",
+    ),
+    "Teammates": ("Played with…",),
+}
+
 #: Builders needing an optional layer. app.py filters BUILDERS by these
 #: sets, and an empty set means nothing is hidden rather than everything.
 DRAFT_BUILDERS = set()
