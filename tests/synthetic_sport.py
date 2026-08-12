@@ -30,10 +30,17 @@ class _Constraints:
         "150+ / X+ career games": (
             lambda games: ("SELECT player_id FROM players "
                            "WHERE career_games >= ?", [games]), ["games"]),
+        # A player-referencing criterion: args carry the server-owned id,
+        # and the chip label must come back from the database on restore.
+        "Teammate of…": (
+            lambda player_id: ("SELECT player_id FROM players "
+                               "WHERE player_id = ?", [player_id]),
+            ["player_id"]),
     }
     BUILDER_GROUPS = {
         "Clubs & journeys": ("Played for club",),
         "Career milestones": ("150+ / X+ career games",),
+        "Teammates": ("Teammate of…",),
     }
 
     @staticmethod

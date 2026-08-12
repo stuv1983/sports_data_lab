@@ -422,7 +422,9 @@ def test_a_debutant_is_created_with_a_birthday_derived_from_their_age(stored):
     row = stored.execute(
         "SELECT dob, debut_season, clubs_now, name_key, career_goals "
         "FROM players WHERE player_id = 501").fetchone()
-    assert row == ("28-Oct-2005", 2026, "Collingwood", "noah howes", 2.0)
+    # dob is stored ISO (see utils/afl/dob.py); the AFL Tables spelling
+    # died with the migration.
+    assert row == ("2005-10-28", 2026, "Collingwood", "noah howes", 2.0)
     assert stored.execute(
         "SELECT player_id FROM manual_round_games").fetchone()[0] == 501
 

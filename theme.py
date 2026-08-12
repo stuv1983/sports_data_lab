@@ -2,13 +2,14 @@
 theme.py -- Appearance modes and the stylesheet they drive.
 
 AFL gets an AFL-inspired navy, red and white scheme in addition to the
-existing dark, light and custom modes. Appearance controls are intentionally
-kept inside one collapsed sidebar expander so they do not compete with search,
-navigation or database information.
+existing dark, light and custom modes. Appearance controls live in the member
+profile; the selected palette is applied globally from persistent preferences.
 
 Palette keys are stable across modes; anything added here must be added to
 every palette or the stylesheet will fall back to an unset variable.
 """
+
+import re
 
 KEYS = ["board", "panel", "line", "chalk", "muted", "accent", "hover",
         "tile_rare", "tile_common"]
@@ -104,56 +105,73 @@ def palette(sport_key, mode, custom=None):
     if mode != "Custom":
         return dict(base)
     merged = dict(base)
-    merged.update({k: v for k, v in (custom or {}).items() if v})
+    merged.update({
+        key: value for key, value in (custom or {}).items()
+        if key in KEYS and isinstance(value, str)
+        and re.fullmatch(r"#[0-9A-Fa-f]{6}", value)
+    })
     return merged
 
 
-def controls(st, sport_key, key_prefix=""):
-    """Render a compact, collapsed Appearance section and return its palette."""
-    k = lambda name: f"{key_prefix}theme_{name}"  # noqa: E731
+def _key(sport_key, name):
+    return f"profile_theme_{sport_key}_{name}"
+
+
+def sync_preferences(st, sport_key, preferences, user_id=None):
+    """Load persisted appearance once per signed-in identity and sport."""
+    marker = (user_id, sport_key)
+    marker_key = "_appearance_preference_owner"
+    stored = (preferences.get("appearance", {}).get(sport_key, {})
+              if isinstance(preferences, dict) else {})
+    if st.session_state.get(marker_key) != marker:
+        mode = stored.get("mode", default_mode(sport_key))
+        if mode not in modes(sport_key):
+            mode = default_mode(sport_key)
+        st.session_state[_key(sport_key, "mode")] = mode
+        custom = stored.get("custom", {})
+        seed = palette(sport_key, default_mode(sport_key))
+        for name in KEYS:
+            value = custom.get(name) if isinstance(custom, dict) else None
+            st.session_state[_key(sport_key, name)] = value or seed[name]
+        st.session_state[marker_key] = marker
+
+
+def current_palette(st, sport_key, preferences=None, user_id=None):
+    """Resolve the palette selected in session or saved on the account."""
+    sync_preferences(st, sport_key, preferences or {}, user_id)
+    mode = st.session_state[_key(sport_key, "mode")]
+    custom = {name: st.session_state[_key(sport_key, name)] for name in KEYS}
+    return palette(sport_key, mode, custom)
+
+
+def controls(st, sport_key):
+    """Render profile appearance controls and return a storable value."""
     offered = modes(sport_key)
-    state_key = k("mode")
+    mode = st.segmented_control(
+        "Colour scheme", offered, key=_key(sport_key, "mode"),
+        selection_mode="single",
+    ) or default_mode(sport_key)
 
-    # Old sessions may contain a mode no longer valid for the selected sport.
-    if st.session_state.get(state_key) not in (None, *offered):
-        st.session_state.pop(state_key, None)
-
-    with st.sidebar.expander("Appearance", expanded=False):
-        mode = st.radio(
-            "Colour scheme",
-            offered,
-            index=offered.index(default_mode(sport_key)),
-            key=state_key,
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-
-        if mode != "Custom":
-            resolved = palette(sport_key, mode)
-            st.session_state[k("seed")] = resolved
-            return resolved
-
-        seed = st.session_state.get(k("seed")) or palette(
-            sport_key, default_mode(sport_key)
-        )
-        custom = {}
-        left, right = st.columns(2)
+    custom = {name: st.session_state[_key(sport_key, name)] for name in KEYS}
+    if mode == "Custom":
+        st.caption("Tune the app surface, text, accent, and grid tile colours.")
+        columns = st.columns(3)
         for i, name in enumerate(KEYS):
-            col = left if i % 2 == 0 else right
-            custom[name] = col.color_picker(
-                LABELS[name], seed.get(name, "#000000"), key=k(name)
+            custom[name] = columns[i % 3].color_picker(
+                LABELS[name], key=_key(sport_key, name)
             )
 
-        reset_label = "Reset to AFL" if sport_key == "afl" else "Reset to dark"
-        if st.button(reset_label, key=k("reset")):
-            for name in KEYS:
-                st.session_state.pop(k(name), None)
-            st.session_state[k("seed")] = palette(
-                sport_key, default_mode(sport_key)
-            )
-            st.rerun()
+        def reset_custom():
+            seed = palette(sport_key, default_mode(sport_key))
+            for palette_key in KEYS:
+                st.session_state[_key(sport_key, palette_key)] = seed[palette_key]
 
-    return palette(sport_key, "Custom", custom)
+        st.button(
+            "Reset custom colours", icon=":material/restart_alt:",
+            key=_key(sport_key, "reset"), on_click=reset_custom,
+        )
+
+    return {"mode": mode, "custom": custom}
 
 
 def css(p):

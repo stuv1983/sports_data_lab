@@ -28,6 +28,7 @@ from pathlib import Path
 
 import obscurity
 from data_paths import default_db, raw_dir
+from utils.afl.dob import canonical_dob
 
 from . import obscurity_model
 
@@ -222,7 +223,10 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
     out["club_hist"] = df["Playing.for"].astype(str).str.strip()
     out["club_now"] = out["club_hist"].map(lambda c: CLUB_LINEAGE.get(c, c))
     out["career_game_no"] = pd.to_numeric(df["Career.Games"], errors="coerce")
-    out["dob"] = df["DOB"].astype(str)
+    # The source spells DOB "30-Jan-1987"; stored dates are ISO so the
+    # query builder's date operators and pickers are truthful. A value
+    # that is not a real date becomes NULL, never text posing as one.
+    out["dob"] = df["DOB"].map(canonical_dob)
 
     # DOB is populated for only ~5% of rows, but Age (fractional years, at
     # that match) and Date are complete. Age is fractional, not integer, so

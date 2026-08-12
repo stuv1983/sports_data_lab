@@ -1,4 +1,4 @@
-# Sports Data Lab
+ # Sports Data Lab
 
 A local-first sports database, research toolkit and puzzle-solving application.
 
@@ -70,6 +70,8 @@ The Streamlit application includes the following pages:
 - **Club Explorer** — browse current-club metadata, all-time players and records.
 - **Advanced Search** — combine multiple filters using a compact query language.
 - **Stats Explorer** — browse and rank player statistics.
+- **Visual Explorer** — the database drawn rather than listed: league activity, career
+  trajectories, club trends, match distributions, venue use, awards and data coverage.
 - **Random Discovery** — surface lesser-known players and records.
 - **Grid Solver** — build or load a 3 × 3 player grid and inspect every valid answer.
 - **Game Lab** — explore player, match and criterion combinations.
@@ -135,6 +137,61 @@ Historical grids may be loaded in two modes:
 - **Practice** — may replace an unsupported criterion with a clearly labelled supported alternative.
 
 Unsupported or incomplete criteria are reported rather than silently guessed.
+
+## Visual Explorer
+
+Visual Explorer answers the questions whose answer is a shape rather than a list. It has
+six sections — Overview, Players, Teams, Matches, Venues and Awards — and every chart is
+aggregated by SQLite before it reaches the browser: the databases run to 1.6 million rows
+and a chart that pulls those into pandas moves a hundred megabytes to produce eighty
+numbers.
+
+Three modules do the work:
+
+- `visual_queries.py` — parameterised aggregate SQL, plus the capability model.
+- `charts.py` — the Altair builders, shared with the player and match cards.
+- `app_pages/19_Visual_Explorer.py` — filters, sections and the click-to-detail wiring.
+
+### Sections are offered on what the database has
+
+`visual_queries.capabilities()` measures the open file once per database revision and a
+section renders only what that answer allows. Nothing is declared per sport, because two
+of the differences that decide whether a chart is honest are invisible from a sport's
+registry entry:
+
+- a row of the MLB's `games` is a player's **season** with one club, so its trajectory
+  charts are labelled per season and it is offered no single-game view at all;
+- `team_seasons` exists in three builds and means something different in each — the AFL's
+  carries wins and a ladder rank, the NBA's wins and a conference rank plus a `phase`
+  column that files two rows a season, and the NFL's is a bag of statistic sums with no
+  wins column — so team records come from the curated table where it can answer and are
+  derived from `club_match_sources` where it cannot.
+
+A section that cannot be answered says which layer is missing and, where one exists, the
+loader command that would fill it. The NBA's Venues section declines with the measured
+figure: 1.9% of its match rows name an arena, and a "busiest arenas" chart drawn from
+that would rank the handful of matches somebody happened to record.
+
+### Rules the charts keep
+
+- **Missing stays missing.** A season a player did not play has no bar; a statistic the
+  source never recorded is absent rather than zero. `df.fillna(0)` appears nowhere.
+- **Rates divide by what was recorded.** A career spanning an era boundary divides by the
+  games the statistic was actually counted in, never by games played — otherwise a 1960s
+  career carries a tackle rate for seasons nobody counted tackles in.
+- **Rate statistics are never summed or averaged.** MLB ERA is shown per season and club
+  exactly as Lahman recorded it; combining two would need innings these tables do not
+  carry.
+- **One y-axis, always.** A total and a per-game rate are two charts side by side.
+- **Colour follows the entity.** Hues are assigned from the selection's stable order, so
+  narrowing the seasons until a club drops out never repaints the clubs that remain, and
+  a ninth series is declined rather than given a ninth colour.
+- **Scatterplots are capped** at `charts.SCATTER_CAP` marks; past that no point can be
+  hovered or clicked, which is the whole reason the chart is interactive.
+
+Clicking a chart opens the same detail cards the rest of the application uses — a point
+on the volume-against-efficiency landscape opens the player, a line on a club trend opens
+the club, a cell of the coverage heatmap opens the season.
 
 ## Advanced Search
 

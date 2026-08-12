@@ -20,23 +20,29 @@ C = SPORT.C
 
 player_picker = ui_widgets.player_picker
 
-st.markdown("# Play Grids")
-st.caption("Select a saved grid to play. You have 9 guesses, and a player can only be used once. You have 1 undo.")
+st.markdown("# Play grids")
+st.caption(
+    "Choose a grid, then fill all nine squares. Each player can be used once; "
+    "you have nine guesses and one undo."
+)
 
 def render_grid_selection():
-    sources = ["Saved Grids"]
+    sources = ["Saved grids"]
     # A capability, not a sport key: any sport that declares a captured
     # grid library gets the source, under its own puzzle's name.
-    past_label = f"Past Grids ({V.grid_source})"
+    past_label = f"Past grids ({V.grid_source})"
     if SPORT.grid_library:
         sources.append(past_label)
 
-    default_source = past_label if past_label in sources else "Saved Grids"
-    source = st.pills("Grid source", sources, key=SPORT.k("play_source"), label_visibility="collapsed", default=default_source)
+    default_source = past_label if past_label in sources else "Saved grids"
+    source = st.pills(
+        "Grid source", sources, key=SPORT.k("play_source"),
+        default=default_source,
+    )
     if not source:
         source = default_source
     
-    if source == "Saved Grids":
+    if source == "Saved grids":
         viewer_id = st.session_state.get("auth_user_id")
         saved = accounts.list_playable_grids(SPORT.key, viewer_id)
         if not saved:
@@ -47,7 +53,7 @@ def render_grid_selection():
             "Saved grid", list(by_id), key=SPORT.k("play_saved_grid_id"),
             format_func=lambda grid_id: by_id[grid_id]["name"])
         
-        if st.button("Load Grid", key=SPORT.k("play_load_grid"), type="primary", width="stretch"):
+        if st.button("Load grid", key=SPORT.k("play_load_grid"), type="primary", width="stretch"):
             try:
                 grid_data = accounts.load_playable_grid(chosen_id, viewer_id)
                 st.session_state[SPORT.k("play_loaded_grid")] = grid_data
@@ -74,18 +80,18 @@ def render_grid_selection():
             st.info(f"No captured grid library exists for {SPORT.label} yet. Run the fetch_grids script.")
             return
             
-        st.write("### Past Grids Collection")
+        st.write("### Past grids collection")
         
         # Use a dictionary to map a friendly label to the grid dictionary
         grid_options = {f"🔴 {g['source']} #{g['grid_num']} • {g['date']}": g for g in past_grids}
         
         chosen_label = st.selectbox(
-            "Select a Grid",
+            "Select a grid",
             options=list(grid_options.keys()),
             key=SPORT.k("play_past_grid_id")
         )
         
-        if st.button("Load Past Grid", key=SPORT.k("play_load_past_grid"), type="primary", width="stretch"):
+        if st.button("Load past grid", key=SPORT.k("play_load_past_grid"), type="primary", width="stretch"):
             picked = grid_options[chosen_label]
             try:
                 cols_labels = tuple(json.loads(picked["cols_json"]))
@@ -182,7 +188,7 @@ def auto_load_newest_grid():
         return True
     return False
 
-@st.dialog("Select a Grid")
+@st.dialog("Choose a grid")
 def grid_selector_dialog():
     render_grid_selection()
 
@@ -192,8 +198,9 @@ if not loaded:
         loaded = st.session_state.get(SPORT.k("play_loaded_grid"))
 
 if not loaded:
-    st.markdown("### No Grid Loaded")
-    if st.button("Select a Grid", key=SPORT.k("play_empty_select_btn")):
+    st.markdown("### No grid loaded")
+    if st.button("Choose a grid", key=SPORT.k("play_empty_select_btn"),
+                 type="primary", icon=":material/grid_view:"):
         grid_selector_dialog()
     st.stop()
 
@@ -201,16 +208,18 @@ state = st.session_state[SPORT.k("play_state")]
 rows_def = loaded["rows"]
 cols_def = loaded["cols"]
 
-# Top action bar
-col_btn, _ = st.columns([1, 4])
-with col_btn:
-    grid_title = "Select Grid"
+# Keep selection beside the board instead of hiding it in the sidebar.
+with st.container(border=True):
+    grid_title = "Saved grid"
     if loaded.get("grid_num") is not None:
         grid_title = f"{loaded.get('source') or 'Grid'} #{loaded['grid_num']}"
-    if st.button(f"📅 {grid_title}", key=SPORT.k("play_select_btn"), width="stretch"):
+    st.markdown(f"### {grid_title}")
+    st.caption("This is the active board. You can switch grids at any time.")
+    if st.button(
+        "Choose another grid", key=SPORT.k("play_select_btn"),
+        type="primary", icon=":material/grid_view:",
+    ):
         grid_selector_dialog()
-
-st.markdown("---")
 
 # Draw the board.
 #

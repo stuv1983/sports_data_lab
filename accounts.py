@@ -48,6 +48,8 @@ class User:
     display_name: str
     role: str
     active: bool
+    created_at: str | None = None
+    last_login_at: str | None = None
 
     @property
     def is_admin(self) -> bool:
@@ -138,6 +140,12 @@ def ensure_schema(path=DB_PATH):
             );
             CREATE INDEX IF NOT EXISTS game_stats_leaderboard
                 ON game_stats(game_type, score DESC);
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                user_id INTEGER PRIMARY KEY
+                    REFERENCES users(id) ON DELETE CASCADE,
+                preferences_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL
+            );
         """)
 
         user_columns = {
@@ -268,8 +276,13 @@ def _dummy_digest():
 def _user(row):
     if row is None:
         return None
-    return User(row["id"], row["email"], row["display_name"],
-                row["role"], bool(row["active"]))
+    keys = set(row.keys())
+    return User(
+        row["id"], row["email"], row["display_name"],
+        row["role"], bool(row["active"]),
+        row["created_at"] if "created_at" in keys else None,
+        row["last_login_at"] if "last_login_at" in keys else None,
+    )
 
 def _verification_digest(token):
     return "sha256$" + hashlib.sha256(str(token).encode("utf-8")).hexdigest()
@@ -467,6 +480,54 @@ def get_user(user_id, path=DB_PATH):
     with _db(path) as con:
         return _user(con.execute(
             "SELECT * FROM users WHERE id=? AND active=1", (int(user_id),)).fetchone())
+
+
+def get_user_preferences(user_id, path=DB_PATH):
+    """Return one member's persistent UI preferences.
+
+    Preferences are deliberately data, not authorization.  Callers must
+    still build the page list from ``can_access`` before applying a user's
+    visibility and ordering choices.
+    """
+    if get_user(user_id, path) is None:
+        return {}
+    with _db(path) as con:
+        row = con.execute(
+            "SELECT preferences_json FROM user_preferences WHERE user_id=?",
+            (int(user_id),),
+        ).fetchone()
+    if row is None:
+        return {}
+    try:
+        value = json.loads(row[0])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def save_user_preferences(user_id, preferences, path=DB_PATH):
+    """Replace one member's UI preferences with a bounded JSON object."""
+    if get_user(user_id, path) is None:
+        raise PermissionError("Sign in to save preferences.")
+    if not isinstance(preferences, dict):
+        raise AccountError("Preferences must be a JSON object.")
+    try:
+        payload = json.dumps(preferences, separators=(",", ":"), sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        raise AccountError("Preferences contain an unsupported value.") from exc
+    if len(payload) > 20_000:
+        raise AccountError("Preferences are too large.")
+    with _db(path) as con:
+        con.execute(
+            """
+            INSERT INTO user_preferences(user_id, preferences_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                preferences_json=excluded.preferences_json,
+                updated_at=excluded.updated_at
+            """,
+            (int(user_id), payload, _now()),
+        )
 
 
 def feature_policies(path=DB_PATH):
@@ -706,6 +767,25 @@ def get_user_stats(user_id, path=DB_PATH):
                 "avg_score": round(row["avg_score"], 1)
             }
         return stats
+
+
+def get_user_activity_summary(user_id, path=DB_PATH):
+    """Small profile totals that span sports and game modes."""
+    if get_user(user_id, path) is None:
+        return {"saved_grids": 0, "games_played": 0, "last_played_at": None}
+    with _db(path) as con:
+        saved = con.execute(
+            "SELECT COUNT(*) FROM saved_grids WHERE user_id=?", (user_id,)
+        ).fetchone()[0]
+        games, last_played = con.execute(
+            "SELECT COUNT(*), MAX(played_at) FROM game_stats WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+    return {
+        "saved_grids": saved,
+        "games_played": games,
+        "last_played_at": last_played,
+    }
 
 def get_leaderboard(game_type, path=DB_PATH, limit=50):
     """One row per player: their best score, and when they first reached it.

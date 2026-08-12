@@ -132,6 +132,29 @@ def test_saved_grids_are_private_and_round_trip_constraints(tmp_path):
     assert accounts.load_grid(owner.id, saved[0]["id"], path)["rows"] == rows[::-1]
 
 
+def test_member_preferences_are_private_and_persist(tmp_path):
+    path = _accounts(tmp_path)
+    owner, _ = accounts.register(
+        "Layout Owner", "layout@example.com", "password-123", path)
+    other, _ = accounts.register(
+        "Other Member", "other-layout@example.com", "password-123", path)
+    preferences = {
+        "navigation": {
+            "section_order": ["Play", "Discover", "Explore"],
+            "hidden_pages": ["awards"],
+        },
+        "appearance": {"afl": {"mode": "Light", "custom": {}}},
+    }
+
+    assert accounts.get_user_preferences(owner.id, path) == {}
+    accounts.save_user_preferences(owner.id, preferences, path)
+
+    assert accounts.get_user_preferences(owner.id, path) == preferences
+    assert accounts.get_user_preferences(other.id, path) == {}
+    with pytest.raises(PermissionError):
+        accounts.save_user_preferences(999_999, preferences, path)
+
+
 def _axes():
     rows = [(f"row {i}", ("SELECT player_id FROM games WHERE season >= ?", [2000 + i]))
             for i in range(3)]

@@ -279,6 +279,49 @@ def test_a_grid_token_restores_criteria_and_counts():
     assert values and int(values[0].replace(",", "")) == 2
 
 
+def test_a_restored_player_criterion_gets_its_name_back():
+    """Tokens carry the server-owned player id, never the display name.
+    The restore re-resolves the current name from the database, so the
+    chip reads "Alpha teammate" -- not the em-dash placeholder it showed
+    until now -- and re-editing preseeds the picker with the name."""
+    sport = synthetic_sport.make_sport()
+    token = QB.serialize_state(QB.build_share_envelope(
+        sport, "grid",
+        {"type": "group", "op": "AND", "children": [
+            {"type": "criterion", "kind": "Teammate of…", "args": [1]}]},
+        display={"order": "Most obscure", "limit": 25}))
+
+    app = _app()
+    app.session_state["syn:qbf_pending"] = token
+    app.run()
+    assert not app.exception, app.exception
+    leaf = app.session_state["syn:qbc_query"]["root"]["children"][0]
+    assert leaf["label"] == "Alpha teammate"
+    assert leaf["defaults"]["player"] == "Alpha"
+
+
+def test_an_unknown_player_id_keeps_the_placeholder_not_an_error():
+    """A token can outlive its player (or arrive against another copy of
+    the database). The lookup failing must degrade to the placeholder
+    label, never fail the restore."""
+    sport = synthetic_sport.make_sport()
+    node = QB._validated_grid_query(
+        sport, {"type": "criterion", "kind": "Teammate of…",
+                "args": [999]}, [1])
+    assert node["label"] == "— teammate"
+    assert node["defaults"]["player"] == ""
+
+
+def test_the_picker_supplied_label_still_wins_over_the_lookup():
+    """At creation time the picker passes the name it showed; the
+    database round trip is for restores only."""
+    sport = synthetic_sport.make_sport()
+    crit = QB._store_criterion(sport, "Teammate of…", [1],
+                               player_label="Alpha (as picked)")
+    assert crit["label"] == "Alpha (as picked) teammate"
+    assert crit["defaults"]["player"] == "Alpha (as picked)"
+
+
 def test_a_doctored_grid_token_cannot_carry_sql():
     app = _app()
     sport = synthetic_sport.make_sport()

@@ -51,6 +51,7 @@ import re
 import sqlite3
 import urllib.request
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from data_paths import cache_dir, raw_dir, sport_db
@@ -279,6 +280,27 @@ def _starters(row: list[str], offset: int, pitcher_id: str):
     return ids
 
 
+def iso_game_date(raw: str) -> str | None:
+    """Retrosheet's compact ``YYYYMMDD`` -> ISO, else None.
+
+    Stored dates are ISO so mlb/sport.py can declare the column a date
+    and the query builder's chronological operators mean what they say
+    (compact text breaks them: '19110426' < '1949-04-19' lexically).
+    None for anything that is not a real calendar date -- a malformed or
+    partial value must be skipped, never stored as a pretend date.
+    """
+    text = str(raw or "").strip()
+    # Exactly eight digits before strptime sees it: strptime is lenient
+    # about unpadded fields, so '1911042' would otherwise parse as
+    # 1911-04-02 instead of being refused as the partial value it is.
+    if len(text) != 8 or not text.isdigit():
+        return None
+    try:
+        return datetime.strptime(text, "%Y%m%d").date().isoformat()
+    except ValueError:
+        return None
+
+
 def _ensure_table(con: sqlite3.Connection) -> None:
     con.execute("""
         CREATE TABLE IF NOT EXISTS mlb_player_rivalry_games (
@@ -296,6 +318,9 @@ def _ensure_table(con: sqlite3.Connection) -> None:
     con.execute(
         "CREATE INDEX IF NOT EXISTS ix_rivalry_player "
         "ON mlb_player_rivalry_games(rivalry_key, player_id)")
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS ix_rivalry_date "
+        "ON mlb_player_rivalry_games(game_date, player_id)")
 
 
 def _lineup(row: list[str], offset: int, pitcher_id: str) -> str:
@@ -542,7 +567,9 @@ def load(con: sqlite3.Connection, refresh: bool = False,
         if v_key != h_key or v_side == h_side:
             continue
 
-        date = row[DATE]
+        date = iso_game_date(row[DATE])
+        if date is None:
+            continue
         season = int(date[:4])
         home_won = int(row[HOME_SCORE]) > int(row[VIS_SCORE])
 

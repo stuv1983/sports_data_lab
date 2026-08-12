@@ -134,10 +134,12 @@ SPORT = Sport(
         "club_player_register.dob": "date",
         "club_player_records.match_date": "date",
         "mlb_player_rivalry_games.is_win": "boolean",
-        # mlb_player_rivalry_games.game_date stays undeclared on purpose:
-        # it stores compact YYYYMMDD, not the ISO text the date compiler
-        # binds, so a date override would compare wrongly. Normalising it
-        # is a loader change, tracked separately.
+        # Declarable since load_retrosheet.iso_game_date: the loader
+        # stores ISO (the compact YYYYMMDD it used to keep broke every
+        # chronological comparison), and normalize_rivalry_dates.py
+        # rewrote existing rows. The format contract lives in
+        # tests/test_query_metadata.py.
+        "mlb_player_rivalry_games.game_date": "date",
     },
     query_low_cardinality_columns=(
         "games.club_now", "games.result", "games.round",

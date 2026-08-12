@@ -183,12 +183,13 @@ SPORT = Sport(
     #: builder needs the application-level truth to offer the right
     #: operators.
     query_column_kinds={
-        # players.dob and games.dob stay undeclared on purpose: they mix
-        # ISO with "30-Jan-1987"-style text, so a date declaration would
-        # compile chronological comparisons that silently skip the
-        # non-ISO rows. games.birth_est is the uniformly-ISO estimate.
-        # Normalising dob is a loader change, tracked separately.
+        # dob columns are declarable again: build_db and the round loader
+        # write ISO through utils/afl/dob.canonical_dob, and
+        # utils/afl/normalize_dob.py rewrote the mixed spellings already
+        # stored. tests/test_query_metadata.py holds the format contract.
+        "players.dob": "date",
         "games.date": "date",
+        "games.dob": "date",
         "games.birth_est": "date",
         "games.is_home": "boolean", "games.is_final": "boolean",
         "matches.match_date": "date", "matches.is_final": "boolean",

@@ -2437,6 +2437,29 @@ def _md(text) -> str:
     return re.sub(r"([\\`*_~\[\]])", r"\\\1", str(text))
 
 
+def _player_name(sport, player_id) -> str | None:
+    """The current display name behind a server-owned player id, or None.
+
+    Read-only, identifiers from the sport's own schema, the id bound --
+    the same walls every other query keeps. None on any failure: a label
+    lookup must never be the thing that breaks a chip or a restore.
+    """
+    sc = sport.schema
+    try:
+        con = sqlite3.connect(f"file:{sport.db}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = con.execute(
+            f"SELECT {sc.player} FROM {sc.players} "
+            f"WHERE {sc.player_id} = ?", (player_id,)).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+    return str(row[0]) if row and row[0] is not None else None
+
+
 def _store_criterion(sport, kind, args, player_label=None) -> dict:
     """Everything a chip needs to display, re-edit and rebuild itself.
 
@@ -2444,6 +2467,12 @@ def _store_criterion(sport, kind, args, player_label=None) -> dict:
     the sport's builder catalogue here (a broken combination fails at
     commit, not at query time), and resolved to SQL freshly on every
     compile by _resolve_criterion.
+
+    ``player_label`` is presentation only -- the picker passes the name
+    it showed. A restored token carries just the id, so the label is
+    re-resolved from the database instead: the id stays the authority,
+    and the chip reads "Jane Smith teammate", not an em-dash, whatever
+    session the token lands in.
     """
     import ui_widgets
 
@@ -2452,6 +2481,8 @@ def _store_criterion(sport, kind, args, player_label=None) -> dict:
     defaults: dict = {}
     for name, value in zip(argnames, args):
         if name == "player_id":
+            if not player_label:
+                player_label = _player_name(sport, value)
             defaults["player"] = player_label or ""
         else:
             defaults[name] = value

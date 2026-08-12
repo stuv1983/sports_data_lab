@@ -83,6 +83,7 @@ from data_paths import default_db                      # noqa: E402
 from names import normalise_name                       # noqa: E402
 from utils.afl import load_club_all_games              # noqa: E402
 from utils.afl.club_sources import ALL_GAMES_BY_ID     # noqa: E402
+from utils.afl.dob import canonical_dob                # noqa: E402
 
 DEFAULT_DB = Path(default_db("afl"))
 
@@ -1108,13 +1109,10 @@ def _birth_columns(con: sqlite3.Connection, player_id: int) -> tuple:
     fallback = con.execute(
         "SELECT dob, birth_year FROM players WHERE player_id = ?",
         (player_id,)).fetchone()
-    if not fallback or not fallback[0]:
+    born = canonical_dob(fallback[0]) if fallback else None
+    if born is None:
         return tuple(row) if row else (None, None, None)
-    try:
-        born = datetime.strptime(fallback[0], "%d-%b-%Y").date()
-    except ValueError:
-        return tuple(row) if row else (None, None, None)
-    return (fallback[0], born.isoformat(), born.year)
+    return (born, born, int(born[:4]))
 
 
 def create_debutants(con: sqlite3.Connection, season: int,
@@ -1168,7 +1166,7 @@ def create_debutants(con: sqlite3.Connection, season: int,
         year = int(born[:4]) if born else None
         values = {
             "player_id": player_id, "player": display,
-            "dob": _afltables_dob(born),
+            "dob": born,
             "birth_year": year, "birth_year_min": year,
             "birth_year_max": year,
             "debut_season": season, "final_season": season,
@@ -1190,14 +1188,6 @@ def create_debutants(con: sqlite3.Connection, season: int,
         created.append((player_id, display))
     con.commit()
     return created
-
-
-def _afltables_dob(iso: str | None) -> str | None:
-    """ISO date -> the players.dob spelling, "9-Jan-2004"."""
-    if not iso:
-        return None
-    born = date.fromisoformat(iso)
-    return f"{born.day}-{born.strftime('%b-%Y')}"
 
 
 def apply_games(con: sqlite3.Connection, season: int, round_name: str) -> int:
