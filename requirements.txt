@@ -17,6 +17,13 @@ lxml>=5,<7
 MLB-StatsAPI>=1.6,<2
 nba_api>=1.4,<2
 nflreadpy>=0.1,<0.2
+# nflreadpy pulls polars in transitively, and polars' default wheel requires
+# AVX2/FMA/BMI2. The production server is a Xeon E5-2696 v2 (Ivy Bridge,
+# 2013) and has none of them, so that build dies on SIGILL mid-rebuild. The
+# rtcompat extra adds a baseline runtime alongside the optimised one;
+# polars picks the best its CPU supports at import, so modern machines are
+# unaffected. Do not drop this without checking the server's /proc/cpuinfo.
+polars[rtcompat]>=1.43,<2
 openpyxl>=3.1,<4
 pyreadr>=0.5,<1
 requests>=2.31,<3
