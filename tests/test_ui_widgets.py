@@ -222,7 +222,10 @@ def test_starting_a_new_round_leaves_the_guess_box_empty(monkeypatch):
 
     W.clear_player_picker("gl_guess")
 
-    assert "gl_guess_pick" not in state
+    # Assigned None, not dropped: dropping the key clears what the script
+    # reads and tells the browser nothing, which leaves the old name on
+    # display above an empty selection -- the very thing this prevents.
+    assert state["gl_guess_pick"] is None
     assert "gl_guess_narrow" not in state
     assert state["gl_target"] == 12, "cleared more than its own keys"
 
@@ -243,20 +246,54 @@ def test_every_reset_in_the_app_clears_a_picker_through_the_widget():
         f"reset by hand-named picker keys: {offenders}")
 
 
-def test_the_typeahead_list_is_capped_and_led_by_the_most_played(monkeypatch):
+def _named_player_count(sport):
+    import db_pool
+
+    s = sport.schema
+    return db_pool.get_con(sport.db, 0).execute(
+        f"SELECT COUNT(*) FROM {s.players} "
+        f"WHERE {W._HAS_NAME.format(player=s.player)}").fetchone()[0]
+
+
+def test_the_typeahead_list_is_capped_and_led_by_the_most_played():
     """The browser filters this list as the user types, so it is shipped on
-    every rerun -- the cap is what keeps that affordable, and the ordering
-    is what keeps the cap from mattering."""
+    every rerun -- the cap is what keeps that affordable for a table too big
+    to send whole, and the ordering is what keeps the cap from mattering."""
     import sports
 
     for sport in (sports.AFL, sports.NBA, sports.MLB, sports.NFL):
         if not sport.exists():
             continue
-        quick = W.quick_player_options.__wrapped__(
-            sport.key, sport.db, 0)
-        assert 0 < len(quick) <= W.QUICK_PLAYER_LIMIT
+        quick = W.quick_player_options.__wrapped__(sport.key, sport.db, 0)
+        total = _named_player_count(sport)
+        expected = (total if total <= W.QUICK_PLAYER_WHOLE_TABLE_MAX
+                    else W.QUICK_PLAYER_LIMIT)
+        assert 0 < len(quick) == expected
         assert len({pid for pid, _, _ in quick}) == len(quick)
         # A nameless row would be a blank line in the dropdown. The NFL has
         # one, holding the plays its source could not attribute to anybody.
         assert all(name and str(name).strip() and player_label
                    for _, name, player_label in quick)
+
+
+def test_the_shortest_career_is_offered_by_a_table_shipped_whole():
+    """The whole point of the whole-table rule. Text typed into the combobox
+    is discarded unless the browser commits it -- on Enter, or on its
+    "Add: ..." row, and not on a click away -- so a player the list leaves
+    out is one a reader can look at in the database and still fail to
+    select. Grid squares are answered with one-game careers all the time."""
+    import db_pool
+    import sports
+
+    sport = sports.AFL
+    if (not sport.exists()
+            or _named_player_count(sport) > W.QUICK_PLAYER_WHOLE_TABLE_MAX):
+        return
+    s = sport.schema
+    shortest = db_pool.get_con(sport.db, 0).execute(
+        f"SELECT {s.player_id} FROM {s.players} "
+        f"WHERE {W._HAS_NAME.format(player=s.player)} "
+        f"ORDER BY COALESCE({s.career_games}, 0), {s.player} LIMIT 1"
+    ).fetchone()[0]
+    quick = W.quick_player_options.__wrapped__(sport.key, sport.db, 0)
+    assert shortest in {pid for pid, _, _ in quick}

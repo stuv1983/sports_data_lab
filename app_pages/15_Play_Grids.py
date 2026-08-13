@@ -265,6 +265,11 @@ with st.container(key="grid_board"):
 
             cell.markdown(face, unsafe_allow_html=True)
             if not answered and cell.button(action, key=SPORT.k("play_cell", r, c)):
+                # One answer box serves all nine squares, so the square being
+                # left has to hand it back empty. A box per square would send
+                # the browser its own copy of every player name -- nine
+                # downloads of the same list across a grid.
+                ui_widgets.clear_player_picker(SPORT.k("game_pick"))
                 state["cell"] = (r, c)
                 st.rerun()
 
@@ -309,7 +314,7 @@ if not game_over and state["cell"]:
     r, c = state["cell"]
     rlab, clab = rows_def[r][0], cols_def[c][0]
     st.markdown(f"### {rlab.replace(chr(10), ' ')} × {clab.replace(chr(10), ' ')}")
-    selected = player_picker(SPORT.k("game_pick", r, c), SPORT, DB_REVISION)
+    selected = player_picker(SPORT.k("game_pick"), SPORT, DB_REVISION)
     
     if st.button("Submit answer", type="primary", key=SPORT.k("game_submit", r, c), disabled=selected is None):
         player_id, player_name = selected

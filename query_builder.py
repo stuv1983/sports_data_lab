@@ -23,12 +23,20 @@ there is functionally invisible):
   groups*: each group holds any number of column conditions matched with
   its own ALL (AND) / ANY (OR) rule, and each group after the first says
   how it joins the groups above it, so "(played Collingwood AND 150+
-  games) OR (drafted Hawthorn AND premiership)" is two cards. Columns are
-  offered grouped into the same categories the grid criteria use, every
+  games) OR (drafted Hawthorn AND premiership)" is two cards. Every
   active condition and group shows a live row count of its own, and the
   whole panel serialises to a compact shareable token. Compiled into a
   fully parameterised WHERE, with an optional COUNT(*)-per-group
   aggregation.
+
+Both pickers are *one searchable control, ordered and labelled by
+category* (FILTER_CATEGORY_ORDER here, BUILDER_GROUPS per sport) -- not
+expandable per-category sections. That is a deliberate choice, not an
+unfinished one: this page has to work on a phone, where a dozen
+collapsible panels put the thing being looked for several taps and a
+scroll away, while typing three letters into one box finds it whatever
+shelf it sits on. The categories order and annotate the list; they do
+not partition the UI.
 
 STATE MODEL (mode isolation and durability)
 -------------------------------------------
@@ -107,6 +115,7 @@ import pandas as pd
 import streamlit as st
 
 import labels
+import query_filters
 from query_filters import coerce_number
 
 # The tree component is optional at runtime: without it the page still works,
@@ -132,8 +141,12 @@ MAX_ROWS = 10_000
 
 #: Total bound parameters one compiled query may carry, enforced by
 #: ParamBag itself so no path -- widgets, tokens, the tree component --
-#: can exceed it. 900 sits under legacy SQLite's 999-variable limit.
-MAX_QUERY_PARAMS = 900
+#: can exceed it. Imported rather than redeclared: the free-form query
+#: language enforces the same number on its own compilations, and two
+#: copies of a limit are two limits waiting to disagree (they did -- a
+#: legal 256-token club query bound 1,537 values while this builder
+#: refused anything past 900).
+MAX_QUERY_PARAMS = query_filters.MAX_QUERY_PARAMS
 
 #: Bounds on the recursive group AST both builders compile. Deep enough
 #: for any query a person would write, small enough that a doctored token

@@ -84,36 +84,53 @@ def _player_search_key(value):
 _HAS_NAME = "{player} IS NOT NULL AND TRIM({player}) <> ''"
 
 
-#: How many players the browser holds so it can filter them as the user
-#: types. The whole table is 24,218 names in the MLB and 25,050 in the NFL,
-#: and shipping every one costs about 1.7 MB on each rerun -- paid again for
-#: every picker on the page, of which Play Grids has nine. Ordered by career
-#: games, 4,000 names is around 300-400 KB and covers 99% of NBA games played
-#: and 69-80% elsewhere; anyone outside it is still reachable, because typing
-#: a name the list does not hold falls through to `player_matches`, which
-#: reads all of them. Raise it for a shorter tail at a larger download.
+#: How many players the browser holds when the whole table is too large to
+#: ship (see QUICK_PLAYER_WHOLE_TABLE_MAX). Ordered by career games, 4,000
+#: names is around 300-400 KB and covers 69-80% of games played; anyone
+#: outside it is still reachable, because typing a name the list does not
+#: hold falls through to `player_matches`, which reads all of them.
 QUICK_PLAYER_LIMIT = 4000
+
+#: A players table no larger than this ships entire, so every name filters
+#: live in the browser. Being outside the shipped list is worse than the
+#: download it saves: the free-text fallback below only fires once the
+#: browser *commits* the typed name, which its combobox does on Enter or on
+#: the "Add: ..." row and not on a click away -- so a reader who typed
+#: "Kayle Kirby" (one game, 2017) and reached for the button saw their text
+#: still sitting in the box and nothing selected. A grid square's answer is
+#: routinely a career that short, which put the answers most worth finding
+#: on the wrong side of the cap. The AFL (13,358 names, about 560 KB) and
+#: the NBA (4,937) fit; the MLB (24,220) and the NFL (25,037) do not.
+QUICK_PLAYER_WHOLE_TABLE_MAX = 15_000
 
 
 @st.cache_resource(show_spinner=False)
-def quick_player_options(sport_key, db, revision, limit=QUICK_PLAYER_LIMIT):
-    """The most-played players, for the browser to filter through live.
+def quick_player_options(sport_key, db, revision, limit=None):
+    """Players for the browser to filter through live, most-played first.
 
     Streamlit's text input only reports a value on Enter or blur, so a
     search box cannot show matches while the user is still typing. A
     selectbox can: it filters options already in the browser, with no
-    round trip. That only works for options the browser has, hence the cap.
+    round trip. That only works for options the browser has, hence the
+    limit -- passed explicitly, or decided here from the table's size.
 
     cache_resource, not cache_data: cache_data pickles its value on every
-    hit, and Play Grids asks for these 4,000 rows from nine pickers per
-    rerun. The value is a tuple of tuples -- treat it as read-only.
+    hit, and a picker asks for every one of these rows on every rerun. The
+    value is a tuple of tuples -- treat it as read-only.
     """
     sport = sports.get(sport_key)
     s = sport.schema
-    rows = db_pool.get_con(db, revision).execute(
+    con = db_pool.get_con(db, revision)
+    named = _HAS_NAME.format(player=s.player)
+    if limit is None:
+        total = con.execute(
+            f"SELECT COUNT(*) FROM {s.players} WHERE {named}").fetchone()[0]
+        limit = (total if total <= QUICK_PLAYER_WHOLE_TABLE_MAX
+                 else QUICK_PLAYER_LIMIT)
+    rows = con.execute(
         f"SELECT {s.player_id}, {s.player}, {s.debut_season}, "
         f"{s.final_season}, {s.career_games}, {s.clubs_hist} "
-        f"FROM {s.players} WHERE {_HAS_NAME.format(player=s.player)} "
+        f"FROM {s.players} WHERE {named} "
         f"ORDER BY COALESCE({s.career_games}, 0) DESC, {s.player} "
         f"LIMIT ?", (limit,)).fetchall()
     return tuple((pid, nm,
@@ -252,9 +269,16 @@ def clear_player_picker(key):
     do that. Renaming one therefore left the last answer sitting in the box
     looking like a fresh question, which is exactly the bug this exists to
     make impossible: the widget owns its own keys and clears them here.
+
+    The chosen name is assigned None rather than dropped. Dropping it clears
+    the value the script reads but sends the browser nothing, so the box
+    goes on displaying the last name over a selection that is already gone
+    -- a blank-looking round with a stale name in it, or on Play Grids the
+    previous square's answer sitting in the next square's box. Assigning
+    None is what makes Streamlit push the empty value out to the widget.
     """
-    for suffix in ("_pick", "_narrow"):
-        st.session_state.pop(f"{key}{suffix}", None)
+    st.session_state[f"{key}_pick"] = None
+    st.session_state.pop(f"{key}_narrow", None)
 
 
 def player_picker(key, sport, db_revision, label="Player name", default_name=""):
@@ -289,7 +313,12 @@ def player_picker(key, sport, db_revision, label="Player name", default_name="")
         placeholder="Start typing a player name…")
 
     if chosen is None:
-        st.caption("Type part of a first name or surname.")
+        # Naming the second gesture matters: text typed into the combobox is
+        # thrown away unless the browser commits it, so a reader who typed a
+        # whole name and clicked the button was left looking at their own
+        # text with nothing selected and no clue what to do about it.
+        st.caption("Type part of a first name or surname, then choose a "
+                   "name — or press Enter to search every player.")
         return None
     if chosen in known:
         return chosen, known[chosen][0]

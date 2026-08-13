@@ -155,3 +155,68 @@ def test_the_free_form_parser_bounds_query_and_token_sizes():
 def test_legitimate_queries_still_fit_the_bounds():
     tokens = Q.tokenize('club:"St Kilda" games>=100 sort:obscurity')
     assert tokens == ['club:St Kilda', 'games>=100', 'sort:obscurity']
+
+
+# ------------------------------------------- the shared parameter budget
+
+def _lineage_fixture():
+    """A sport whose clubs carry lineage names, so one club token expands
+    to several bound values -- the amplifier the character and token caps
+    say nothing about."""
+    con = sqlite3.connect(":memory:")
+    con.executescript("""
+        CREATE TABLE players (player_id INTEGER, player TEXT,
+          debut_season INTEGER, final_season INTEGER, career_games INTEGER,
+          career_goals INTEGER, finals_played INTEGER, clubs_hist TEXT,
+          obscurity REAL);
+        CREATE TABLE games (player_id INTEGER, season INTEGER,
+          club_now TEXT, club_hist TEXT, goals INTEGER);
+        INSERT INTO players VALUES (1,'A',1990,2000,10,5,0,'Bears',50.0);
+    """)
+    schema = core.Schema(
+        career_score="career_goals", career_postseason="finals_played",
+        game_score="goals", stats=("goals",), clubs=("Bears",),
+        club_lineage={"Bears": ("Old Bears", "Older Bears")},
+        required_games_cols=(), required_player_cols=())
+    return con, schema
+
+
+def test_the_free_form_language_enforces_the_parameter_budget():
+    """Character and token caps do not imply a parameter cap: a club
+    token binds two values per lineage identity, so a query inside every
+    other bound compiled to far more values than one query may use --
+    and the builder had refused that same count all along."""
+    con, schema = _lineage_fixture()
+    query = " ".join(['club:"Bears"'] * Q.MAX_QUERY_TOKENS)
+
+    assert len(query) <= Q.MAX_QUERY_CHARS
+    assert len(Q.tokenize(query)) <= Q.MAX_QUERY_TOKENS
+
+    with pytest.raises(Q.QuerySyntaxError, match="bound values"):
+        Q.compile_query(schema, query, con=con)
+
+
+def test_a_query_just_inside_the_budget_still_compiles():
+    """The bound refuses the excess, not the feature: a query that fits
+    must still compile and carry every value it needs."""
+    con, schema = _lineage_fixture()
+    # Six bound values per token (3 identities, named twice for the UNION).
+    tokens = Q.MAX_QUERY_PARAMS // 6 - 1
+    sql, params, _ = Q.compile_query(
+        schema, " ".join(['club:"Bears"'] * tokens), con=con)
+    assert len(params) <= Q.MAX_QUERY_PARAMS
+    assert params.count("Old Bears") == tokens * 2
+    con.execute(sql, params).fetchall()      # SQLite accepts it
+
+
+def test_both_search_systems_share_one_parameter_budget():
+    """Two copies of a limit are two limits waiting to disagree, which is
+    exactly what happened: the builder capped at 900 while the query
+    language had no total bound at all."""
+    assert QB.MAX_QUERY_PARAMS is Q.MAX_QUERY_PARAMS
+
+    bag = QB.ParamBag()
+    for _ in range(Q.MAX_QUERY_PARAMS):
+        bag.add(1)
+    with pytest.raises(ValueError):
+        bag.add(1)

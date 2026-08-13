@@ -8,6 +8,35 @@ Sport-specific tokens (captaincy, draft, family) are not built in: a sport
 registers :class:`SearchExtension` handlers via ``search_extension_modules``
 on its Sport entry, and callers pass ``sport.search_extensions()`` through
 ``compile_query``. This module stays free of any sport's tables.
+
+INDEX BEHAVIOUR -- what this compiler does and does not promise
+---------------------------------------------------------------
+Most predicates keep the bare column on the left and seek an index:
+club filters expand to UNION'd ``IN`` lists over the indexed club
+columns (never ``LOWER(col)=``; an unknown name is rejected rather than
+scanned for), numeric and season comparisons compare stored values
+directly, and date filters compare ISO text as text.
+
+These are known to scan, and are recorded here rather than claimed away:
+
+* ``name:`` / ``player:`` -- substring matching needs a leading
+  wildcard (``LIKE '%x%'``), and folding runs through a registered
+  ``search_key()`` function, so neither side can use a B-tree. Bounded
+  by running over ``players`` (~13k rows), not ``games`` (~694k).
+* ``season.*`` / ``career.*`` / ``avg.*`` -- ``GROUP BY ... HAVING``
+  aggregates are computed per player-season, so they read the games
+  rows the rest of the WHERE has not already excluded.
+* Family and recruitment tokens in a sport's extensions (see
+  afl/search_tokens.py) match relationship *labels* with
+  ``LOWER(...) LIKE '%brother%'`` over small curated tables.
+
+Removing these needs schema work this build does not carry -- FTS5 or
+trigram indexes for substring name search, pre-aggregated player-season
+and career tables for the HAVING filters, normalised relationship codes
+for the family labels -- not a rewrite of the SQL emitted here. Until
+then the honest claim is that *values are always bound and identifiers
+always validated*, which is a safety guarantee, and that most but not
+all predicates are index-seekable, which is a performance observation.
 """
 
 from __future__ import annotations
@@ -36,6 +65,19 @@ class QuerySyntaxError(ValueError):
 MAX_QUERY_CHARS = 16_384
 MAX_QUERY_TOKENS = 256
 MAX_TOKEN_CHARS = 2_048
+
+#: Total bound values one compiled query may carry, for *both* search
+#: systems -- the query builder imports this and enforces it inside
+#: ParamBag, and compile_query below enforces it on the free-form
+#: language. 900 sits under legacy SQLite's 999-variable limit.
+#:
+#: The token and character caps above do not imply this one: a club token
+#: expands to two bound values per lineage identity, so 256 legal
+#: `club:"Brisbane Lions"` tokens (5,631 characters, well inside every
+#: other bound) compiled to 1,537 parameters. Modern SQLite binds 32,766
+#: and ran it; a build with the historical 999 limit would refuse it at
+#: execution, far from the token that caused it.
+MAX_QUERY_PARAMS = 900
 
 #: SQLite binds integers as signed 64-bit. A Python int outside this range
 #: raises OverflowError at execution time -- far from the typed token that
@@ -669,6 +711,15 @@ def compile_query(schema, query: str, con=None, extensions=()):
         f'ORDER BY {orders[spec.sort]} LIMIT ?'
     )
     params.append(spec.limit)
+    # One budget for the whole compiled query, checked after every
+    # contributor -- built-in fields, club lineage expansion and the
+    # sport's own extensions alike. Nothing is executed on the way here,
+    # so this is a refusal, not a partial query.
+    if len(params) > MAX_QUERY_PARAMS:
+        raise QuerySyntaxError(
+            f"This search needs {len(params):,} bound values, more than "
+            f"the {MAX_QUERY_PARAMS:,} one query may use. Use fewer "
+            f"club, name or list filters.")
     return sql, params, spec
 
 
