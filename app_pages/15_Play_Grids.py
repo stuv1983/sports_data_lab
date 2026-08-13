@@ -1,4 +1,5 @@
 import json
+import logging
 import sqlite3
 
 import streamlit as st
@@ -36,7 +37,18 @@ def render_grid_selection():
         viewer_id = st.session_state.get("auth_user_id")
         saved = accounts.list_playable_grids(SPORT.key, viewer_id)
         if not saved:
-            st.info("No saved grids found. Go to Grid Solver to create and save some grids.")
+            # Grid Solver is admin-only under the default policy, so it is not
+            # even in most visitors' navigation. Only send people who can
+            # actually get there.
+            if accounts.can_access(accounts.get_user(viewer_id), "grid_solver"):
+                st.info("No saved grids found. Go to Grid Solver to create "
+                        "and save some grids.")
+            elif "Past Grids (Gridley)" in sources:
+                st.info("No grids have been published for this sport yet. "
+                        "Try **Past Grids (Gridley)** above.")
+            else:
+                st.info(f"No grids have been published for {SPORT.label} yet. "
+                        "Check back soon.")
             return
         by_id = {item["id"]: item for item in saved}
         chosen_id = st.selectbox(
@@ -162,9 +174,16 @@ def _get_newest_grid_cached(sport_key, db_revision):
                         "source": picked["source"]}
     except (ImportError, OSError, sqlite3.Error):
         # A sport with no captured-board table is an ordinary state, and the
-        # picker still offers Saved Grids, so these stay quiet. Anything else
-        # is a bug and now reaches the page instead of becoming a blank one.
+        # picker still offers Saved Grids, so these stay quiet.
         pass
+    except Exception:
+        # Anything else is a bug, but this runs unconditionally on a page that
+        # is public by default, and the boards it parses come from a scraped
+        # feed that is stored without validation. Record it where the server
+        # can see it and still fall through to the picker, rather than putting
+        # a traceback in front of every visitor.
+        logging.exception(
+            "Auto-loading the newest captured grid failed for %s", sport_key)
     return None
 
 def auto_load_newest_grid():

@@ -272,6 +272,11 @@ def _login_form(prefix="sidebar"):
         submitted = st.form_submit_button("Log in", type="primary")
     pending_key = f"{prefix}_resend_email"
     if submitted:
+        # Cleared on every attempt, before anything can set it again. The
+        # button below acts on whatever this key holds, so an address left
+        # over from an earlier attempt -- or from an earlier session on this
+        # browser -- would quietly be the one that got mailed.
+        st.session_state.pop(pending_key, None)
         try:
             user = accounts.authenticate(email, password)
             if user is None:
@@ -290,7 +295,9 @@ def _login_form(prefix="sidebar"):
         if st.button("Resend verification email", key=f"{prefix}_resend"):
             accounts.resend_verification(st.session_state.pop(pending_key))
             st.success("If that address needs verifying, a fresh link is on "
-                       "its way. Check your email (or logs/emails.txt).")
+                       "its way, unless one was sent in the last few minutes "
+                       "-- that one is still good. Check your email (or "
+                       "logs/emails.txt).")
 
 
 def _join_form(prefix="sidebar"):

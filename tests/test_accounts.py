@@ -206,6 +206,32 @@ def test_expired_verification_can_be_reissued(tmp_path, sent_emails):
     assert len(sent_emails) == before
 
 
+def test_resend_leaves_a_recent_link_alone(tmp_path, sent_emails):
+    path = _accounts(tmp_path)
+    accounts.register("Fresh Joiner", "fresh@example.com", "password-123", path)
+    issued = sent_emails[-1][1]
+
+    accounts.resend_verification("fresh@example.com", path)
+    accounts.resend_verification("fresh@example.com", path)
+
+    # Nothing was mailed, and -- the point of the cooldown -- the link that is
+    # already in the inbox was not rotated out from under its reader.
+    assert len(sent_emails) == 1
+    assert accounts.verify_email(issued, path) is True
+
+
+def test_resend_button_is_not_offered_on_a_wrong_password(tmp_path):
+    path = _accounts(tmp_path)
+    accounts.register("Late Joiner", "late@example.com", "password-123", path)
+
+    # A wrong password is indistinguishable from an unknown address: it must
+    # not raise the "verify your account" error the log in form hangs the
+    # resend button off, or anyone could aim that button at any address.
+    assert accounts.authenticate("late@example.com", "wrong-password", path) is None
+    with pytest.raises(accounts.AccountError, match="verify"):
+        accounts.authenticate("late@example.com", "password-123", path)
+
+
 def test_legacy_accounts_are_verified_and_policy_schema_is_migrated(tmp_path):
     path = _accounts(tmp_path)
     with sqlite3.connect(path) as con:

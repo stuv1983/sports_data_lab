@@ -34,6 +34,11 @@ FEATURES = {
 }
 AUDIENCES = ("public", "member", "selected", "admin")
 VERIFICATION_TTL = timedelta(hours=24)
+#: How long a freshly issued verification link must stand before another can
+#: replace it. Resending is reachable from the log in form, and every resend
+#: invalidates the link already in the account holder's inbox, so an
+#: unthrottled button both floods the address and races the reader.
+RESEND_COOLDOWN = timedelta(minutes=5)
 
 
 class AccountError(ValueError):
@@ -275,6 +280,15 @@ def _mock_email(email, link):
     with log_path.open("a", encoding="utf-8") as f:
         f.write(msg)
 
+def _parse_stamp(value):
+    """An ISO timestamp as an aware datetime, or None if it is unreadable."""
+    try:
+        stamp = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+
+
 def verify_email(token, path=DB_PATH):
     con = _connect(path)
     try:
@@ -287,13 +301,10 @@ def verify_email(token, path=DB_PATH):
         if not row:
             con.rollback()
             return False
-        try:
-            sent_at = datetime.fromisoformat(row["verification_sent_at"])
-        except (TypeError, ValueError):
+        sent_at = _parse_stamp(row["verification_sent_at"])
+        if sent_at is None:
             con.rollback()
             return False
-        if sent_at.tzinfo is None:
-            sent_at = sent_at.replace(tzinfo=timezone.utc)
         if datetime.now(timezone.utc) - sent_at > VERIFICATION_TTL:
             con.rollback()
             return False
@@ -317,6 +328,10 @@ def resend_verification(email, path=DB_PATH):
     for good: `authenticate` refuses to log it in, and `register` refuses to
     reuse the address, so the only way back was editing the database by hand.
 
+    A link issued less than RESEND_COOLDOWN ago is left alone: rotating the
+    token would invalidate one that is very likely still in the inbox, or on
+    its way to it.
+
     Returns None whichever way it goes -- the caller must not be able to use
     it to learn whether an address has an account here.
     """
@@ -329,10 +344,15 @@ def resend_verification(email, path=DB_PATH):
     try:
         con.execute("BEGIN IMMEDIATE")
         row = con.execute(
-            "SELECT id FROM users WHERE email=? AND email_verified=0 AND active=1",
+            "SELECT id, verification_sent_at FROM users "
+            "WHERE email=? AND email_verified=0 AND active=1",
             (email,),
         ).fetchone()
         if row is None:
+            con.rollback()
+            return
+        issued = _parse_stamp(row["verification_sent_at"])
+        if issued and datetime.now(timezone.utc) - issued < RESEND_COOLDOWN:
             con.rollback()
             return
         token = secrets.token_urlsafe(32)
@@ -341,13 +361,19 @@ def resend_verification(email, path=DB_PATH):
             "WHERE id=?",
             (_verification_digest(token), _now(), row["id"]),
         )
-        send_validation_email(email, token)
         con.commit()
     except Exception:
         con.rollback()
         raise
     finally:
         con.close()
+    # Deliberately outside the transaction. An SMTP host that hangs would
+    # otherwise hold the accounts.db write lock for the length of its timeout,
+    # and every concurrent write -- authenticate's last_login_at among them --
+    # would exhaust busy_timeout and raise "database is locked". Committing
+    # first also means a token that reached someone's inbox is never rolled
+    # back out of the database behind it.
+    send_validation_email(email, token)
 
 
 def register(display_name, email, password, path=DB_PATH):
@@ -374,14 +400,18 @@ def register(display_name, email, password, path=DB_PATH):
             (email, display_name, _password_digest(password), role, _now(),
              _verification_digest(token), _now()),
         )
-        send_validation_email(email, token)
         con.commit()
-        return get_user(cur.lastrowid, path), role == "admin"
+        user_id = cur.lastrowid
     except sqlite3.IntegrityError as exc:
         con.rollback()
         raise AccountError("An account already exists for that email address.") from exc
     finally:
         con.close()
+    # Sent after the commit and with the connection closed, for the reasons
+    # in `resend_verification`. If it fails the account still exists with a
+    # live token, which `resend_verification` can reissue.
+    send_validation_email(email, token)
+    return get_user(user_id, path), role == "admin"
 
 
 def authenticate(email, password, path=DB_PATH):
@@ -394,10 +424,13 @@ def authenticate(email, password, path=DB_PATH):
         row = con.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
         if not row:
             return None
-        if "email_verified" in row.keys() and row["email_verified"] == 0:
-            raise AccountError("Please check your email to verify your account before logging in.")
+        # The password is checked first so that "this account exists but is
+        # unverified" -- and the resend button the log in form offers on the
+        # strength of it -- is told only to whoever can prove the password.
         if not _password_matches(password, row["password_digest"]) or not row["active"]:
             return None
+        if "email_verified" in row.keys() and row["email_verified"] == 0:
+            raise AccountError("Please check your email to verify your account before logging in.")
         con.execute("UPDATE users SET last_login_at=? WHERE id=?", (_now(), row["id"]))
         return _user(row)
 
