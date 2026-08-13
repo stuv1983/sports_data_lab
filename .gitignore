@@ -40,6 +40,7 @@ dist/
 .env
 .env.*
 !.env.example
+scripts/deploy.env
 
 # Streamlit secrets
 .streamlit/secrets.toml
