@@ -7,12 +7,15 @@ can offer the same thing without a fourth copy of the same twelve lines,
 and so a future overlay kind only has to be added once.
 
 There are seven kinds now: player, match, individual game, season, round,
-venue and club. A table
-opens the overlay
-for whatever its rows *are*: player, season and club names are action cells,
-while matches and individual games have an Open action. A row naming both a
-player and a season makes its subject clickable, so an award roll opens the
-player while a season record opens the season.
+venue and club. A table opens the overlay for whatever its rows *are*:
+player, season and club names are action cells, while matches and
+individual games have an Open action. A row naming both a player and a
+season makes its subject clickable, so an award roll opens the player
+while a season record opens the season.
+
+The bodies themselves live in overlays.py, one function per kind. This
+module decides *which* card a click means and keeps the history stack; it
+draws none of them.
 
 One navigable dialog
 --------------------
@@ -24,13 +27,36 @@ their actions replace the dialog body, and Back restores the previous card.
 
 from __future__ import annotations
 
-from typing import Callable, Mapping, Sequence
+import os
+from typing import Mapping, Sequence
 
 import pandas as pd
 import streamlit as st
 
+import core
+import db_pool
 import explore
 import overlays
+
+
+def _fresh_con(sport, con):
+    """The calling thread's own connection, never one captured earlier.
+
+    A dialog is a fragment: its reruns re-execute the dialog body with the
+    arguments captured when it first opened, on whatever thread the
+    fragment run lands on -- while the session's full reruns keep using
+    the thread-local handle db_pool manages. Re-resolving here keeps every
+    dialog rerun on its own thread's connection, which is the exact
+    cross-thread sharing db_pool.py exists to prevent.
+    """
+    try:
+        stat = os.stat(sport.db)
+    except (OSError, TypeError, AttributeError):
+        return con
+    # Same revision shape as app.py's db_revision, so this resolves to the
+    # very handle the full rerun already opened on this thread.
+    return db_pool.get_con(
+        sport.db, (str(sport.db), stat.st_mtime_ns, stat.st_size))
 
 
 #: A ButtonColumn callback runs before Streamlit reruns the script. It leaves
@@ -53,8 +79,15 @@ def _queue_click(event_key: str, table_key: str, action: str,
         }
 
 
-def _club_actions(value):
-    """Turn a club-history cell into one button or a menu of club buttons."""
+def _club_actions(value, sport=None):
+    """Turn a club-history cell into one button or a menu of club buttons.
+
+    Era names collapse to one entry per club first: "Kangaroos, North
+    Melbourne" is one club under two names, and a menu offering both reads
+    as two. The club the reader gets is named as it was at the time --
+    `Sport.collapse_clubs` keeps a lone era name and uses the current name
+    only where the cell spans a rename.
+    """
     if value is None or (not isinstance(value, (list, tuple, set))
                          and pd.isna(value)):
         return ""
@@ -63,12 +96,14 @@ def _club_actions(value):
         return ""
     values = [part.strip() for part in text.replace("|", ",").split(",")]
     values = [part for part in values if part]
+    if sport is not None:
+        values = sport.collapse_clubs(values)
     return values if len(values) > 1 else values[0]
 
 
-def _club_action_column(series):
+def _club_action_column(series, sport=None):
     """Keep Arrow types uniform when any row needs a multi-club menu."""
-    values = series.map(_club_actions)
+    values = series.map(lambda value: _club_actions(value, sport))
     if any(isinstance(value, list) for value in values):
         return values.map(
             lambda value: value if isinstance(value, list)
@@ -132,7 +167,7 @@ def _entity_columns(df, *, player=False, season=True, clubs=True) -> dict:
 
 def _select(df, key, dataframe_kwargs,
             action_columns: Mapping[str, str] | None = None,
-            add_open: bool = False):
+            add_open: bool = False, sport=None):
     """Draw a table and return the entity action that was clicked.
 
     Streamlit dataframe selections persist after a dialog is dismissed. That
@@ -166,7 +201,7 @@ def _select(df, key, dataframe_kwargs,
         if column not in frame.columns:
             continue
         if action == "club":
-            frame[column] = _club_action_column(frame[column])
+            frame[column] = _club_action_column(frame[column], sport)
         elif action == "season":
             frame[column] = _season_action_column(frame[column])
         else:
@@ -233,6 +268,7 @@ def _open_card(card: dict, sport, con, *, nested: bool) -> None:
 @st.dialog("Details", width="large", on_dismiss=_clear_overlay)
 def _details_dialog(sport, con):
     """Render the current card and keep a back-stack inside one dialog."""
+    con = _fresh_con(sport, con)
     stack = st.session_state.get(_STACK, [])
     if not stack:
         return
@@ -274,10 +310,7 @@ def _details_dialog(sport, con):
             nested=True,
         )
     elif kind == "match":
-        render_body = current.get("render_body") or _default_match_body
-        match = current["match"]
-        render_body(match)
-        _match_links(sport, con, match)
+        overlays.match_overview(sport, con, current["match"], nested=True)
 
 
 def player_button(label: str, sport, con, pid, key: str,
@@ -334,6 +367,40 @@ def card_links(sport, con, *, key_prefix: str, player_id=None,
                            sport, con, nested=True)
 
 
+def player_results_table(frame, sport, con, key: str, nested: bool = False):
+    """Render a `query_filters` result frame the way both search pages do.
+
+    The compiler returns the same shape wherever it is called from -- a
+    hidden `PlayerID`, a raw obscurity to turn into stars, a `Teams` path
+    to collapse -- so the presentation belongs in one place rather than
+    being written out again by each page that runs a query.
+
+    Returns the frame as displayed, for a caller offering a download.
+    """
+    # convert_dtypes keeps NULLable integers integer (real <NA> holes)
+    # instead of floating the column into 123.0/NaN.
+    shown = frame.convert_dtypes()
+    if "ObscurityRaw" in shown.columns:
+        shown["Rating"] = shown["ObscurityRaw"].map(
+            lambda o: core.stars_text(None if pd.isna(o) else float(o)))
+        shown = shown.drop(columns=["ObscurityRaw"])
+    if "Teams" in shown.columns:
+        # One entry per club, named as the club was at the time:
+        # "Kangaroos, North Melbourne" is one club that renamed itself.
+        shown["Teams"] = (shown["Teams"].fillna("")
+                          .map(sport.collapse_club_path)
+                          .str.replace("|", ", ", regex=False))
+    if "PlayerID" in shown.columns:
+        player_ids = shown["PlayerID"].tolist()
+        shown = shown.drop(columns=["PlayerID"])
+        st.caption("Select a row to see that player's full career.")
+        clickable_player_table(shown, player_ids, sport, con, key=key,
+                               nested=nested)
+    else:
+        st.dataframe(shown, hide_index=True, width="stretch")
+    return shown
+
+
 def _row_season(row):
     for column in ("Season", "Year", "season"):
         if column in row and row[column] is not None and not pd.isna(row[column]):
@@ -386,7 +453,7 @@ def clickable_player_table(df, player_ids: Sequence, sport, con, key: str,
     """
     event = _select(
         df, key, dataframe_kwargs,
-        action_columns=_entity_columns(df, player=True),
+        action_columns=_entity_columns(df, player=True), sport=sport,
     )
     if event is None:
         return
@@ -406,83 +473,49 @@ def clickable_player_table(df, player_ids: Sequence, sport, con, key: str,
 
 # ---------------------------------------------------------------- match
 
-def _default_match_body(match) -> None:
-    """Fallback dialog body when the caller has no richer renderer.
+def _match_label(match) -> str:
+    """`'Adelaide vs Richmond'` for the dialog's breadcrumb.
 
-    Works off `afl.club_history.Match`'s public fields, which any
-    club_history-backed sport already produces via `search_matches`.
+    The breadcrumb is how a reader retraces a path several cards deep, and
+    every match used to label itself '2026 match', so a trail through three
+    of them read the same three times.
     """
-    home = getattr(match, "club_id", None)
-    away = getattr(match, "opponent_id", None)
-    st.markdown(f"### {home} vs {away}" if home and away else "### Match")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Season", getattr(match, "season", "—"))
-    c2.metric("Round", getattr(match, "round", "—"))
-    c3.metric("Score", getattr(match, "score", "—"))
-    st.write(f"**Venue:** {getattr(match, 'venue', '—')}")
-    date = getattr(match, "match_date", None)
-    if date:
-        st.write(f"**Date:** {date}")
-    attendance = getattr(match, "attendance", None)
-    if attendance:
-        st.write(f"**Crowd:** {attendance:,}")
-    result = getattr(match, "result", None)
-    if result:
-        st.write(f"**Result:** {result}")
+    def field(*names):
+        for name in names:
+            if isinstance(match, Mapping):
+                value = match.get(name)
+            else:
+                value = getattr(match, name, None)
+            if value is not None and str(value).strip():
+                return str(value).replace("_", " ").title()
+        return ""
 
-
-def _match_links(sport, con, match) -> None:
-    """Entity navigation shown under either rich match renderer."""
-    links = []
-    for value in (getattr(match, "club_id", None),
-                  getattr(match, "opponent_id", None)):
-        if value and value not in links:
-            links.append(value)
-    with st.container(horizontal=True):
-        season = getattr(match, "season", None)
-        if season is not None:
-            if st.button(str(season), icon=":material/calendar_month:",
-                         key="match_link_season"):
-                _open_card({"kind": "season", "season": season,
-                            "label": str(season)}, sport, con, nested=True)
-            round_value = getattr(match, "round", None)
-            if round_value is not None and st.button(
-                    f"R{round_value}" if str(round_value).isdigit()
-                    else str(round_value), icon=":material/event:",
-                    key="match_link_round"):
-                _open_card({"kind": "round", "season": season,
-                            "round": round_value,
-                            "label": f"{season} R{round_value}"},
-                           sport, con, nested=True)
-        venue = getattr(match, "venue", None)
-        if venue and st.button(str(venue), icon=":material/stadium:",
-                               key="match_link_venue"):
-            _open_card({"kind": "venue", "venue": venue, "label": venue},
-                       sport, con, nested=True)
-        for position, club in enumerate(links):
-            label = str(club).replace("_", " ").title()
-            if st.button(label, icon=":material/shield:",
-                         key=f"match_link_club_{position}"):
-                _open_card({"kind": "club", "club": club, "label": label},
-                           sport, con, nested=True)
+    home = field("club_id", "Home", "Club", "For")
+    away = field("opponent_id", "Away", "Opponent")
+    if home and away:
+        return f"{home} vs {away}"
+    season = field("season", "Season")
+    return f"{season} match".strip() or "Match"
 
 
 def clickable_match_table(df, matches: Sequence, key: str,
                           sport=None, con=None,
                           nested: bool = False,
-                          render_body: Callable | None = None,
                           **dataframe_kwargs):
     """Render `df` and open a match dialog from its Open action.
 
     `matches` must align with `df`'s rows position-for-position, same
-    convention as `clickable_player_table`. `render_body(match)` draws the
-    dialog's contents; the default shows the fields every Match carries.
+    convention as `clickable_player_table`. Each entry is anything that
+    names the match -- a `club_history.Match`, or a mapping carrying its
+    id -- and the card is built from the database rather than from the
+    columns the table happened to show, so every page that opens a match
+    opens the same one.
     """
     event = _select(
         df, key, dataframe_kwargs,
         action_columns=_entity_columns(df) if sport is not None and con is not None
         else {},
-        add_open=True,
+        add_open=True, sport=sport,
     )
     if event is None:
         return
@@ -490,8 +523,7 @@ def clickable_match_table(df, matches: Sequence, key: str,
     if not _handle_entity_event(event, df, sport, con, nested=nested):
         match = matches[row]
         _open_card({"kind": "match", "match": match,
-                    "render_body": render_body,
-                    "label": f"{getattr(match, 'season', '')} match".strip()},
+                    "label": _match_label(match)},
                    sport, con, nested=nested)
 
 
@@ -508,7 +540,7 @@ def clickable_game_table(df, sport, con, key: str, stat=None,
     """
     event = _select(
         df, key, dataframe_kwargs,
-        action_columns=_entity_columns(df), add_open=True,
+        action_columns=_entity_columns(df), add_open=True, sport=sport,
     )
     if event is None:
         return
@@ -535,7 +567,7 @@ def clickable_season_table(df, seasons: Sequence, sport, con, key: str,
     """
     event = _select(
         df, key, dataframe_kwargs,
-        action_columns=_entity_columns(df, clubs=True),
+        action_columns=_entity_columns(df, clubs=True), sport=sport,
     )
     if event is None:
         return
@@ -557,7 +589,8 @@ def clickable_round_table(df, seasons: Sequence, sport, con, key: str,
     """Render a summary whose Round cells open results and voting detail."""
     round_column = next((c for c in ("Round", "Rnd", "Rd") if c in df), None)
     actions = {round_column: "round"} if round_column else {}
-    event = _select(df, key, dataframe_kwargs, action_columns=actions)
+    event = _select(df, key, dataframe_kwargs, action_columns=actions,
+                    sport=sport)
     if event is None:
         return
     row = event["row"]
@@ -570,7 +603,7 @@ def clickable_entity_table(df, sport, con, key: str, nested: bool = False,
                            **dataframe_kwargs):
     """Render a table where any season, round, venue or club cell opens."""
     event = _select(df, key, dataframe_kwargs,
-                    action_columns=_entity_columns(df))
+                    action_columns=_entity_columns(df), sport=sport)
     if event is not None:
         _handle_entity_event(event, df, sport, con, nested=nested)
 
@@ -583,7 +616,8 @@ def clickable_club_table(df, clubs: Sequence, sport, con, key: str,
     """Render `df` and open a club overview when its club name is clicked."""
     action_column = df.columns[0] if len(df.columns) else None
     actions = {action_column: "club"} if action_column is not None else {}
-    event = _select(df, key, dataframe_kwargs, action_columns=actions)
+    event = _select(df, key, dataframe_kwargs, action_columns=actions,
+                    sport=sport)
     if event is None:
         return
     row = event["row"]

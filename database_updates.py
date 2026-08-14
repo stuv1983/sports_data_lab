@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import io
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -23,7 +25,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterable
-from contextlib import closing
+from contextlib import closing, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +36,15 @@ LOG_DIR = ROOT / "logs" / "database_updates"
 STATUS_PATH = LOG_DIR / "status.json"
 CHECK_STATUS_PATH = LOG_DIR / "check-status.json"
 GRIDLEY_SCAN_STATUS_PATH = LOG_DIR / "gridley-scan-status.json"
+RISING_STAR_STATUS_PATH = LOG_DIR / "rising-star-status.json"
+MANUAL_ROUND_STATUS_PATH = LOG_DIR / "manual-round-status.json"
+#: Where the Admin page puts an uploaded round's CSVs.
+#:
+#: A real folder rather than a temporary one because the load runs in a
+#: detached process: the files have to outlive the Streamlit script run
+#: that received them. Under data/, which is gitignored -- these are one
+#: person's working files, not project data.
+MANUAL_ROUND_UPLOADS = ROOT / "data" / "app" / "manual_rounds"
 LOCK_PATH = LOG_DIR / "update.lock"
 SPORT_KEYS = ("afl", "nba", "mlb", "nfl")
 EVENTS = ("regular", "brownlow-awards", "grand-final-awards", "full")
@@ -92,6 +103,12 @@ def event_is_due(event: str, today: dt.date | None = None) -> bool:
         return today == brownlow_refresh_date(today.year)
     if event == "grand-final-awards":
         return today == grand_final_refresh_date(today.year)
+    # `rising-star` and `gridley` deliberately have no calendar guard. Both
+    # promote only when their source actually changed, so running one on
+    # the wrong day costs a request and does nothing -- while a day-of-week
+    # guard would refuse the catch-up run that `Persistent=true` schedules
+    # after the server was down on the intended day, which is the one run
+    # that most needs to happen.
     return True
 
 
@@ -353,6 +370,20 @@ def read_gridley_scan_status() -> dict:
         return {}
 
 
+def read_rising_star_status() -> dict:
+    try:
+        return json.loads(RISING_STAR_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def read_manual_round_status() -> dict:
+    try:
+        return json.loads(MANUAL_ROUND_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def update_is_active() -> bool:
     """Whether the cross-process update lock still belongs to live work."""
     return LOCK_PATH.exists() and _lock_is_active(_read_lock())
@@ -544,11 +575,26 @@ def _prepare_staging(event: str, sports: Iterable[str],
         staging = paths[sport]
         staging.parent.mkdir(parents=True, exist_ok=True)
         staging.unlink(missing_ok=True)
+        live = Path(data_paths.default_db(sport))
         if sport not in rebuilt:
-            live = Path(data_paths.default_db(sport))
             if not live.exists():
                 raise RuntimeError(f"No live {sport.upper()} database at {live}")
             shutil.copy2(live, staging)
+        else:
+            # A rebuilt sport starts from a fresh file -- which is also how
+            # a staged rebuild silently lost every hand-entered round: the
+            # builder ends by replaying manual_round_games, but the store
+            # lives in the live database and a fresh staging file has no
+            # such table, so the replay was a no-op and the strict health
+            # check failed the build on the round's missing players. Seed
+            # the durable tables into the fresh file *before* the builder
+            # runs, so its own replay step sees them -- the exact
+            # equivalent of the designed in-place rebuild path.
+            seeded = _copy_tables(live, staging,
+                                  PRESEEDED_TABLES.get(sport, ()))
+            for table, count in seeded.items():
+                print(f"  seeded {table} into {sport} staging "
+                      f"({count:,} rows)")
 
 
 def _promote_in_place(staging: Path, live: Path) -> None:
@@ -582,10 +628,87 @@ def _promote_in_place(staging: Path, live: Path) -> None:
 #: ids and carried rows would point at the wrong people.
 CARRIED_TABLES: dict[str, tuple[str, ...]] = {"afl": ("historic_grids",)}
 
+#: Tables seeded into a *fresh* staging file before its builder runs.
+#:
+#: `manual_round_games` is the hand-entered round store. afl/build_db.py
+#: ends by replaying it (load_round_csv.apply_only), re-creating debutants
+#: under their stored ids and re-writing the round's games -- but only if
+#: the store is present in the file being built. It carries player ids, so
+#: it must ride *through* the build (whose replay step owns re-applying
+#: it), never be pasted over the finished build the way CARRIED_TABLES
+#: rows are.
+#:
+#: `manual_round_fixtures` is the fixture half of that store -- the venue,
+#: crowd and quarter scores the round summary stated. Those rows live in
+#: `club_match_sources`, which the club-page loader rebuilds wholesale from
+#: a scrape that lags the live season, so without a durable copy riding
+#: through the build a hand-entered round kept its player rows and lost
+#: its fixtures: present in `games`, absent from Past Games and every club
+#: and ground page.
+#:
+#: `historic_grids` is seeded here too so the build is complete before the
+#: health check runs; _carry_forward still copies it afterwards, which is
+#: idempotent, and keeps the non-rebuild paths covered.
+PRESEEDED_TABLES: dict[str, tuple[str, ...]] = {
+    "afl": ("manual_round_games", "manual_round_fixtures",
+            "historic_grids")}
+
 
 def _table_columns(con, table: str, schema: str = "main") -> list[str]:
     return [row[1] for row in
             con.execute(f"PRAGMA {schema}.table_info({table})")]
+
+
+def _copy_tables(source: Path, target: Path,
+                 tables: tuple[str, ...]) -> dict[str, int]:
+    """Column-wise copy of whole tables from one database into another.
+
+    Creates the table in the target from the source's own DDL when it is
+    missing, and copies only the columns the two shapes share -- if a
+    later build ever writes one of these tables itself, the two need not
+    agree. Returns {table: rows now in target}.
+    """
+    copied: dict[str, int] = {}
+    if not tables or not source.exists():
+        return copied
+    # Peek first, and only open the target if there is something to copy:
+    # connecting would create the target file, and a fresh staging path is
+    # meant to stay absent until its builder writes it.
+    with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as src:
+        marks = ",".join("?" for _ in tables)
+        present = tuple(row[0] for row in src.execute(
+            f"SELECT name FROM sqlite_master WHERE type='table' "
+            f"AND name IN ({marks})", tuple(tables)))
+    if not present:
+        return copied
+    with closing(sqlite3.connect(target)) as con:
+        con.execute("ATTACH DATABASE ? AS src", (str(source),))
+        try:
+            for table in present:
+                created = con.execute(
+                    "SELECT sql FROM src.sqlite_master WHERE type='table' "
+                    "AND name=?", (table,)).fetchone()
+                if not created or not created[0]:
+                    continue
+                if not con.execute(
+                        "SELECT 1 FROM main.sqlite_master WHERE type='table' "
+                        "AND name=?", (table,)).fetchone():
+                    con.execute(created[0])
+                shared = [column for column
+                          in _table_columns(con, table, "src")
+                          if column in _table_columns(con, table)]
+                if not shared:
+                    continue
+                names = ", ".join(f'"{column}"' for column in shared)
+                con.execute(
+                    f"INSERT OR REPLACE INTO main.{table} ({names}) "
+                    f"SELECT {names} FROM src.{table}")
+                copied[table] = con.execute(
+                    f"SELECT COUNT(*) FROM main.{table}").fetchone()[0]
+            con.commit()
+        finally:
+            con.execute("DETACH DATABASE src")
+    return copied
 
 
 def _carry_forward(sport: str, staging: Path, live: Path) -> dict[str, int]:
@@ -594,40 +717,7 @@ def _carry_forward(sport: str, staging: Path, live: Path) -> dict[str, int]:
     Runs before promotion, so what the health check validated is what is
     promoted plus rows the build never claimed to own.
     """
-    tables = CARRIED_TABLES.get(sport, ())
-    if not tables or not live.exists():
-        return {}
-    carried: dict[str, int] = {}
-    with closing(sqlite3.connect(staging)) as con:
-        con.execute("ATTACH DATABASE ? AS live", (str(live),))
-        try:
-            for table in tables:
-                created = con.execute(
-                    "SELECT sql FROM live.sqlite_master WHERE type='table' "
-                    "AND name=?", (table,)).fetchone()
-                if not created or not created[0]:
-                    continue
-                if not con.execute(
-                        "SELECT 1 FROM main.sqlite_master WHERE type='table' "
-                        "AND name=?", (table,)).fetchone():
-                    con.execute(created[0])
-                # Column-wise rather than SELECT *: if a later build ever
-                # does write this table, the two shapes need not agree.
-                shared = [column for column
-                          in _table_columns(con, table, "live")
-                          if column in _table_columns(con, table)]
-                if not shared:
-                    continue
-                names = ", ".join(f'"{column}"' for column in shared)
-                con.execute(
-                    f"INSERT OR REPLACE INTO main.{table} ({names}) "
-                    f"SELECT {names} FROM live.{table}")
-                carried[table] = con.execute(
-                    f"SELECT COUNT(*) FROM main.{table}").fetchone()[0]
-            con.commit()
-        finally:
-            con.execute("DETACH DATABASE live")
-    return carried
+    return _copy_tables(live, staging, CARRIED_TABLES.get(sport, ()))
 
 
 #: Sports whose builder writes a measured reference sidecar (franchise
@@ -875,6 +965,414 @@ def check_databases(sports: Iterable[str] = SPORT_KEYS) -> dict:
     return result
 
 
+#: How long the Rising Star source may go unchecked before the panel says
+#: so. One nomination is announced per round, and the timer runs weekly, so
+#: a check that has not succeeded in nine days has missed at least one.
+RISING_STAR_STALE_AFTER_DAYS = 9
+
+
+def rising_star_currency(database: str | Path | None = None,
+                         today: dt.date | None = None) -> dict:
+    """What the live database holds, and whether it is likely behind.
+
+    Read-only, two indexed queries. Answers the question the Admin page
+    could not previously answer without running a check: which nomination
+    is the newest one loaded, and when did anything last look for a newer
+    one.
+
+    Staleness is measured from the last successful *check*, not from the
+    data. Nominations carry a round number and no date, so "round 22" says
+    nothing about how long ago round 22 was -- whereas a weekly job that
+    last succeeded eleven days ago has demonstrably missed a week.
+    """
+    today = today or dt.datetime.now().astimezone().date()
+    path = Path(database or data_paths.default_db("afl"))
+    result: dict = {"state": "not loaded", "database": str(path)}
+    if path.exists():
+        try:
+            with closing(sqlite3.connect(
+                    f"file:{path}?mode=ro", uri=True)) as con:
+                if con.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name='rising_star_nominees'").fetchone():
+                    result.update(_rising_star_rows(con))
+        except sqlite3.Error as exc:
+            result["state"] = "unreadable"
+            result["summary"] = str(exc)
+            return result
+
+    status = read_rising_star_status()
+    checked_at = (status.get("finished_at")
+                  if status.get("state") == "complete" else None)
+    result["last_check_state"] = status.get("state")
+    result["last_checked_at"] = checked_at
+    days = None
+    if checked_at:
+        try:
+            days = (today - dt.datetime.fromisoformat(
+                str(checked_at)).date()).days
+        except (TypeError, ValueError):
+            days = None
+    result["days_since_check"] = days
+
+    # Only judge currency while the award is still being awarded. Between
+    # the Grand Final and next March there is no nomination to miss, and
+    # calling a complete season "behind" every off-season would train the
+    # reader to ignore the warning by the time it means something.
+    season = result.get("season")
+    in_season = (season == today.year
+                 and today <= grand_final_refresh_date(today.year))
+    result["in_season"] = in_season
+    result["stale"] = bool(
+        in_season and (days is None or days > RISING_STAR_STALE_AFTER_DAYS))
+    return result
+
+
+def _rising_star_rows(con) -> dict:
+    season = con.execute(
+        "SELECT MAX(season) FROM rising_star_nominees").fetchone()[0]
+    if season is None:
+        return {"state": "empty"}
+    latest = con.execute(
+        "SELECT round_number, player, club, source, match_status "
+        "FROM rising_star_nominees WHERE season = ? "
+        "ORDER BY round_number DESC LIMIT 1", (season,)).fetchone()
+    return {
+        "state": "loaded",
+        "season": season,
+        "season_nominations": con.execute(
+            "SELECT COUNT(*) FROM rising_star_nominees WHERE season = ?",
+            (season,)).fetchone()[0],
+        "total": con.execute(
+            "SELECT COUNT(*) FROM rising_star_nominees").fetchone()[0],
+        "latest_round": latest[0] if latest else None,
+        "latest_player": latest[1] if latest else None,
+        "latest_club": latest[2] if latest else None,
+        "latest_source": latest[3] if latest else None,
+        "latest_linked": bool(latest and latest[4] in {"unique", "resolved"}),
+        "sources": dict(con.execute(
+            "SELECT source, COUNT(*) FROM rising_star_nominees "
+            "GROUP BY source")),
+    }
+
+
+def apply_rising_star_edits(*, trigger: str = "admin") -> dict:
+    """Rebuild the nomination table from its sources and promote it.
+
+    The edit itself is a line in a CSV -- see
+    ``utils/afl/rising_star_manual.py`` -- so publishing it is a reload of
+    every source, not a write of the one changed row. No fetch: an
+    administrator editing a nomination is not asking to check Wikipedia,
+    and making them wait on a network request to see their own edit would
+    be gratuitous.
+    """
+    from utils.afl import load_rising_star
+
+    _acquire_lock()
+    live = Path(data_paths.default_db("afl"))
+    staging = live.with_suffix(live.suffix + ".rising-star-building")
+    started = dt.datetime.now().astimezone()
+    status = {
+        "state": "running", "trigger": trigger, "kind": "manual_edit",
+        "started_at": started.isoformat(), "database": str(live),
+    }
+    _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+    try:
+        if not live.exists():
+            raise RuntimeError(f"No live AFL database at {live}")
+        staging.unlink(missing_ok=True)
+        shutil.copy2(live, staging)
+        loaded = load_rising_star.load_sources(
+            str(staging), load_rising_star.default_sources(), verbose=True)
+        if not loaded.get("trusted"):
+            raise RuntimeError(
+                "the reloaded Rising Star table linked no rows to a player; "
+                "the live database was left unchanged")
+        backup = _backup_and_promote("afl", staging)
+        status.update({
+            "state": "complete", "promoted": True, "backup": backup,
+            "loaded": loaded,
+            "result": {
+                "season": None, "changed": True, "latest_round": None,
+                "note": "Hand-entered nominations applied.",
+            },
+            "finished_at": dt.datetime.now().astimezone().isoformat(),
+        })
+        _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+        return status
+    except Exception as exc:
+        status.update({
+            "state": "failed", "error": f"{type(exc).__name__}: {exc}",
+            "finished_at": dt.datetime.now().astimezone().isoformat(),
+        })
+        _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+        raise
+    finally:
+        staging.unlink(missing_ok=True)
+        LOCK_PATH.unlink(missing_ok=True)
+
+
+def manual_rounds(database: str | Path | None = None) -> dict:
+    """Which hand-entered rounds the live database is carrying.
+
+    Read-only. These are rounds played but not yet published by the
+    upstream dataset, entered by hand and stored in `manual_round_games` so
+    a rebuild replays rather than loses them -- see the Durability section
+    of utils/afl/load_round_csv.py. `redundant` counts the ones the
+    upstream dataset has since caught up on, which are safe to forget.
+    """
+    from utils.afl import load_round_csv
+
+    path = Path(database or data_paths.default_db("afl"))
+    result: dict = {"database": str(path), "rounds": [], "latest_round": None}
+    if not path.exists():
+        return result
+    try:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as con:
+            stored = load_round_csv.stored_rounds(con)
+            for season, round_name in stored:
+                result["rounds"].append({
+                    "season": season, "round": round_name,
+                    "upstream_has": load_round_csv.upstream_has(
+                        con, season, round_name),
+                })
+            if con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='games'").fetchone():
+                # Ordered by date, not by round. `round` is TEXT because
+                # finals are named ("EF", "GF"), so MAX(round) compares
+                # lexically and calls round 9 later than round 23.
+                latest = con.execute(
+                    "SELECT season, round, date FROM games "
+                    "WHERE date IS NOT NULL ORDER BY date DESC LIMIT 1"
+                ).fetchone()
+                if latest:
+                    (result["latest_season"], result["latest_round"],
+                     result["latest_date"]) = latest
+    except sqlite3.Error as exc:
+        result["error"] = str(exc)
+    result["redundant"] = sum(
+        1 for row in result["rounds"] if row.get("upstream_has"))
+    return result
+
+
+#: The only round names a manual load will accept: AFL Tables' own naming
+#: -- a home-and-away round number, or one of the five finals codes. A
+#: strict allowlist rather than sanitisation, because this value is used to
+#: build a filesystem path that is later `shutil.rmtree`'d: anything with a
+#: separator, a dot sequence or a stray character must be rejected outright,
+#: never "cleaned".
+_ROUND_NAME_RE = re.compile(r"^(?:[0-9]{1,2}|EF|QF|SF|PF|GF)$")
+
+
+def validate_round_name(round_name) -> str:
+    """The round name if it is on the allowlist, or raise ValueError."""
+    name = str(round_name).strip()
+    if not _ROUND_NAME_RE.fullmatch(name.upper()):
+        raise ValueError(
+            f"Not a round AFL Tables names: {round_name!r}. Expected a "
+            "round number (1-99) or a finals code (EF, QF, SF, PF, GF).")
+    return name.upper() if name.isalpha() else name.lstrip("0") or "0"
+
+
+def validate_season(season) -> int:
+    """The season as an int, bounded to years the competition has played."""
+    year = int(season)
+    if not 1897 <= year <= dt.date.today().year + 1:
+        raise ValueError(f"Season out of range: {season!r}")
+    return year
+
+
+def _round_upload_folder(season: int, round_name: str) -> Path:
+    """The upload folder for one round, provably inside the uploads root.
+
+    Both parts are validated before they touch the path, and the resolved
+    result is required to sit *directly* under the resolved uploads root --
+    a belt-and-braces check so no future change to the name rules can turn
+    the rmtree below into a traversal.
+    """
+    season = validate_season(season)
+    round_name = validate_round_name(round_name)
+    root = MANUAL_ROUND_UPLOADS.resolve()
+    folder = (root / f"{season}-{round_name}").resolve()
+    if folder.parent != root or folder == root:
+        raise ValueError(f"Refusing upload folder outside {root}: {folder}")
+    return folder
+
+
+def upload_round_files(season: int, round_name: str,
+                       files: Iterable[tuple[str, bytes]]) -> Path:
+    """Save an uploaded round's CSVs where a detached load can read them.
+
+    Returns the folder to hand to `run_manual_round_load`. Cleared first,
+    so re-uploading after fixing one file cannot leave the old copy behind
+    for the pairer to find -- it matches files to fixtures by the club
+    names inside them, so a stale file is not obviously stale.
+    """
+    folder = _round_upload_folder(season, round_name)
+    if folder.exists():
+        shutil.rmtree(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, data in files:
+        # Uploads are named by the browser; keep only the leaf so a crafted
+        # name cannot write outside the folder. Reject names that reduce to
+        # no leaf at all ("..", "/") rather than writing to the folder itself.
+        leaf = Path(str(name)).name
+        if not leaf or leaf in (".", ".."):
+            raise ValueError(f"Refusing upload with unusable name: {name!r}")
+        (folder / leaf).write_bytes(data)
+    return folder
+
+
+def run_manual_round_load(folder: str | Path, season: int, round_name: str, *,
+                          dry_run: bool = False, trigger: str = "admin") -> dict:
+    """Check, and optionally load, a hand-entered round.
+
+    A dry run reads and validates without writing, so it runs against the
+    live database directly. A real load stages a copy, loads into that, and
+    promotes only if the loader accepted the round -- the same shape as
+    every other job here, and the reason a bad round cannot leave the live
+    database half-written.
+    """
+    from utils.afl import load_round_csv
+
+    # The same allowlist the upload path applies -- this entry point is
+    # also reachable from the CLI, and the values flow into paths and SQL.
+    season = validate_season(season)
+    round_name = validate_round_name(round_name)
+    folder = Path(folder)
+    started = dt.datetime.now().astimezone()
+    live = Path(data_paths.default_db("afl"))
+    status = {
+        "state": "running", "trigger": trigger, "season": season,
+        "round": round_name, "dry_run": dry_run, "folder": str(folder),
+        "started_at": started.isoformat(), "database": str(live),
+    }
+    # A load runs detached and takes about a minute, so the browser has no
+    # way of knowing where it is up to except through this file. Every
+    # phase is written as it begins: two of our own either side, and the
+    # loader's in between. A dry run has neither of ours -- no copy, no
+    # promote -- and the loader stops at the checks, so its total is the
+    # phases before anything would be written; a fixed count would leave
+    # the bar finishing at four of ten.
+    if dry_run:
+        total_phases = load_round_csv.LOAD_PHASES.index("Storing the round")
+    else:
+        total_phases = len(load_round_csv.LOAD_PHASES) + 2
+
+    def phase(step: int, label: str) -> None:
+        status.update({
+            "phase": label, "phase_step": step, "phase_total": total_phases,
+            "phase_at": dt.datetime.now().astimezone().isoformat(),
+        })
+        _write_json(MANUAL_ROUND_STATUS_PATH, status, best_effort=True)
+
+    def on_progress(step: int, _total: int, label: str) -> None:
+        phase(step + (0 if dry_run else 1), label)
+
+    status.update({"phase_total": total_phases})
+    if not dry_run:
+        _acquire_lock()
+    _write_json(MANUAL_ROUND_STATUS_PATH, status, best_effort=True)
+    staging = live.with_suffix(live.suffix + ".manual-round-building")
+    report = io.StringIO()
+    try:
+        if not live.exists():
+            raise RuntimeError(f"No live AFL database at {live}")
+        if not folder.is_dir():
+            raise RuntimeError(f"No such round folder: {folder}")
+
+        target = live
+        if not dry_run:
+            phase(1, "Copying the database")
+            staging.unlink(missing_ok=True)
+            shutil.copy2(live, staging)
+            target = staging
+
+        # The loader reports what it found on stdout, and that report is
+        # the whole point for the operator -- which files paired with which
+        # fixture, which names resolved to which player, what it refused.
+        with redirect_stdout(report), redirect_stderr(report):
+            load_round_csv.load(target, folder, int(season), str(round_name),
+                                dry_run=dry_run, on_progress=on_progress)
+
+        promoted = False
+        backup = None
+        if not dry_run:
+            phase(total_phases, "Replacing the live database")
+            backup = _backup_and_promote("afl", staging)
+            promoted = True
+        status.update({
+            "state": "complete", "promoted": promoted, "backup": backup,
+            "report": report.getvalue(),
+            "finished_at": dt.datetime.now().astimezone().isoformat(),
+            "rounds": manual_rounds().get("rounds", []),
+        })
+        _write_json(MANUAL_ROUND_STATUS_PATH, status, best_effort=True)
+        return status
+    except Exception as exc:
+        # LoadError is the expected outcome of a round with a problem in
+        # it, not a crash: the operator needs the report far more than the
+        # exception type, so both are kept.
+        status.update({
+            "state": "failed", "error": f"{type(exc).__name__}: {exc}",
+            "report": report.getvalue(),
+            "finished_at": dt.datetime.now().astimezone().isoformat(),
+        })
+        _write_json(MANUAL_ROUND_STATUS_PATH, status, best_effort=True)
+        return status
+    finally:
+        staging.unlink(missing_ok=True)
+        if not dry_run:
+            LOCK_PATH.unlink(missing_ok=True)
+
+
+def forget_manual_round(season: int, round_name: str) -> dict:
+    """Drop a stored round the upstream dataset has since published."""
+    from utils.afl import load_round_csv
+
+    season = validate_season(season)
+    round_name = validate_round_name(round_name)
+    _acquire_lock()
+    live = Path(data_paths.default_db("afl"))
+    staging = live.with_suffix(live.suffix + ".manual-round-building")
+    report = io.StringIO()
+    try:
+        staging.unlink(missing_ok=True)
+        shutil.copy2(live, staging)
+        with redirect_stdout(report), redirect_stderr(report):
+            load_round_csv.forget(staging, int(season), str(round_name))
+        backup = _backup_and_promote("afl", staging)
+        return {"state": "complete", "report": report.getvalue(),
+                "backup": backup, "season": season, "round": round_name}
+    finally:
+        staging.unlink(missing_ok=True)
+        LOCK_PATH.unlink(missing_ok=True)
+
+
+def start_manual_round_load_background(folder: str | Path, season: int,
+                                       round_name: str, *,
+                                       trigger: str = "admin") -> int:
+    """Start a real round load detached from the Streamlit process.
+
+    Applying a round derives matches and rebuilds the ladder, both of which
+    read the whole games table -- about a minute. Far too long to hold a
+    script run open.
+    """
+    season = validate_season(season)
+    round_name = validate_round_name(round_name)
+    return _spawn_detached(
+        ["manual-round-load", "--dir", str(folder), "--season", str(season),
+         "--round", str(round_name), "--trigger", trigger],
+        MANUAL_ROUND_STATUS_PATH,
+        {
+            "state": "starting", "trigger": trigger, "pid": None,
+            "season": season, "round": round_name, "dry_run": False,
+            "started_at": dt.datetime.now().astimezone().isoformat(),
+        },
+    )
+
+
 def run_gridley_scan(*, through: dt.date | None = None, max_days: int = 31,
                       trigger: str = "admin", fetcher=None) -> dict:
     """Fetch new Gridley boards into a copy, then atomically promote it."""
@@ -922,6 +1420,119 @@ def run_gridley_scan(*, through: dt.date | None = None, max_days: int = 31,
         _write_json(GRIDLEY_SCAN_STATUS_PATH, status, best_effort=True)
         raise
     finally:
+        LOCK_PATH.unlink(missing_ok=True)
+
+
+def _loaded_rising_star_round(database: Path, season: int) -> int | None:
+    """The latest nomination round the live database actually holds."""
+    if not database.exists():
+        return None
+    try:
+        with closing(sqlite3.connect(
+                f"file:{database}?mode=ro", uri=True)) as con:
+            if not con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='rising_star_nominees'").fetchone():
+                return None
+            return con.execute(
+                "SELECT MAX(round_number) FROM rising_star_nominees "
+                "WHERE season = ?", (season,)).fetchone()[0]
+    except sqlite3.Error:
+        return None
+
+
+def run_rising_star_scan(*, season: int | None = None, trigger: str = "admin",
+                         fetcher=None, force: bool = False) -> dict:
+    """Refresh the season's Rising Star nominations from Wikipedia.
+
+    The award adds one nomination a week all season. FootyWire, the richer
+    source, may not be fetched automatically under its own terms, so the
+    weekly catch-up comes from Wikipedia instead -- see
+    ``afl/fetch_wikipedia_rising_star.py`` for why both sources coexist and
+    ``utils/afl/load_rising_star.py`` for which one wins a round.
+
+    Same shape as the Gridley scan: refresh a source file, rebuild into a
+    copy, promote only if there is something new. A week with no new
+    nomination costs one HTTP request and changes nothing.
+    """
+    from afl import fetch_wikipedia_rising_star as wiki
+    from utils.afl import load_rising_star
+
+    season = season or dt.datetime.now().astimezone().year
+    _acquire_lock()
+    started = dt.datetime.now().astimezone()
+    live = Path(data_paths.default_db("afl"))
+    staging = live.with_suffix(live.suffix + ".rising-star-building")
+    status = {
+        "state": "running", "trigger": trigger, "season": season,
+        "started_at": started.isoformat(), "database": str(live),
+    }
+    _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+    try:
+        if not live.exists():
+            raise RuntimeError(f"No live AFL database at {live}")
+        try:
+            result = (fetcher(season) if fetcher is not None
+                      else wiki.refresh_season(season))
+        except wiki.PageNotFound:
+            status.update({
+                "state": "complete", "promoted": False, "result": {
+                    "season": season, "added": 0, "changed": False,
+                    "note": f"no {season} Wikipedia article yet",
+                },
+                "finished_at": dt.datetime.now().astimezone().isoformat(),
+            })
+            _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+            return status
+
+        # An unchanged source file is not proof the database is current: a
+        # previous run could have written the CSV and then failed to load
+        # it. Compare what is loaded against what the file now says, so a
+        # half-finished run repairs itself on the next Monday rather than
+        # staying one nomination behind until someone notices.
+        loaded_round = _loaded_rising_star_round(live, season)
+        latest = result.get("latest_round")
+        behind = (latest is not None
+                  and (loaded_round is None or loaded_round < latest))
+        # `force` exists because this check only ever looks at `season`.
+        # Backfilling earlier seasons, or fixing the loader, changes rows
+        # this comparison cannot see -- and without a way to say "reload
+        # anyway" the only route to publishing that work is a full AFL
+        # rebuild.
+        if not force and not result.get("changed") and not behind:
+            status.update({
+                "state": "complete", "promoted": False, "result": result,
+                "finished_at": dt.datetime.now().astimezone().isoformat(),
+            })
+            _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+            return status
+
+        staging.unlink(missing_ok=True)
+        shutil.copy2(live, staging)
+        loaded = load_rising_star.load_sources(
+            str(staging), load_rising_star.default_sources(), verbose=True)
+        if not loaded.get("trusted"):
+            raise RuntimeError(
+                "the reloaded Rising Star table linked no rows to a player; "
+                "the live database was left unchanged")
+        backup = _backup_and_promote("afl", staging)
+        status.update({
+            "state": "complete", "promoted": True, "backup": backup,
+            "result": result, "loaded": loaded,
+            "finished_at": dt.datetime.now().astimezone().isoformat(),
+            "after": _database_snapshot("afl", quick=True),
+        })
+        _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+        return status
+    except Exception as exc:
+        status.update({
+            "state": "failed", "error": f"{type(exc).__name__}: {exc}",
+            "finished_at": dt.datetime.now().astimezone().isoformat(),
+        })
+        _write_json(RISING_STAR_STATUS_PATH, status, best_effort=True)
+        raise
+    finally:
+        staging.unlink(missing_ok=True)
         LOCK_PATH.unlink(missing_ok=True)
 
 
@@ -1181,6 +1792,25 @@ def start_gridley_scan_background(*, max_days: int = 31,
     )
 
 
+def start_rising_star_scan_background(*, season: int | None = None,
+                                      trigger: str = "admin") -> int:
+    """Start a Rising Star refresh detached from the Streamlit process.
+
+    Short work -- one request and a reload -- but it promotes a database,
+    which means it takes the update lock and must not die with a rerun.
+    """
+    season = season or dt.datetime.now().astimezone().year
+    return _spawn_detached(
+        ["rising-star-scan", "--season", str(season), "--trigger", trigger],
+        RISING_STAR_STATUS_PATH,
+        {
+            "state": "starting", "trigger": trigger, "pid": None,
+            "season": season,
+            "started_at": dt.datetime.now().astimezone().isoformat(),
+        },
+    )
+
+
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1199,11 +1829,37 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="last date to check, YYYY-MM-DD (default: today)")
     scan.add_argument("--max-days", type=int, default=31)
     scan.add_argument("--trigger", default="cli")
+    rising = sub.add_parser(
+        "rising-star-scan",
+        help="refresh this season's Rising Star nominations from Wikipedia")
+    rising.add_argument("--season", type=int, default=None)
+    rising.add_argument("--trigger", default="cli")
+    rising.add_argument("--reload", action="store_true",
+                        help="reload and promote even when the source has "
+                             "not changed (after a backfill of earlier "
+                             "seasons, or a loader fix)")
+    manual = sub.add_parser(
+        "manual-round-load",
+        help="load a hand-entered round into a staged copy, then promote")
+    manual.add_argument("--dir", required=True,
+                        help="folder holding the round summary and game files")
+    manual.add_argument("--season", type=int, required=True)
+    manual.add_argument("--round", dest="round_name", required=True)
+    manual.add_argument("--dry-run", action="store_true",
+                        help="check the files without writing anything")
+    manual.add_argument("--trigger", default="cli")
+    forget = sub.add_parser(
+        "manual-round-forget",
+        help="drop a stored hand-entered round the upstream dataset has "
+             "since published")
+    forget.add_argument("--season", type=int, required=True)
+    forget.add_argument("--round", dest="round_name", required=True)
     scheduled = sub.add_parser(
         "scheduled", help="run a guarded update from an operating-system timer")
     scheduled.add_argument(
         "event",
-        choices=("regular", "brownlow-awards", "grand-final-awards", "gridley"))
+        choices=("regular", "brownlow-awards", "grand-final-awards", "gridley",
+                 "rising-star"))
     sub.add_parser("status", help="print the last update status")
     check = sub.add_parser(
         "check", help="report currency and integrity without changing anything")
@@ -1235,6 +1891,25 @@ def main(argv: list[str] | None = None) -> int:
             through=through, max_days=args.max_days, trigger=args.trigger)
         print(json.dumps(status.get("result", {}), indent=2))
         return 0
+    if args.command == "rising-star-scan":
+        status = run_rising_star_scan(
+            season=args.season, trigger=args.trigger, force=args.reload)
+        print(json.dumps(status.get("result", {}), indent=2))
+        print(f"promoted: {status.get('promoted')}")
+        return 0
+    if args.command == "manual-round-load":
+        status = run_manual_round_load(
+            args.dir, args.season, args.round_name,
+            dry_run=args.dry_run, trigger=args.trigger)
+        print(status.get("report", ""))
+        if status.get("state") == "failed":
+            print(status.get("error", ""), file=sys.stderr)
+            return 1
+        return 0
+    if args.command == "manual-round-forget":
+        status = forget_manual_round(args.season, args.round_name)
+        print(status.get("report", ""))
+        return 0
     if args.command == "scheduled":
         if not event_is_due(args.event):
             print(
@@ -1244,6 +1919,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.event == "gridley":
             run_gridley_scan(trigger="systemd")
+            return 0
+        if args.event == "rising-star":
+            run_rising_star_scan(trigger="systemd")
             return 0
         sports = ("afl",) if args.event != "regular" else SPORT_KEYS
         return run_job(args.event, sports, trigger="systemd")

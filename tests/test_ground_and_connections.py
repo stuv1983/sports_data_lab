@@ -31,7 +31,7 @@ def test_teammate_means_the_same_match_not_merely_same_club_season():
              "L", 0, 0, 0, 1, 2, 1, 1, 0, 0),
         ],
     )
-    sql, params = core.Generic(core.Schema()).teammate_of_id(1)
+    sql, params = core.Generic(core.Schema(career_score="career_goals", career_postseason="finals_played", game_score="goals")).teammate_of_id(1)
     assert [row[0] for row in con.execute(sql, params)] == [2]
 
 

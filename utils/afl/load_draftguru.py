@@ -42,6 +42,7 @@ import re
 import sqlite3
 import sys
 
+from afl.draft_kinds import draft_kind
 from data_paths import default_db, raw_dir
 from names import normalise_name
 
@@ -199,6 +200,11 @@ def build_draft(root, report):
     d["draft_type"] = d.get("draft_type_src")
     if "draft_type_meta" in d:
         d["draft_type"] = d["draft_type"].fillna(d["draft_type_meta"])
+    # The canonical category, decided once here rather than by LIKE
+    # patterns at query time -- see afl/draft_kinds.py. draft_type keeps
+    # Draftguru's own wording for browsing; draft_kind is what constraints
+    # compare.
+    d["draft_kind"] = d["draft_type"].map(draft_kind)
 
     d["draft_year"] = d["year"].map(first_int)
     d["pick"] = d["pick"].map(first_int) if "pick" in d else None
@@ -230,8 +236,8 @@ def build_draft(root, report):
             d[c] = _pd.array(d[c], dtype="Int64")
 
     cols = ["player", "player_url", "name_key", "draft_year", "draft_type",
-            "pick", "pick_note", "club", "signing", "signing_kind",
-            "signing_detail", "detail", "original_club",
+            "draft_kind", "pick", "pick_note", "club", "signing",
+            "signing_kind", "signing_detail", "detail", "original_club",
             "draft_age", "height_cm", "weight_kg", "grade", "games", "goals",
             "coaches_votes", "brownlow_votes", "awards_text", "competition",
             "record_category", "source_url", "source_row"]
@@ -431,6 +437,7 @@ def main():
         "CREATE INDEX IF NOT EXISTS ix_dg_people_key ON dg_people(name_key)",
         "CREATE INDEX IF NOT EXISTS ix_draft_key ON draft(name_key)",
         "CREATE INDEX IF NOT EXISTS ix_draft_person ON draft(dg_person_id)",
+        "CREATE INDEX IF NOT EXISTS ix_draft_kind ON draft(draft_kind, pick)",
         "CREATE INDEX IF NOT EXISTS ix_awards_person ON awards(dg_person_id)",
         "CREATE INDEX IF NOT EXISTS ix_awards_slug ON awards(award_slug, season)",
         "CREATE INDEX IF NOT EXISTS ix_aa_person ON all_australian(dg_person_id)",
@@ -456,7 +463,8 @@ def main():
     print("\nNext:  python -m afl.link_draft  then  python -m afl.link_people")
     print("Pick numbers restart per draft type, so a `pick` of 3 may be a")
     print("National, Rookie or Pre-Season selection. Constraints that mean")
-    print("'top-10 pick' must filter draft_type as well.")
+    print("'top-10 pick' filter on draft_kind = 'national' (assigned here;")
+    print("see afl/draft_kinds.py).")
 
 
 if __name__ == "__main__":

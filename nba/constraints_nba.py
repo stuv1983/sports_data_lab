@@ -104,25 +104,29 @@ def _venue(name):
 # `champion` and `made_playoffs_season` read team_seasons rather than
 # scanning box scores, which is what that table is for.
 
+# Compared bare (`round = ?`), never as UPPER(TRIM(round)): wrapping the
+# column blinds SQLite to the round indexes and forces a full games scan.
+# The build stores codes already normalised, and the round/result hygiene
+# test fails the moment any build stops doing so.
 FINALS_ROUND = "F"
 
 
 def played_in_the_finals():
     """Appeared in an NBA Finals game."""
     return ("SELECT DISTINCT player_id FROM games "
-            "WHERE UPPER(TRIM(round)) = ?", [FINALS_ROUND])
+            "WHERE round = ?", [FINALS_ROUND])
 
 
 def won_the_finals():
     """Won an NBA Finals game. Not the same as winning the title."""
     return ("SELECT DISTINCT player_id FROM games "
-            "WHERE UPPER(TRIM(round)) = ? AND result = 'W'", [FINALS_ROUND])
+            "WHERE round = ? AND result = 'W'", [FINALS_ROUND])
 
 
 def never_made_the_finals():
     """Played, but never in a Finals game."""
     return ("SELECT DISTINCT player_id FROM games WHERE player_id NOT IN "
-            "(SELECT player_id FROM games WHERE UPPER(TRIM(round)) = ?)",
+            "(SELECT player_id FROM games WHERE round = ?)",
             [FINALS_ROUND])
 
 
@@ -135,7 +139,7 @@ def championships_won_min(times):
                JOIN team_seasons t
                  ON t.season = g.season AND t.club_now = g.club_now
                 AND t.phase = 'regular'
-               WHERE UPPER(TRIM(g.round)) = ? AND t.champion = 1
+               WHERE g.round = ? AND t.champion = 1
                GROUP BY g.player_id
                HAVING COUNT(DISTINCT g.season) >= ?""",
             [FINALS_ROUND, times])
@@ -146,7 +150,7 @@ def finals_lost_min(times):
                JOIN team_seasons t
                  ON t.season = g.season AND t.club_now = g.club_now
                 AND t.phase = 'regular'
-               WHERE UPPER(TRIM(g.round)) = ? AND t.champion = 0
+               WHERE g.round = ? AND t.champion = 0
                GROUP BY g.player_id
                HAVING COUNT(DISTINCT g.season) >= ?""",
             [FINALS_ROUND, times])
@@ -328,6 +332,49 @@ BUILDERS = {
     "All-NBA selection":          (all_nba_selection, []),
     "All-NBA with club":          (all_nba_with_club, ["club"]),
     "Won an NBA award":           (won_wiki_award, ["award"]),
+}
+
+#: The category shelves the criterion pickers arrange BUILDERS on --
+#: the same names the AFL catalogue uses, so a reader who learned one
+#: sport's picker can navigate every sport's. A builder named nowhere
+#: here falls to the picker's "More" shelf.
+BUILDER_GROUPS = {
+    "Clubs & journeys": (
+        "Played for club", "First career game for club", "One-club player",
+        "Multi-club player", "Played for X+ clubs", "X+ goals at 2+ clubs",
+        "X+ games at 2+ clubs",
+    ),
+    "Career milestones": (
+        "150+ / X+ career games", "Fewer than X career games",
+        "X+ career goals", "X or fewer career goals",
+        "X+ of a stat in a career", "Career average of a stat",
+    ),
+    "Single-game feats": (
+        "X+ of a stat in one game", "Two stats in the same game",
+        "X+ games with Y+ of a stat",
+    ),
+    "Season & era": (
+        "Played between seasons", "Debuted between seasons",
+        "X+ of a stat in one season", "Season average of a stat",
+    ),
+    "Finals & premierships": (
+        "Made the playoffs", "Missed the playoffs", "Played in a final",
+        "Won a final", "X+ finals games", "X+ of a stat in a final",
+        "Finals average of a stat", "Goal average in finals",
+        "No finals wins (played finals)", "Never won a final",
+        "Never played finals", "Played in the Finals", "Won a Finals game",
+        "Played in X+ NBA Finals", "Won X+ championships",
+        "Lost X+ NBA Finals", "Never played in the Finals",
+        "Appeared for championship team",
+    ),
+    "Grounds & venues": (
+        "Played at venue", "Played in state", "Won a final at venue",
+    ),
+    "Physical": ("Listed at a position", "Born outside the US"),
+    "Awards & honours": (
+        "All-NBA selection", "All-NBA with club", "Won an NBA award",
+    ),
+    "Teammates": ("Played with…",),
 }
 
 #: Builders needing an optional layer. Both empty for these milestones --

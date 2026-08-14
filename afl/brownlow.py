@@ -74,10 +74,20 @@ def brownlow_votes_in_season(votes=20):
                  WHERE {TRUSTED} AND votes >= ?""", [votes])
 
 
+def brownlow_won_with_votes(votes=25):
+    """Won the Brownlow in a season they polled `votes` or more --
+    "WON BROWNLOW WITH 25+ VOTES" is about the winning tally, not any
+    high-polling season."""
+    votes = _positive(votes, "votes")
+    return (f"""SELECT DISTINCT player_id FROM brownlow_results
+                 WHERE {TRUSTED} AND winner = 1 AND votes >= ?""", [votes])
+
+
 BROWNLOW_BUILDERS = {
     "Top X Brownlow finish": (brownlow_top_finish, ["place"]),
     "Exact Brownlow finish": (brownlow_exact_finish, ["place"]),
     "Top X Brownlow finish X+ times": (
         brownlow_top_finish_times, ["place", "times"]),
     "X+ Brownlow votes in a season": (brownlow_votes_in_season, ["votes"]),
+    "Won the Brownlow with X+ votes": (brownlow_won_with_votes, ["votes"]),
 }

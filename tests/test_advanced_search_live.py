@@ -52,7 +52,8 @@ def table_exists(con: sqlite3.Connection, name: str) -> bool:
 
 def run_query(schema, con, query: str) -> tuple[list[str], list[str]]:
     """Return (player names, description strings) for one Advanced Search query."""
-    sql, params, spec = Q.compile_query(schema, query, con=con)
+    sql, params, spec = Q.compile_query(schema, query, con=con,
+                                        extensions=EXTENSIONS())
     rows = con.execute(sql, params).fetchall()
     names = [row[0] for row in rows]
     return names, Q.describe(spec)
@@ -72,8 +73,9 @@ def main(argv: list[str] | None = None) -> int:
 
     import data_paths
     import sports
-    global Q
+    global Q, EXTENSIONS
     import query_filters_family as Q
+    EXTENSIONS = sports.AFL.search_extensions
 
     db_path = args.db or data_paths.sport_db("afl", "gridley.db")
     if not Path(db_path).is_file():
@@ -146,13 +148,23 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---------------------------------------------------------------- 5
     print("\n5. Brother narrower than sibling")
-    brother_names, _ = run_query(schema, con, "family_relation:brother sort:obscurity")
-    sibling_names, _ = run_query(schema, con, "family_relation:sibling sort:obscurity")
-    note(
-        len(sibling_names) >= len(brother_names),
-        "sibling count >= brother count",
-        f"sibling={len(sibling_names):,} brother={len(brother_names):,}",
-    )
+    # Compared at the compiler's maximum limit; if either list hits the
+    # cap the comparison would be vacuous (100 == 100 proved nothing), so
+    # the check is only asserted when both lists are complete.
+    brother_names, _ = run_query(
+        schema, con, "family_relation:brother sort:obscurity limit:500")
+    sibling_names, _ = run_query(
+        schema, con, "family_relation:sibling sort:obscurity limit:500")
+    if len(brother_names) >= 500 or len(sibling_names) >= 500:
+        note(True, "brother/sibling comparison skipped (limit reached)",
+             f"sibling={len(sibling_names):,} brother={len(brother_names):,}")
+    else:
+        note(
+            len(sibling_names) >= len(brother_names)
+            and set(brother_names) <= set(sibling_names),
+            "brothers are a subset of siblings",
+            f"sibling={len(sibling_names):,} brother={len(brother_names):,}",
+        )
 
     # ---------------------------------------------------------------- 6
     print("\n6. Combined with a base-search filter")
@@ -236,12 +248,9 @@ def main(argv: list[str] | None = None) -> int:
                 note(
                     False,
                     f"{query!r} parses and executes",
-                    "KNOWN ISSUE: afl/family_draft.py:ensure_family_draft_table() "
-                    "still uses the pre-hotfix placeholder strategy and "
-                    "crashes on the read-only Streamlit connection when the "
-                    "family_draft table has not been imported. Same class of "
-                    "bug as the one fixed in afl/family_relationships.py -- "
-                    "needs the same _query_only(con) guard backported.",
+                    "afl/family_draft.py:ensure_family_draft_table() tried "
+                    "to write on the read-only connection -- the "
+                    "_query_only(con) guard has regressed.",
                 )
             else:
                 raise
@@ -249,7 +258,8 @@ def main(argv: list[str] | None = None) -> int:
     # ---------------------------------------------------------------- 10
     print("\n10. Bad input is rejected, not silently ignored")
     try:
-        Q.compile_query(schema, "family_relation:not_a_real_relation", con=con)
+        Q.compile_query(schema, "family_relation:not_a_real_relation",
+                        con=con, extensions=EXTENSIONS())
         note(False, "an invalid family_relation value is rejected")
     except Q.QuerySyntaxError:
         note(True, "an invalid family_relation value is rejected")
@@ -267,6 +277,27 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print("Advanced Search live smoke test: passed")
     return 0
+
+
+import pytest
+
+
+@pytest.mark.live
+def test_advanced_search_live():
+    """The whole smoke run as one collected test.
+
+    Despite this file's name, nothing in it used to be collected by
+    pytest: a green suite said nothing about this coverage. The run needs
+    the locally built AFL database and is marked `live`; without the
+    database it skips instead of failing the ordinary unit suite.
+    """
+    import data_paths
+
+    db = data_paths.sport_db("afl", "gridley.db")
+    if not Path(db).is_file():
+        pytest.skip("no built AFL database")
+    FAILURES.clear()
+    assert main([]) == 0, f"failing checks: {FAILURES}"
 
 
 if __name__ == "__main__":

@@ -267,6 +267,11 @@ def ground_explorer_page(sport, con: sqlite3.Connection) -> None:
                     st.info("No players meet those filters.")
                     continue
                 visible = leaders.drop(columns=["PlayerID"])
+                # One entry per club, named as the club was at the time:
+                # a span at one ground crossing a rename concatenates both
+                # era names, and "Kangaroos,North Melbourne" reads as two.
+                visible["Clubs"] = visible["Clubs"].fillna("").map(
+                    sport.collapse_club_path)
                 visible = visible[[
                     "Player", "Value", "Games", "Wins", "Goals", "Marks",
                     "Disposals", "Brownlow votes", "First", "Last", "Clubs",

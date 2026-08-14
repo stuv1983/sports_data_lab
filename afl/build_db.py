@@ -28,6 +28,7 @@ from pathlib import Path
 
 import obscurity
 from data_paths import default_db, raw_dir
+from utils.afl.dob import canonical_dob
 
 from . import obscurity_model
 
@@ -222,7 +223,10 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
     out["club_hist"] = df["Playing.for"].astype(str).str.strip()
     out["club_now"] = out["club_hist"].map(lambda c: CLUB_LINEAGE.get(c, c))
     out["career_game_no"] = pd.to_numeric(df["Career.Games"], errors="coerce")
-    out["dob"] = df["DOB"].astype(str)
+    # The source spells DOB "30-Jan-1987"; stored dates are ISO so the
+    # query builder's date operators and pickers are truthful. A value
+    # that is not a real date becomes NULL, never text posing as one.
+    out["dob"] = df["DOB"].map(canonical_dob)
 
     # DOB is populated for only ~5% of rows, but Age (fractional years, at
     # that match) and Date are complete. Age is fractional, not integer, so
@@ -434,6 +438,25 @@ def build(db_path, refresh=False, skip_matches=False, strict=True):
                   "Run it manually, or use --no-matches to silence this.")
         else:
             derive_matches.run(db_path)
+
+    # A rebuild also drops any round entered by hand from the AFL Tables match
+    # pages, which is how a round the cached dataset has not published yet gets
+    # into the database at all. The rows survive in manual_round_games, so
+    # re-apply them here rather than leaving a scheduled refresh to silently
+    # lose a round. Rounds the rebuild has now produced upstream are skipped,
+    # so this stops mattering by itself once the dataset catches up.
+    print()
+    try:
+        from utils.afl import load_round_csv
+    except ImportError:
+        print("utils/afl/load_round_csv.py not found -- hand-entered rounds "
+              "not re-applied.")
+    else:
+        try:
+            load_round_csv.apply_only(Path(db_path))
+        except Exception as error:                              # noqa: BLE001
+            print(f"warning: hand-entered rounds not re-applied ({error})",
+                  file=sys.stderr)
 
     # to_sql(if_exists="replace") takes games.match_event with it too, and the
     # marquee squares vanish with it. The tags are derived from cached

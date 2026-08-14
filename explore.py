@@ -36,9 +36,13 @@ SCOPES = {
 
 
 def _db_revision(db):
-    """Return a cheap cache key that changes when the database changes."""
+    """Return a cheap cache key that changes when the database changes.
+
+    Same shape as app.py's db_revision: the path is part of the value so
+    two sports' caches can never collide on a (mtime, size) coincidence.
+    """
     stat = os.stat(db)
-    return stat.st_mtime_ns, stat.st_size
+    return str(db), stat.st_mtime_ns, stat.st_size
 
 
 @st.cache_data(show_spinner=False, max_entries=512)
@@ -218,6 +222,33 @@ def home_page(sport, con, draft_ok, awards_ok):
         # Brownlow votes, and the NBA model uses none of them.
         st.write(sport.star_disclaimer)
 
+    _data_notes(sport)
+
+
+def _data_notes(sport) -> None:
+    """The full list of the sport's caveats, grouped by what they are about.
+
+    The season and round cards each show the handful that apply to what is
+    on screen; this is the place a reader comes to when they want the lot,
+    which is why it names the round-numbering rule up front rather than
+    leaving it eleventh in a list.
+    """
+    notes = sport.notes()
+    if notes is None:
+        return
+    with st.expander("Data notes — rounds, ladders and disputed results"):
+        st.warning(notes.ROUND_NUMBERING.text, icon=":material/info:")
+        for topic, items in notes.by_topic().items():
+            listed = [note for note in items
+                      if note is not notes.ROUND_NUMBERING]
+            if not listed:
+                continue
+            st.markdown(f"**{topic}**")
+            for item in listed:
+                seasons = item.seasons
+                st.markdown(f"- {f'**{seasons}** — ' if seasons else ''}"
+                            f"{item.text}")
+
 
 # ------------------------------------------------------------- filters
 
@@ -260,17 +291,146 @@ def _filters(sport, con, key):
 
 def player_page(sport, con, player_picker):
     st.markdown("# Player Search")
-    st.caption("Search the full player database, then inspect the selected "
-               "player's career and best performances — or put two careers "
-               "side by side.")
-    one, two, together = st.tabs(
-        ["One player", "Compare two", "Played with / against"])
+    st.caption("Search the full player database by name or by what a career "
+               "looks like, then inspect the selected player's career and "
+               "best performances — or put two careers side by side.")
+    find, one, two, together = st.tabs(
+        ["Find players", "One player", "Compare two",
+         "Played with / against"])
+    with find:
+        _find_players(sport, con)
     with one:
         _player_profile(sport, con, player_picker)
     with two:
         _compare_players(sport, con, player_picker)
     with together:
         _player_connections(sport, con, player_picker)
+
+
+def _find_players(sport, con):
+    """Find a player by what their career looks like, not by their name.
+
+    Every other tab here starts from a name, which is no use to somebody
+    who is trying to remember one. These are controls over the same query
+    compiler the Advanced Search page runs: the widgets build a query, the
+    compiler turns it into one parameterised statement, and the query it
+    built is shown underneath so a reader can take it to that page and
+    keep going.
+
+    Building the query rather than the SQL is the point. Only the
+    compiler knows which columns exist for a sport and which layers are
+    loaded, and a second path into the database would be a second set of
+    rules to keep in step with the first.
+    """
+    import components
+    import query_filters_family as Q
+    import ui_widgets
+
+    V, sc = sport.vocab, sport.schema
+    revision = _db_revision(sport.db)
+    season_min, season_max = _season_span(sport.key, revision, con)
+    tokens: list[str] = []
+
+    c1, c2, c3 = st.columns(3)
+    seasons = c1.select_slider(
+        f"Played between {V.season}s", options=range(season_min, season_max + 1),
+        value=(season_min, season_max), key=sport.k("find_seasons"))
+    if seasons != (season_min, season_max):
+        tokens.append(f"played:{seasons[0]}..{seasons[1]}")
+
+    clubs = c2.multiselect(
+        V.clubs.capitalize(), list(sc.clubs), key=sport.k("find_clubs"),
+        help=f"Two or more {V.clubs} means a career that took in every one "
+             f"of them.")
+    tokens += [f"club:{Q.quote_token(club)}" for club in clubs]
+
+    games = c3.number_input(
+        f"Minimum career {V.games}", min_value=0, value=0, step=25,
+        key=sport.k("find_games"))
+    if games:
+        tokens.append(f"games>={int(games)}")
+
+    # -- the draft, where the sport has one loaded ------------------------
+    if getattr(sport.C, "draft_available", None) and sport.C.draft_available(con):
+        d1, d2, d3 = st.columns(3)
+        sources = ui_widgets.recruit_source_options(
+            sport.key, sport.db, revision)
+        if sources:
+            names = ["Anywhere"] + [name for name, _ in sources]
+            counts = dict(sources)
+            source = d1.selectbox(
+                "Recruited from", names, key=sport.k("find_source"),
+                format_func=lambda n: (
+                    n if n == "Anywhere" else f"{n}  ·  {counts[n]}"),
+                help="Any step of the path to the draft — the junior club, "
+                     "the school, the talent-league or state-league club.")
+            if source != "Anywhere":
+                tokens.append(f"recruited_from:{Q.quote_token(source)}")
+
+        picks = d2.select_slider(
+            "National draft pick", options=range(1, 101),
+            value=(1, 100), key=sport.k("find_pick"),
+            help="Pick numbers restart for the rookie and pre-season "
+                 "drafts, so this asks about the national draft only.")
+        if picks != (1, 100):
+            tokens.append(f"pick:{picks[0]}..{picks[1]}")
+
+        drafted = d3.select_slider(
+            "Drafted between", options=range(season_min, season_max + 1),
+            value=(season_min, season_max), key=sport.k("find_drafted"))
+        if drafted != (season_min, season_max):
+            tokens.append(f"draft_year:{drafted[0]}..{drafted[1]}")
+
+    e1, e2 = st.columns([1, 2])
+    order = e1.selectbox(
+        "Sort by", ["obscurity", "games", "fewest_games", "score", "name",
+                    "newest", "oldest"],
+        format_func=lambda s: {
+            "obscurity": "Most obscure", "games": f"Most {V.games}",
+            "fewest_games": f"Fewest {V.games}",
+            "score": f"Most {V.score}", "name": "Name",
+            "newest": "Most recent", "oldest": "Earliest"}[s],
+        key=sport.k("find_sort"))
+    tokens.append(f"sort:{order}")
+    limit = e2.slider("How many to show", 25, 500, 100, step=25,
+                      key=sport.k("find_limit"))
+    tokens.append(f"limit:{limit}")
+
+    query = " ".join(tokens)
+    # Nothing but the sort and the limit means every player in the
+    # database, ranked -- a real answer, but not one anybody asked for.
+    if len(tokens) <= 2:
+        st.info(f"Choose a filter above to search. Every {V.game}, "
+                f"{V.club} and draft field can be combined.")
+        return
+
+    try:
+        sql, params, spec = Q.compile_query(
+            sc, query, con=con, extensions=sport.search_extensions())
+        frame = pd.read_sql_query(sql, con, params=params)
+    except (Q.QuerySyntaxError, ValueError) as exc:
+        st.error(str(exc))
+        return
+    except (sqlite3.Error, pd.errors.DatabaseError) as exc:
+        st.error(f"Database error while searching: {exc}")
+        return
+
+    if frame.empty:
+        st.info("No players match every filter.")
+        return
+
+    st.caption(f"{len(frame):,} player{'s' if len(frame) != 1 else ''} shown.")
+    shown = components.player_results_table(
+        frame, sport, con, key=sport.k("find_results"))
+    st.download_button(
+        "Download these players as CSV",
+        data=shown.to_csv(index=False).encode("utf-8"),
+        file_name=f"{sport.key}_player_filter.csv", mime="text/csv",
+        key=sport.k("find_download"))
+    with st.expander("The query these filters built"):
+        st.code(query, language=None)
+        st.caption("Advanced Search takes the same text, and understands "
+                   "more than these controls offer.")
 
 
 def _player_profile(sport, con, player_picker):
@@ -359,8 +519,13 @@ def _clean_award_name(value):
 
 def _honour_order(sport_key, label):
     priorities = {
-        "afl": ("norm smith", "all-australian", "brownlow", "gary ayres",
-                "leigh matthews", "aflca", "best and fairest", "medal"),
+        # One "rising star" token covers the award, the nomination and the
+        # ineligible variant: all three contain it, so all three take this
+        # rank and sort next to each other, which is the point. Their order
+        # within the group is the usual count-then-name tie-break.
+        "afl": ("norm smith", "all-australian", "brownlow", "rising star",
+                "gary ayres", "leigh matthews", "aflca", "best and fairest",
+                "medal"),
         "mlb": ("most valuable player", "cy young", "world series mvp",
                 "gold glove", "silver slugger", "rookie of the year",
                 "all-star", "triple crown"),
@@ -403,7 +568,9 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
     game_columns = {
         row[1] for row in _con.execute(f"PRAGMA table_info({sc.games})")
     }
-    if sport_key == "mlb" and "war" in game_columns:
+    # A layer capability, not a sport key: any sport whose build loads a
+    # per-row WAR column and declares the probe gets the metric.
+    if "war" in game_columns and sport.layer_ready("war_available", _con):
         best_war = _con.execute(
             f"""SELECT ROUND(MAX(season_war), 1) FROM (
                   SELECT SUM(war) AS season_war FROM {sc.games}
@@ -416,7 +583,8 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
     if sport.has_draftguru_player_cards:
         if {"draft", "draft_links"} <= tables:
             draft = _con.execute(
-                """SELECT d.draft_year, d.draft_type, d.pick, d.club
+                """SELECT d.draft_year, d.draft_type, d.pick, d.club,
+                          d.original_club
                      FROM draft d JOIN draft_links l ON l.draft_rowid=d.rowid
                     WHERE l.player_id=? AND l.match_status IN
                           ('from_draft','unique','resolved')
@@ -424,7 +592,7 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
                                   THEN 0 ELSE 1 END, d.draft_year LIMIT 1""",
                 (pid,)).fetchone()
             if draft:
-                year, draft_type, pick, club = draft
+                year, draft_type, pick, club, recruited = draft
                 parts = [f"Pick {int(pick)}" if pick is not None else None,
                          str(int(year)) if year is not None else None,
                          str(draft_type) if draft_type else None]
@@ -432,6 +600,10 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
                 if club:
                     value += f" · {club}"
                 bio.append(("Draft", value))
+                # The path to the draft, junior club first, as the source
+                # writes it: "Greythorn / Xavier College / Oakleigh U18".
+                if recruited and str(recruited).strip():
+                    bio.append(("Recruited from", str(recruited).strip()))
 
         if {"awards", "person_links"} <= tables:
             for name, season in _con.execute(
@@ -450,12 +622,18 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
             if seasons:
                 honours["All-Australian"] = seasons
 
-    elif sport_key == "mlb" and "awards" in tables:
+    elif sport.native_awards_table and sport.native_awards_table in tables:
+        # An awards table keyed directly by player_id, the Lahman shape --
+        # declared by the sport rather than inferred from its key.
         for name, season in _con.execute(
-                "SELECT award, season FROM awards WHERE player_id=?", (pid,)):
+                f"SELECT award, season FROM {sport.native_awards_table} "
+                f"WHERE player_id=?", (pid,)):
             honours.setdefault(_clean_award_name(name), set()).add(season)
 
-    elif sport_key == "nfl":
+    else:
+        # Draft facts carried as plain columns on `players` (the nflverse
+        # shape). `wanted` is empty for any build without them, so this
+        # falls through quietly rather than being keyed to one sport.
         wanted = [col for col in ("draft_year", "draft_round", "draft_pick",
                                   "draft_team") if col in player_columns]
         if wanted:
@@ -481,6 +659,34 @@ def _player_card_enrichment(sport_key, pid, revision, _con):
                     WHERE player_id=? AND match_status IN ('unique','resolved')""",
                 (pid,)):
             honours.setdefault(_clean_award_name(name), set()).add(season)
+
+    # A nomination and the award itself are separate honours, and a player
+    # can hold both in one season -- every winner was nominated first. They
+    # are listed apart so "nominated three times, won once" is legible,
+    # rather than one line that cannot say which season was the win.
+    #
+    # The win is filed under the label the Draftguru awards layer already
+    # uses, because it already records every winner from 1993 on. A label
+    # of its own listed the same win twice under two names; sharing this
+    # one means the seasons merge into a single honour, and the win still
+    # shows on a database that has the nominations but not that layer.
+    if "rising_star_nominees" in tables:
+        won_label = _clean_award_name("Rising Star Award (AFL)")
+        for season, won, ineligible in _con.execute(
+                """SELECT season, is_season_winner, ineligible
+                     FROM rising_star_nominees
+                    WHERE player_id=? AND match_status IN
+                          ('unique','resolved')""", (pid,)):
+            honours.setdefault("AFL Rising Star nominee", set()).add(season)
+            if won:
+                honours.setdefault(won_label, set()).add(season)
+            elif ineligible:
+                # Worth its own line: the nomination stood, but suspension
+                # put the award out of reach. Folding it into the nominee
+                # row would lose the only part that is unusual.
+                honours.setdefault(
+                    "Rising Star nominee, ineligible (suspension)",
+                    set()).add(season)
 
     honour_rows = [
         {"Honour": label, "Times": len(seasons),
@@ -569,6 +775,37 @@ def _career_blurb(V, debut, final, games, n_clubs, draft_year=None,
     return prefix + sentence + "."
 
 
+def _career_charts(sport, seasons, V) -> None:
+    """The shape of a career, above the season table that details it.
+
+    Two charts rather than one with two scales: games and goals are
+    different sizes, and drawing them against a shared axis would invent a
+    relationship the numbers do not have. The score chart is dropped
+    entirely for a player who never scored, where a row of nothing is not
+    a finding about them but a fact about their position.
+    """
+    import charts
+
+    games_column = V.games.capitalize()
+    score_column = V.score.capitalize()
+    blue, orange = charts.series_colours()
+    drawn = [
+        (f"{games_column} per {V.season}",
+         charts.career_chart(seasons, "Season", games_column,
+                             games_column, blue)),
+        (f"{score_column} per {V.season}",
+         charts.career_chart(seasons, "Season", score_column,
+                             score_column, orange)),
+    ]
+    drawn = [(title, chart) for title, chart in drawn if chart is not None]
+    if not drawn:
+        return
+    for column, (title, chart) in zip(st.columns(len(drawn)), drawn):
+        with column:
+            st.caption(title)
+            st.altair_chart(chart, width="stretch")
+
+
 def _player_card_logos(sport, con, clubs_hist):
     """League badge and resolved team logos for a player's card header."""
     import overlays
@@ -631,7 +868,11 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
     clubs_hist = p[6] or ""
     debut, final = p[1], p[2]
     career_games = p[3] or 0
-    n_clubs = len(clubs_hist.split("|")) if clubs_hist else 0
+    # One entry per club, named as the club was at the time: "Kangaroos|
+    # North Melbourne" is one club that renamed itself mid-career, and
+    # counting or listing it twice reads as a two-club journeyman.
+    clubs_shown = sport.collapse_club_path(clubs_hist)
+    n_clubs = len(clubs_shown.split("|")) if clubs_shown else 0
 
     # Trusted captain appointments, shown in the bio column when a sport
     # has them. Gated on the constraints module declaring the layer rather
@@ -684,7 +925,7 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
     span = (f"{debut}–{final}" if debut and final
             else str(debut or final or ""))
     subtitle = " · ".join(
-        part for part in (span, clubs_hist.replace("|", ", ")) if part)
+        part for part in (span, clubs_shown.replace("|", ", ")) if part)
 
     with st.container(border=True):
         st.markdown(
@@ -743,16 +984,20 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                     f"PRAGMA table_info({sc.games})")
             }
             has_player_war = (
-                sport.key == "mlb" and "war" in game_columns
+                "war" in game_columns
+                and sport.layer_ready("war_available", con)
                 and con.execute(
                     f"SELECT 1 FROM {sc.games} WHERE {sc.player_id}=? "
                     "AND war IS NOT NULL LIMIT 1", (pid,)).fetchone()
             )
             war_select = (", ROUND(SUM(war), 1) AS bWAR"
                           if has_player_war else "")
-            if sport.key == "mlb" and "games" in game_columns:
+            if sc.games_per_row and sc.games_per_row in game_columns:
+                # Season-grain rows: each stands for `games_per_row` games,
+                # so appearances are summed rather than rows counted.
                 season_games_sql = (
-                    f"SUM(CASE WHEN {sc.is_final}=0 THEN games ELSE 0 END)")
+                    f"SUM(CASE WHEN {sc.is_final}=0 "
+                    f"THEN {sc.games_per_row} ELSE 0 END)")
                 season_score_sql = (
                     f"SUM(CASE WHEN {sc.is_final}=0 "
                     f"THEN {sc.game_score} ELSE 0 END)")
@@ -760,7 +1005,8 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                     f"ROUND(CAST({season_score_sql} AS REAL) / "
                     f"NULLIF({season_games_sql}, 0), 2)")
                 postseason_sql = (
-                    f"SUM(CASE WHEN {sc.is_final}=1 THEN games ELSE 0 END)")
+                    f"SUM(CASE WHEN {sc.is_final}=1 "
+                    f"THEN {sc.games_per_row} ELSE 0 END)")
             else:
                 season_games_sql = "COUNT(*)"
                 season_score_sql = f"SUM({sc.game_score})"
@@ -782,6 +1028,7 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                 st.dataframe(seasons, hide_index=True, width="stretch",
                              height=300)
             else:
+                _career_charts(sport, seasons, V)
                 # A row here is one club's season, so it opens that season
                 # for that club: who won it, how the club went, who led it.
                 import components
@@ -835,6 +1082,8 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                 brownlow, brownlow["Season"].tolist(), sport, con,
                 key=sport.k(key_prefix, "brownlow", pid), nested=nested)
 
+    _form_section(sport, con, pid, key_prefix, revision)
+
     st.markdown(f"### Biggest {V.games}")
     metric = st.selectbox("Ranked by", list(sc.stats),
                           format_func=labels.title,
@@ -867,7 +1116,136 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
                           if c not in ("Player", "PlayerID")])
 
 
+def _form_section(sport, con, pid, key_prefix, revision) -> None:
+    """A stat across the whole career with its rolling average on top.
+
+    Game-grain sports chart every recorded game by career game number; a
+    season-grain sport (MLB — `schema.games_per_row` is set) charts the
+    per-game rate of each season instead, because it has no game rows to
+    roll over. Either way the average is taken over *recorded* entries
+    only: a career that straddles a stat's first recorded season starts
+    its line where the record starts, not at an invented zero.
+    """
+    import charts
+
+    V, sc = sport.vocab, sport.schema
+    st.markdown("### Form")
+
+    stats = list(sc.stats)
+    default = stats.index(sc.game_score) if sc.game_score in stats else 0
+    left, right = st.columns([2, 1])
+    stat = left.selectbox("Statistic", stats, index=default,
+                          format_func=labels.title,
+                          key=sport.k(key_prefix, "form_stat", pid))
+    warning = sport.stat_era_warning(stat)
+
+    if sc.games_per_row:
+        window = 3
+        right.caption(f"{window}-{V.season} average")
+        sql = (f"SELECT {sc.season} AS Season, "
+               f"ROUND(CAST(SUM({stat}) AS REAL) "
+               f"/ NULLIF(SUM({sc.games_per_row}), 0), 2) AS Value "
+               f"FROM {sc.games} WHERE {sc.player_id} = ? "
+               f"AND {sc.is_final} = 0 AND {stat} IS NOT NULL "
+               f"GROUP BY {sc.season} ORDER BY {sc.season}")
+        frame = _read_frame(sql, (pid,), revision, con)
+        chart = charts.rolling_form_chart(
+            frame, "Season", "Value",
+            f"{labels.title(stat)} per {V.game}", window,
+            x_title=V.season.capitalize(), ordinal_x=True)
+        caption = (f"Each bar is one {V.season}'s per-{V.game} rate; "
+                   f"the line is the {window}-{V.season} average.")
+    else:
+        window = right.segmented_control(
+            "Window", [5, 10, 20], default=10,
+            key=sport.k(key_prefix, "form_window", pid),
+            label_visibility="collapsed") or 10
+        sql = (f"SELECT {sc.career_game_no} AS Game, {stat} AS Value "
+               f"FROM {sc.games} WHERE {sc.player_id} = ? "
+               f"ORDER BY {sc.career_game_no}")
+        frame = _read_frame(sql, (pid,), revision, con)
+        chart = charts.rolling_form_chart(
+            frame, "Game", "Value", labels.title(stat), int(window),
+            x_title=f"Career {V.game}")
+        caption = (f"Each bar is one {V.game}; the line is the mean of "
+                   f"the last {window} {V.games} the stat was recorded "
+                   f"in, and starts once {window} exist.")
+
+    if chart is None:
+        st.caption(f"{labels.title(stat)} was not recorded for any of "
+                   f"this player's {V.games}."
+                   + (f" {warning}" if warning else ""))
+        return
+    if warning:
+        st.caption(f"⚠ {warning}")
+    st.altair_chart(chart, width="stretch")
+    st.caption(caption)
+
+
 # ---------------------------------------------------- player comparison
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _career_rates(sport_key, revision, _con) -> pd.DataFrame:
+    """Career per-game rates for every qualifying player, one stat a column.
+
+    The percentile a profile bar shows is a rank within this frame, so
+    who qualifies changes every number: the floor is the same career
+    games minimum the constraint engine's averages use. Season-grain
+    sports rate SUM(stat)/SUM(games) over regular-season rows; game-grain
+    sports average the game rows, NULLs excluded either way.
+    """
+    import sports as _sports
+
+    sport = _sports.get(sport_key)
+    sc = sport.schema
+    stats = list(sc.stats)[:8]
+    if sc.games_per_row:
+        selects = ", ".join(
+            f"CAST(SUM({stat}) AS REAL) / NULLIF(SUM({sc.games_per_row}), 0)"
+            f" AS {stat}" for stat in stats)
+        volume = f"SUM({sc.games_per_row})"
+        where = f"WHERE {sc.is_final} = 0"
+    else:
+        selects = ", ".join(f"AVG({stat}) AS {stat}" for stat in stats)
+        volume = "COUNT(*)"
+        where = ""
+    frame = pd.read_sql_query(
+        f"SELECT {sc.player_id} AS pid, {volume} AS n, {selects} "
+        f"FROM {sc.games} {where} GROUP BY {sc.player_id} "
+        f"HAVING n >= {int(core.Generic.CAREER_AVG_MIN_GAMES)}",
+        _con)
+    for stat in stats:
+        frame[f"{stat}__pct"] = frame[stat].rank(pct=True) * 100
+    return frame
+
+
+def _percentile_profile(sport, con, revision, a, b):
+    """A tidy (Player, Attribute, Value, Percentile) frame for two careers.
+
+    Returns (frame, skipped): attributes neither player has a recorded
+    rate for are skipped and named, so the chart never draws a zero for
+    "the source measured nothing".
+    """
+    rates = _career_rates(sport.key, revision, con)
+    stats = list(sport.schema.stats)[:8]
+    rows, skipped = [], []
+    by_pid = rates.set_index("pid")
+    for stat in stats:
+        drawn = False
+        for pid, name in (a, b):
+            if pid in by_pid.index:
+                value = by_pid.at[pid, stat]
+                pct = by_pid.at[pid, f"{stat}__pct"]
+                if pd.notna(value) and pd.notna(pct):
+                    rows.append({"Player": name,
+                                 "Attribute": labels.title(stat),
+                                 "Value": round(float(value), 2),
+                                 "Percentile": float(pct)})
+                    drawn = True
+        if not drawn:
+            skipped.append(labels.title(stat))
+    return pd.DataFrame(rows), skipped
+
 
 def _compare_players(sport, con, player_picker):
     """Two careers side by side, honest about what is comparable."""
@@ -896,11 +1274,35 @@ def _compare_players(sport, con, player_picker):
     hl, hr = st.columns(2)
     for col, p in ((hl, a), (hr, b)):
         col.markdown(f"### {p.player}")
-        col.caption(f"{p.span} · {p.clubs}")
+        col.caption(f"{p.span} · {sport.collapse_club_path(p.clubs)}")
         m1, m2, m3 = col.columns(3)
         m1.metric(V.games.capitalize(), f"{p.career_games:,}")
         m2.metric(V.score.capitalize(), f"{p.career_score:,}")
         m3.metric(V.postseason.capitalize(), f"{p.finals:,}")
+
+    # -- skill profile --------------------------------------------------
+    import charts
+
+    name_a, name_b = a.player, b.player
+    if name_a == name_b:            # 460 names belong to more than one player
+        name_a = f"{a.player} ({a.span})"
+        name_b = f"{b.player} ({b.span})"
+    profile, skipped = _percentile_profile(
+        sport, con, _db_revision(sport.db),
+        (a_sel[0], name_a), (b_sel[0], name_b))
+    profile_chart = charts.percentile_profile_chart(profile,
+                                                    (name_a, name_b))
+    if profile_chart is not None:
+        st.markdown("#### Skill profile")
+        st.caption(
+            f"League percentile of each per-{V.game} rate, ranked among "
+            f"players with {core.Generic.CAREER_AVG_MIN_GAMES}+ career "
+            f"{V.games}. A missing bar is a rate the era never recorded "
+            f"for that career, not a zero.")
+        st.altair_chart(profile_chart, width="stretch")
+        if skipped:
+            st.caption("Not recorded for either career: "
+                       + ", ".join(skipped) + ".")
 
     # -- career shape ---------------------------------------------------
     st.markdown("#### Career")
@@ -1162,6 +1564,70 @@ def leaderboard_page(sport, con):
         df, player_ids, sport, con, key=sport.k("lb_results"))
     with st.expander("SQL"):
         st.code(q, language="sql")
+
+    _quadrant_section(sport, con, stat, where, params, revision)
+
+
+def _quadrant_section(sport, con, stat, where, params, revision) -> None:
+    """Career volume against per-game efficiency, quartered by medians.
+
+    Behind a toggle because it aggregates every qualifying career: the
+    leaderboard above stays instant and this renders only when asked.
+    The active context filters carry over, so quartering "the field"
+    means the field currently being looked at. Clicking a point opens
+    that player's card.
+    """
+    import charts
+    import components
+
+    V, sc = sport.vocab, sport.schema
+    if not st.toggle(f"Volume vs efficiency (career {labels.words(stat)})",
+                     key=sport.k("lb_quadrant_on")):
+        return
+
+    games_word = V.games.capitalize()
+    rate_column = f"{labels.title(stat)} per {V.game}"
+    floor = int(core.Generic.CAREER_AVG_MIN_GAMES)
+    if sc.games_per_row:
+        volume = f"SUM(g.{sc.games_per_row})"
+        rate = (f"ROUND(CAST(SUM(g.{stat}) AS REAL) "
+                f"/ NULLIF(SUM(g.{sc.games_per_row}), 0), 2)")
+    else:
+        volume = "COUNT(*)"
+        rate = f"ROUND(AVG(g.{stat}), 2)"
+    quadrant_sql = f"""
+        SELECT p.{sc.player_id} AS PlayerID, g.{sc.player} AS Player,
+               {volume} AS "{games_word}", {rate} AS "{rate_column}"
+        FROM {sc.games} g JOIN {sc.players} p
+          ON p.{sc.player_id} = g.{sc.player_id}
+        WHERE {where} AND g.{stat} IS NOT NULL
+        GROUP BY g.{sc.player_id}
+        HAVING {volume} >= {floor}
+        ORDER BY SUM(g.{stat}) DESC LIMIT 400"""
+    frame = _read_frame(quadrant_sql, tuple(params), revision, con)
+    chart = charts.quadrant_chart(
+        frame, games_word, rate_column, "Player",
+        x_title=f"Career {V.games} with {labels.words(stat)} recorded",
+        y_title=rate_column, id_column="PlayerID")
+    if chart is None:
+        st.caption("Nothing qualifies under the current filters.")
+        return
+    st.caption(
+        f"The top 400 careers by total {labels.words(stat)} under the "
+        f"current filters, {floor}+ recorded {V.games} each. The dashed "
+        "lines are the medians of the shown field; the named points are "
+        "the furthest from them. Click a point to open that player.")
+    event = st.altair_chart(chart, on_select="rerun",
+                            key=sport.k("lb_quadrant", stat))
+    picked = [row.get("PlayerID")
+              for row in event.selection.get("quadrant", [])
+              if row.get("PlayerID") is not None]
+    if picked:
+        chosen = frame[frame["PlayerID"].isin(picked)]
+        components.clickable_player_table(
+            chosen.drop(columns=["PlayerID"]),
+            chosen["PlayerID"].tolist(), sport, con,
+            key=sport.k("lb_quadrant_pick", stat))
 
 
 # --------------------------------------------------- random discovery

@@ -72,7 +72,7 @@ def main():
           "the UI has no duplicate national-pick builder")
 
     top10_sql, _ = C.draft_pick_between(1, 10)
-    ck.ok("LOWER(d.draft_type) LIKE '%national%'" in top10_sql,
+    ck.ok("d.draft_kind = 'national'" in top10_sql,
           "top-pick constraint excludes restarted rookie/pre-season picks")
 
     supported = [

@@ -24,11 +24,11 @@ Install:
     python -m pip install nflreadpy
 
 Examples:
-    python build_nfl_db.py
-    python build_nfl_db.py --from-season 1999 --through-season 2025
-    python build_nfl_db.py --all-history
-    python build_nfl_db.py --extended
-    python build_nfl_db.py --db C:\\sports_data_lab\\data\\nfl\\nfl.db
+    python -m nfl.build_db
+    python -m nfl.build_db --from-season 1999 --through-season 2025
+    python -m nfl.build_db --all-history
+    python -m nfl.build_db --extended
+    python -m nfl.build_db --db C:\\sports_data_lab\\data\\nfl\\nfl.db
 """
 
 from __future__ import annotations
@@ -491,22 +491,33 @@ def create_players(con: sqlite3.Connection) -> None:
         f"{regular_expr} AS career_regular_games",
         f"{postseason_expr} AS career_postseason_games",
     ]
+    # Bare SUM (and NULL, not 0, for an absent column): SQLite's SUM
+    # ignores NULL rows and is itself NULL when every input is NULL, so a
+    # career played entirely before a statistic was recorded stays NULL --
+    # the project rule that unrecorded history is never a measured 0.
     for target, source in sums.items():
         if source and source in game_cols:
             aggregate_fields.append(
-                f"SUM(COALESCE({quote_ident(source)},0)) AS {quote_ident(target)}"
+                f"SUM({quote_ident(source)}) AS {quote_ident(target)}"
             )
         else:
-            aggregate_fields.append(f"0 AS {quote_ident(target)}")
+            aggregate_fields.append(f"NULL AS {quote_ident(target)}")
     if touchdown_columns:
         touchdown_sum = "+".join(
             f"COALESCE({quote_ident(column)},0)" for column in touchdown_columns
         )
+        counted = "+".join(
+            f"COUNT({quote_ident(column)})" for column in touchdown_columns
+        )
+        # Per-row the components still COALESCE to add mixed presence, but
+        # a player none of whose rows record any touchdown column at all
+        # keeps NULL rather than gaining a 0.
         aggregate_fields.append(
-            f"SUM({touchdown_sum}) AS career_touchdowns"
+            f"CASE WHEN {counted} = 0 THEN NULL "
+            f"ELSE SUM({touchdown_sum}) END AS career_touchdowns"
         )
     else:
-        aggregate_fields.append("0 AS career_touchdowns")
+        aggregate_fields.append("NULL AS career_touchdowns")
 
     con.execute("DROP TABLE IF EXISTS _player_aggregates")
     con.execute(
@@ -634,8 +645,10 @@ def create_player_seasons(con: sqlite3.Connection) -> None:
         fields.append("COUNT(DISTINCT game_id) AS games")
     else:
         fields.append("COUNT(*) AS games")
+    # Bare SUM: NULL when a season recorded none of the statistic, so an
+    # unmeasured season never reads as a measured 0.
     fields.extend(
-        f"SUM(COALESCE({quote_ident(column)},0)) AS {quote_ident(column)}"
+        f"SUM({quote_ident(column)}) AS {quote_ident(column)}"
         for column in totals
     )
     con.execute(
@@ -689,8 +702,9 @@ def create_team_seasons(con: sqlite3.Connection) -> None:
         fields.append("COUNT(DISTINCT game_id) AS games")
     else:
         fields.append("COUNT(*) AS games")
+    # Bare SUM, as in create_player_seasons: all-NULL groups stay NULL.
     fields.extend(
-        f"SUM(COALESCE({quote_ident(column)},0)) AS {quote_ident(column)}"
+        f"SUM({quote_ident(column)}) AS {quote_ident(column)}"
         for column in totals
     )
     con.execute(

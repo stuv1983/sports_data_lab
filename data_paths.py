@@ -120,13 +120,36 @@ def rising_star_dir(sport_key: str = "afl") -> Path:
     return raw_dir(sport_key) / "footywire" / "rising_star"
 
 
+def rising_star_wikipedia_dir(sport_key: str = "afl") -> Path:
+    """Weekly Wikipedia Rising Star nominations, per season.
+
+    Separate from the FootyWire cache above because they are separate
+    sources with separate terms, not two copies of one thing. FootyWire may
+    only be fetched by hand; Wikipedia is refreshed on a Monday timer.
+    """
+    return raw_dir(sport_key) / "wikipedia" / "rising_star"
+
+
 def rising_star_sources(sport_key: str = "afl") -> list[Path]:
-    """Prefer the combined CSV, otherwise load the per-season files."""
+    """Rising Star CSVs in load order, FootyWire first then Wikipedia.
+
+    Order is not preference -- ``utils/afl/load_rising_star.py`` decides
+    that per round from each row's ``source`` column, so a FootyWire round
+    wins wherever it exists regardless of which file was read first.
+    """
     base = rising_star_dir(sport_key)
     combined = base / "rising_star_nominees.csv"
-    if combined.exists():
-        return [combined]
-    return sorted((base / "csv").glob("rising_star_nominees_*.csv"))
+    sources = ([combined] if combined.exists()
+               else sorted((base / "csv").glob("rising_star_nominees_*.csv")))
+    wikipedia = rising_star_wikipedia_dir(sport_key) / "csv"
+    sources.extend(sorted(wikipedia.glob("rising_star_nominees_*.csv")))
+    # Hand-entered nominations, suspensions and vote counts, written by the
+    # Admin page. Last so a reader sees the order edits are applied in;
+    # precedence is still decided per round from the `source` column.
+    manual = reference_dir(sport_key) / "rising_star_manual.csv"
+    if manual.exists():
+        sources.append(manual)
+    return sources
 
 
 def brownlow_sources(sport_key: str = "afl") -> list[Path]:

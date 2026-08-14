@@ -24,6 +24,8 @@ goalkickers, and the Draftguru draft layer.
 import core
 import sports
 
+from . import draft_kinds, recruitment
+
 # The schema and vocabulary lists are declared once, in sports.py, because
 # the sport picker needs them before this module is imported.
 SCHEMA = sports.AFL_SCHEMA
@@ -58,6 +60,7 @@ career_stat_average_min = _G.career_stat_average_min
 games_with_stat_min = _G.games_with_stat_min
 stat_in_a_final = _G.stat_in_a_postseason_game
 finals_stat_average_min = _G.postseason_stat_average_min
+finals_stat_total_min = _G.postseason_stat_total_min
 CAREER_AVG_MIN_GAMES = _G.CAREER_AVG_MIN_GAMES
 
 #: Exposed so the UI and the tests can state the threshold rather than
@@ -68,6 +71,7 @@ goals_at_multiple_clubs = _G.score_at_multiple_clubs
 games_at_multiple_clubs = _G.games_at_multiple_clubs
 
 played_in_season_range = _G.played_in_season_range
+played_in_decade = _G.played_in_decade
 debuted_between = _G.debuted_between
 
 teammate_of = _G.teammate_of
@@ -75,6 +79,7 @@ teammate_of_id = _G.teammate_of_id
 played_with_id = _G.played_with_id
 
 played_at_venue = _G.played_at_venue
+games_at_venue_min = _G.games_at_venue_min
 
 # Finals are the AFL's name for the post-season. The semantics are the
 # generic ones; only the wording differs.
@@ -86,6 +91,34 @@ never_won_a_final = _G.never_won_postseason
 won_a_final = _G.won_postseason
 won_a_final_at = _G.won_postseason_at
 goal_average_in_finals = _G.score_average_in_postseason
+finals_wins_min = _G.postseason_wins_min
+finals_at_multiple_clubs = _G.postseason_at_multiple_clubs
+
+games_in_season_min = _G.games_in_season_min
+career_stat_more_than = _G.stat_total_more_than
+club_stat_leader = _G.club_stat_leader
+career_teammates_min = _G.career_teammates_min
+
+
+def wins_in_season_min(n):
+    """Appeared in `n`+ winning games within one season."""
+    return _G.results_in_season_min("W", n)
+
+
+def losses_in_season_min(n):
+    """Appeared in `n`+ losing games within one season."""
+    return _G.results_in_season_min("L", n)
+
+
+def wins_in_a_row(n):
+    """Played in `n` consecutive winning games of their own career."""
+    return _G.results_in_a_row("W", n)
+
+
+def games_at_one_club_min(n):
+    """`n`+ games for a single club, whatever else the career held --
+    Gridley's "200+ GAMES SAME CLUB"."""
+    return _G.games_at_multiple_clubs(int(n), 1)
 
 
 def _venue(name):
@@ -142,6 +175,18 @@ _GROUND_METRIC_SQL = {
 }
 
 
+def venue_stat_in_game(venue, stat, n):
+    """Reached `n` of a statistic in a single game at one ground --
+    "NINJA STADIUM KICKED A GOAL". Same alias canonicalisation and escaped
+    LIKE as every venue builder."""
+    import names
+    if stat not in SCHEMA.stats:
+        raise ValueError(f"unknown stat: {stat}")
+    return (f"""SELECT DISTINCT player_id FROM games
+                WHERE venue LIKE ? ESCAPE '\\' AND {stat} >= ?""",
+            [names.like_contains(SCHEMA.canonical_venue(venue)), n])
+
+
 def ground_performance(venue, ground_status, ground_metric, minimum):
     """Players reaching a cumulative performance threshold at one ground."""
     if ground_status not in _GROUND_STATUS_SQL:
@@ -163,22 +208,26 @@ def ground_performance(venue, ground_status, ground_metric, minimum):
 # -------------------------------------------------------- AFL-specific
 # A grand final is one nominated round, not simply the last post-season
 # game, so these read `round` rather than the generic is_final flag.
+#
+# Compared bare, never as UPPER(TRIM(round)): wrapping the column defeats
+# ix_games_round_player and scans all 700k games per square. The build
+# stores codes normalised, and the round/result hygiene test holds that
+# invariant -- see core._code.
 
 def premiership_player():
     return ("""SELECT DISTINCT player_id FROM games
-               WHERE UPPER(TRIM(round)) = 'GF' AND result = 'W'""", [])
+               WHERE round = 'GF' AND result = 'W'""", [])
 
 
 def no_grand_finals():
     """Never played in a grand final."""
     return ("""SELECT player_id FROM players WHERE player_id NOT IN
-               (SELECT player_id FROM games
-                WHERE UPPER(TRIM(round)) = 'GF')""", [])
+               (SELECT player_id FROM games WHERE round = 'GF')""", [])
 
 
 def played_a_grand_final():
     return ("""SELECT DISTINCT player_id FROM games
-               WHERE UPPER(TRIM(round)) = 'GF'""", [])
+               WHERE round = 'GF'""", [])
 
 
 def grand_finals_played_min(times):
@@ -187,6 +236,60 @@ def grand_finals_played_min(times):
     return ("""SELECT player_id FROM games
                WHERE round = 'GF'
                GROUP BY player_id HAVING COUNT(*) >= ?""", [times])
+
+
+def preliminary_finals_min(times=1):
+    """Played `times`+ Preliminary Finals. Counted by match, like the
+    grand-final count above, so a replayed preliminary counts twice."""
+    return ("""SELECT player_id FROM games
+               WHERE round = 'PF'
+               GROUP BY player_id HAVING COUNT(*) >= ?""", [times])
+
+
+def grand_final_at_multiple_clubs(clubs=2):
+    """Played a Grand Final for `clubs`+ different clubs."""
+    return ("""SELECT player_id FROM games WHERE round = 'GF'
+               GROUP BY player_id
+               HAVING COUNT(DISTINCT club_now) >= ?""", [clubs])
+
+
+def grand_final_between(lo, hi):
+    """Played a Grand Final within a span of seasons."""
+    return _G.played_round_between("GF", lo, hi)
+
+
+def premiership_between(lo, hi):
+    """Won a premiership within a span of seasons."""
+    return _G.round_outcome_between("GF", "W", lo, hi)
+
+
+def lost_grand_final_to(name):
+    """Played in a losing Grand Final side against a named player.
+
+    The name resolves the way teammate_of's does -- exact first, then an
+    unambiguous surname -- and the opposing side is found through
+    match_id, so a club renaming can never lose half the fixture.
+    """
+    return ("""SELECT DISTINCT g.player_id FROM games g
+               JOIN games w ON w.match_id = g.match_id
+                           AND w.club_hist <> g.club_hist
+               WHERE g.round = 'GF' AND g.result = 'L'
+                 AND w.player_id IN (
+                     SELECT player_id FROM players
+                     WHERE LOWER(player) = LOWER(?)
+                        OR (LOWER(player) LIKE ?
+                            AND NOT EXISTS (
+                                SELECT 1 FROM players
+                                WHERE LOWER(player) = LOWER(?))))""",
+            [name, f"% {str(name).lower()}", name])
+
+
+def stat_in_a_grand_final(stat, n):
+    """Reached `n` of `stat` in a single grand final."""
+    if stat not in SCHEMA.stats:
+        raise ValueError(f"unknown stat: {stat}")
+    return (f"""SELECT DISTINCT player_id FROM games
+                WHERE round = 'GF' AND {stat} >= ?""", [n])
 
 
 def winning_record():
@@ -208,6 +311,48 @@ def leading_goalkicker():
     """Led their club's goalkicking in at least one season."""
     return ("""SELECT DISTINCT player_id FROM season_goals
                WHERE is_club_leading = 1""", [])
+
+
+def leading_goalkicker_min(times=2):
+    """Led their club's goalkicking in `times`+ seasons -- "2x LEADING
+    GOALKICKER TEAM" asks for the repeat, not the single crown."""
+    return ("""SELECT player_id FROM season_goals
+               WHERE is_club_leading = 1
+               GROUP BY player_id HAVING COUNT(*) >= ?""", [times])
+
+
+# ------------------------------------------------------- hall of fame
+# Loaded by utils/afl/load_hall_of_fame.py; the builder trusts only rows
+# the loader linked unambiguously, per the same rule every layer follows.
+
+def hall_of_fame_available(con) -> bool:
+    if not core.have_tables(con, "hall_of_fame"):
+        return False
+    return bool(con.execute(
+        """SELECT 1 FROM hall_of_fame
+           WHERE player_id IS NOT NULL
+             AND match_status IN ('unique','resolved') LIMIT 1""").fetchone())
+
+
+def hall_of_fame_count(con) -> int:
+    if not core.have_tables(con, "hall_of_fame"):
+        return 0
+    return con.execute(
+        """SELECT COUNT(*) FROM hall_of_fame
+           WHERE player_id IS NOT NULL
+             AND match_status IN ('unique','resolved')""").fetchone()[0]
+
+
+def hall_of_fame_player():
+    """Inducted into the Australian Football Hall of Fame as a player.
+
+    Legends are included: a Legend is an elevated player inductee, and the
+    category filter still keeps coaches, umpires and media people out.
+    """
+    return ("""SELECT DISTINCT player_id FROM hall_of_fame
+               WHERE player_id IS NOT NULL
+                 AND match_status IN ('unique','resolved')
+                 AND category IN ('player','legend')""", [])
 
 
 def wooden_spoon_player():
@@ -302,9 +447,6 @@ def weight_max(kg):
 # These read draft_links, and deliberately only trust rows that
 # afl/link_draft.py resolved unambiguously. Ambiguous rows are excluded.
 
-_LINKED = ("SELECT player_id FROM draft_links "
-           "WHERE match_status IN ('unique','resolved') AND player_id IS NOT NULL")
-
 _DRAFT_JOIN = """SELECT l.player_id FROM draft_links l JOIN draft d
                    ON d.rowid = l.draft_rowid
                  WHERE l.match_status IN ('unique','resolved')
@@ -315,29 +457,33 @@ def draft_pick_between(lo, hi):
     """National Draft selection between two pick numbers, inclusive.
 
     Draftguru restarts pick numbering for the Rookie, Pre-Season and
-    Mid-Season drafts. Without the draft-type predicate, a normal "top-10
+    Mid-Season drafts. Without the draft-kind predicate, a normal "top-10
     draft pick" square silently includes all of those separate pick 1-10s.
+
+    `draft_kind` is the canonical category the loader assigns at ingestion
+    (see afl/draft_kinds.py), so the comparison is a bare indexed equality
+    rather than the LIKE-over-label scan it used to be.
     """
     return (f"""{_DRAFT_JOIN}
-                  AND LOWER(d.draft_type) LIKE '%national%'
+                  AND d.draft_kind = '{draft_kinds.NATIONAL}'
                   AND d.pick BETWEEN ? AND ?""", [lo, hi])
 
 
 def draft_of_type(kind):
     """National / Rookie / Pre-Season / Mid-Season / Trade / Free Agency."""
     return (f"""{_DRAFT_JOIN}
-                  AND LOWER(d.draft_type) LIKE ?""", [f"%{kind.lower()}%"])
+                  AND d.draft_kind = ?""", [draft_kinds.draft_kind(kind)])
 
 
 def drafted_by(club):
     return (f"""{_DRAFT_JOIN}
-                  AND LOWER(d.club) LIKE ?""", [f"%{club.lower()}%"])
+                  AND d.club LIKE ?""", [f"%{club.lower()}%"])
 
 
 def drafted_by_but_never_played_for(club):
     """Drafted by a club, never played a senior game for it."""
     return (f"""{_DRAFT_JOIN}
-                  AND LOWER(d.club) LIKE ?
+                  AND d.club LIKE ?
                   AND l.player_id NOT IN (
                       SELECT player_id FROM games
                       WHERE club_now = ? OR club_hist = ?)""",
@@ -345,15 +491,56 @@ def drafted_by_but_never_played_for(club):
 
 
 def recruited_from(source):
-    """Original club / junior club substring, e.g. 'Glenelg', 'Oakleigh'."""
+    """Recruited through one step of the path to the draft.
+
+    `draft.original_club` is a path, not a club: "Greythorn / Xavier
+    College / Oakleigh U18". A square asking for Oakleigh means the
+    Oakleigh step of somebody's path, so the match is anchored to a whole
+    step of it -- a plain substring answered "Geelong" with the Geelong
+    talent-league club, Geelong College and Geelong Falcons at once,
+    three different places.
+
+    A term that starts a step still counts, because "Oakleigh" is what a
+    person types for a club whose step reads "Oakleigh U18". Anything
+    picked from the grid maker's list is a whole step already.
+    """
+    text = str(source or "").strip()
     return (f"""{_DRAFT_JOIN}
-                  AND LOWER(d.original_club) LIKE ?""",
-            [f"%{source.lower()}%"])
+                  AND {recruitment.segment_or_prefix_sql('d.original_club')}""",
+            [text, text])
+
+
+def recruit_sources(con, limit=400):
+    """(step, selections) for the places a square can ask about.
+
+    Read from the table rather than listed, so the grid maker offers what
+    the database actually holds. Ordered by how many selections came
+    through each, because a step that produced two players makes a square
+    with two answers.
+    """
+    if not core.have_tables(con, "draft"):
+        return []
+    counted: dict[str, int] = {}
+    for path, in con.execute(
+            "SELECT original_club FROM draft "
+            "WHERE original_club IS NOT NULL AND TRIM(original_club) <> ''"):
+        for step in recruitment.path(path):
+            counted[step] = counted.get(step, 0) + 1
+    ordered = sorted(counted.items(), key=lambda item: (-item[1], item[0]))
+    return ordered[:limit]
 
 
 def drafted_between(lo, hi):
     return (f"""{_DRAFT_JOIN}
                   AND d.draft_year BETWEEN ? AND ?""", [lo, hi])
+
+
+def traded_min(times=1):
+    """Changed clubs by trade at least `times` times (Draftguru records
+    trades from 1988). Free agency is its own signing kind and stays out."""
+    return (f"""{_DRAFT_JOIN}
+                  AND d.draft_kind = '{draft_kinds.TRADE}'
+                GROUP BY l.player_id HAVING COUNT(*) >= ?""", [times])
 
 
 # ---------------------------------------------------------------- registry
@@ -380,13 +567,26 @@ BUILDERS = {
     "X+ games with Y+ of a stat": (games_with_stat_min,
                                    ["stat", "y", "times"]),
     "X+ of a stat in a final":    (stat_in_a_final, ["stat", "x"]),
+    "X+ of a stat in a grand final": (stat_in_a_grand_final, ["stat", "x"]),
+    "X+ of a stat in finals (career)": (finals_stat_total_min,
+                                        ["stat", "x"]),
     "Finals average of a stat":   (finals_stat_average_min, ["stat", "avg"]),
     "Two stats in the same game": (two_stats_same_game,
                                    ["stat_a", "x_a", "stat_b", "x_b"]),
     "X+ goals at 2+ clubs":       (goals_at_multiple_clubs, ["goals", "clubs"]),
     "X+ games at 2+ clubs":       (games_at_multiple_clubs, ["games", "clubs"]),
+    "X+ games at one club":       (games_at_one_club_min, ["games"]),
+    "X+ games in one season":     (games_in_season_min, ["games"]),
+    "X+ wins in one season":      (wins_in_season_min, ["times"]),
+    "X+ losses in one season":    (losses_in_season_min, ["times"]),
+    "X+ wins in a row":           (wins_in_a_row, ["times"]),
+    "X+ career teammates":        (career_teammates_min, ["x"]),
+    "Led club in a stat (season)": (club_stat_leader, ["stat", "times"]),
+    "More of stat A than stat B (career)": (career_stat_more_than,
+                                            ["stat_a", "stat_b"]),
     "Teammate of…":               (teammate_of_id, ["player_id"]),
     "Played with…":               (played_with_id, ["player_id"]),
+    "Lost a Grand Final against…": (lost_grand_final_to, ["player"]),
     "No finals wins (played finals)": (no_finals_wins, []),
     "Never won a final":          (never_won_a_final, []),
     "Never played finals":        (never_played_finals, []),
@@ -394,13 +594,23 @@ BUILDERS = {
     "Played in X+ Grand Finals":  (grand_finals_played_min, ["times"]),
     "Won X+ premierships":        (premierships_won_min, ["times"]),
     "Lost X+ Grand Finals":       (grand_finals_lost_min, ["times"]),
+    "Played in X+ Preliminary Finals": (preliminary_finals_min, ["times"]),
+    "X+ finals wins":             (finals_wins_min, ["x"]),
+    "Played finals for X+ clubs": (finals_at_multiple_clubs, ["clubs"]),
+    "Grand Final for X+ clubs":   (grand_final_at_multiple_clubs, ["clubs"]),
+    "Grand Final between seasons": (grand_final_between, ["from", "to"]),
+    "Premiership between seasons": (premiership_between, ["from", "to"]),
     "Played between seasons":     (played_in_season_range, ["from", "to"]),
+    "Played in a decade":         (played_in_decade, ["decade"]),
     "Debuted between seasons":    (debuted_between, ["from", "to"]),
     "One-club player":            (one_club_player, []),
     "Played for X+ clubs":        (played_for_n_clubs, ["clubs"]),
     "Multi-club player":          (multi_club_player, []),
     "First career game for club": (debut_club, ["club"]),
     "Played at venue":            (played_at_venue, ["venue"]),
+    "X+ games at venue":          (games_at_venue_min, ["venue", "x"]),
+    "X+ of a stat in a game at venue": (venue_stat_in_game,
+                                        ["venue", "stat", "x"]),
     "Ground performance":         (ground_performance,
                                     ["venue", "ground_status",
                                      "ground_metric", "x"]),
@@ -412,6 +622,8 @@ BUILDERS = {
     "Played a grand final":       (played_a_grand_final, []),
     "Goal average in finals":     (goal_average_in_finals, ["avg"]),
     "Club leading goalkicker":    (leading_goalkicker, []),
+    "Club leading goalkicker X+ times": (leading_goalkicker_min, ["times"]),
+    "Hall of Fame player":        (hall_of_fame_player, []),
     "Wooden spoon season":        (wooden_spoon_player, []),
     "Minor premiership":          (minor_premiership_player, []),
     "No minor premierships":      (no_minor_premierships, []),
@@ -423,6 +635,7 @@ BUILDERS = {
                                             ["club"]),
     "Recruited from…":            (recruited_from, ["source"]),
     "Drafted between years":      (drafted_between, ["from", "to"]),
+    "Traded X+ times":            (traded_min, ["times"]),
 }
 
 #: Draft categories offered in the UI. Here rather than in app.py because
@@ -433,7 +646,8 @@ DRAFT_TYPES = ("National", "Rookie", "Pre-Season", "Mid-Season",
 
 DRAFT_BUILDERS = {"Draft pick between", "Draft type (National/Rookie…)",
                   "Drafted by club", "Drafted by club, never played there",
-                  "Recruited from…", "Drafted between years"}
+                  "Recruited from…", "Drafted between years",
+                  "Traded X+ times"}
 
 
 def draft_available(con):
@@ -626,7 +840,9 @@ from .rising_star import (  # noqa: E402, F401
     ensure_rising_star_table,
     rising_star_available,
     rising_star_count,
+    rising_star_ineligible_available,
     rising_star_nominee,
+    rising_star_nominee_ineligible,
     rising_star_nominee_in,
     rising_star_nominee_between,
     rising_star_nominee_for,
@@ -686,9 +902,13 @@ from .match_constraints import (  # noqa: E402, F401
     derby_losing_record,
     derby_games_min,
     played_in_derby,
+    derby_won,
+    derby_stat_in_game,
     marquee_event_winning_record,
     marquee_event_games_min,
     played_marquee_event,
+    marquee_event_won,
+    marquee_event_played_since,
 )
 
 BUILDERS.update(MATCH_BUILDERS)
@@ -700,4 +920,82 @@ MATCH_BUILDER_NAMES = set(MATCH_BUILDERS)
 LAYER_BUILDERS = {
     **{name: "marquee_events_available" for name in MARQUEE_BUILDER_NAMES},
     **{name: "brownlow_available" for name in BROWNLOW_BUILDER_NAMES},
+    "Hall of Fame player": "hall_of_fame_available",
+    # Finer than the rising_star_available gate above: the nomination layer
+    # loads happily from FootyWire alone, which records no ineligibility,
+    # and a square with no possible answer is worse than no square.
+    "Rising Star nominee ineligible to win (suspension)":
+        "rising_star_ineligible_available",
+}
+
+
+#: The builder catalogue, organised by the kind of question a square asks.
+#: Read by the grid builder's Type picker (a category first, then the
+#: builders in it) and by the criteria reference doc. Base builders are
+#: named explicitly so their order within a group is deliberate; the
+#: optional layers contribute whatever they loaded, via their name sets.
+#: A builder missing from every group still appears -- the UI collects
+#: leftovers into a final group -- so a new BUILDERS entry is usable
+#: before anyone files it here.
+BUILDER_GROUPS = {
+    "Clubs & journeys": (
+        "Played for club", "First career game for club", "One-club player",
+        "Multi-club player", "Played for X+ clubs",
+        "X+ games at one club",
+        "X+ goals at 2+ clubs", "X+ games at 2+ clubs",
+    ),
+    "Career milestones": (
+        "150+ / X+ career games", "Fewer than X career games",
+        "X+ career goals", "X or fewer career goals",
+        "X+ of a stat in a career", "Career average of a stat",
+        "More of stat A than stat B (career)",
+        "X+ career teammates",
+        "Winning record in a derby", "Club leading goalkicker",
+        "Club leading goalkicker X+ times",
+    ),
+    "Single-game feats": (
+        "X+ of a stat in one game", "Two stats in the same game",
+        "X+ games with Y+ of a stat",
+    ),
+    "Season & era": (
+        "Played in a decade", "Played between seasons",
+        "Debuted between seasons", "X+ of a stat in one season",
+        "Season average of a stat", "X+ games in one season",
+        "X+ wins in one season", "X+ losses in one season",
+        "X+ wins in a row", "Led club in a stat (season)",
+        "Wooden spoon season",
+        "Minor premiership", "No minor premierships",
+        "X+ minor premierships",
+    ),
+    "Finals & premierships": (
+        "Played in a final", "X+ finals games", "Won a final",
+        "X+ finals wins",
+        "Never won a final", "No finals wins (played finals)",
+        "Never played finals", "Played finals for X+ clubs",
+        "X+ of a stat in a final",
+        "X+ of a stat in a grand final",
+        "X+ of a stat in finals (career)", "Finals average of a stat",
+        "Goal average in finals", "Played a grand final",
+        "No grand finals", "Played in X+ Grand Finals",
+        "Played in X+ Preliminary Finals",
+        "Grand Final for X+ clubs", "Grand Final between seasons",
+        "Premiership player", "Won X+ premierships",
+        "Premiership between seasons",
+        "Lost X+ Grand Finals", "Lost a Grand Final against…",
+    ),
+    "Grounds & venues": (
+        "Played at venue", "X+ games at venue", "Won a final at venue",
+        "X+ of a stat in a game at venue", "Ground performance",
+    ),
+    "Teammates": ("Teammate of…", "Played with…"),
+    "Physical": ("X+ cm tall", "X cm or shorter", "X+ kg",
+                 "X kg or lighter"),
+    "Draft & recruitment": tuple(sorted(DRAFT_BUILDERS)),
+    "Captaincy": tuple(sorted(CAPTAIN_BUILDER_NAMES)),
+    "Awards & honours": (("Hall of Fame player",)
+                         + tuple(sorted(AWARD_BUILDER_NAMES))
+                         + tuple(sorted(BROWNLOW_BUILDER_NAMES))
+                         + tuple(sorted(RISING_STAR_BUILDER_NAMES))),
+    "Family": tuple(sorted(FAMILY_RELATIONSHIP_BUILDER_NAMES)),
+    "Match context": tuple(sorted(MATCH_BUILDER_NAMES)),
 }

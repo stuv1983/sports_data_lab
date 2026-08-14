@@ -34,9 +34,12 @@ class Schema:
     """
     Column and table names for one sport's database.
 
-    The defaults are the AFL build produced by afl/build_db.py. The NBA build
-    should reuse as many of them as it honestly can -- every name that
-    matches is a page of explore.py that needs no changes at all.
+    The defaults are the *generic* names shared by every build. The columns
+    that have no honest generic name -- what a sport counts as its score,
+    and what it calls the post-season -- carry no default at all: each
+    sport must map its own (`career_score`, `career_postseason`,
+    `game_score` are keyword-only and required), so an AFL column name can
+    never silently leak into another sport's SQL.
     """
     players: str = "players"
     games: str = "games"
@@ -47,8 +50,11 @@ class Schema:
     debut_season: str = "debut_season"
     final_season: str = "final_season"
     career_games: str = "career_games"
-    career_score: str = "career_goals"      # NBA: career_points
-    career_postseason: str = "finals_played"  # NBA: playoffs_played
+    #: Required, sport-specific: AFL career_goals, NBA career_points,
+    #: MLB career_home_runs, NFL career_touchdowns.
+    career_score: str = field(kw_only=True)
+    #: Required, sport-specific: AFL finals_played, NBA playoffs_played.
+    career_postseason: str = field(kw_only=True)
     birth_year: str = "birth_year"
     birth_country: str = "birth_country"
     n_clubs: str = "n_clubs"
@@ -80,14 +86,73 @@ class Schema:
     round: str = "round"
     opponent: str = "opponent"
     career_game_no: str = "career_game_no"
-    game_score: str = "goals"               # NBA: points
+    #: Required, sport-specific: AFL goals, NBA points, NFL touchdowns.
+    game_score: str = field(kw_only=True)
     is_final: str = "is_final"              # NBA: is_playoff
     result: str = "result"
+
+    # -- matches ------------------------------------------------------
+    # One row per match, as against `games`, which is one row per player
+    # per match. A sport that has no such table leaves `matches` empty and
+    # the match card falls back to the result row a results page already
+    # holds -- the MLB's finest grain is a player's season, so there is no
+    # box score for it to find and pretending otherwise would invent one.
+    matches: str = "matches"
+    match_key: str = "match_id"             # NFL: game_id
+    #: The `games` column that joins to `match_key`. Named separately
+    #: because the NFL calls it game_id on both tables while the AFL and
+    #: NBA call it match_id, and one name for two tables is a coincidence
+    #: rather than a rule.
+    games_match_key: str = "match_id"       # NFL: game_id
+    #: How a `games` row says which side it was on. The flag is read first
+    #: where the build writes one; otherwise the named column is compared
+    #: against the match's home team, which is why it has to be the column
+    #: spelled the way the match table spells a club -- nflverse's games
+    #: carry both 'Atlanta Falcons' and 'ATL', and only 'ATL' matches.
+    games_home_flag: str = "is_home"        # NFL: none
+    games_side_key: str = "club_hist"       # NFL: team
+    match_home_team: str = "home_team"
+    match_away_team: str = "away_team"
+    match_home_score: str = "home_score"
+    match_away_score: str = "away_score"
+    match_venue: str = "venue"              # NFL: stadium
+    match_date: str = "match_date"          # NBA: date, NFL: gameday
+    match_round: str = "round"              # NFL: week
+    #: Empty where the source records no attendance, which is not the same
+    #: as a match nobody attended.
+    match_attendance: str = "attendance"
+
+    #: Extra match columns worth a line of their own, as (column, label).
+    #: Everything else the row carries is still shown, in the card's
+    #: catch-all expander; this is only what earns a place above the fold.
+    match_facts: Sequence[tuple] = ()
+
+    #: Stats the box score leads with, most interesting first. Defaults to
+    #: `stats`, which every sport already orders that way; set it only
+    #: where the box score wants a different order from the constraint
+    #: engine's.
+    box_score: Sequence[str] = ()
+
+    def box_score_stats(self) -> list:
+        return list(self.box_score or self.stats)
 
     # Vocabulary lists the generic builders validate against.
     stats: Sequence[str] = ()
     clubs: Sequence[str] = ()
     venue_aliases: dict = field(default_factory=dict)
+
+    #: Statistics in `stats` that are rates rather than counts. Summing a
+    #: rate across rows is arithmetic nonsense — an ERA of 3.2 with one
+    #: team and 4.1 with another is not a 7.3 — so the search compiler
+    #: refuses `season.`/`career.` totals for anything named here.
+    rate_stats: Sequence[str] = ()
+
+    #: The `games` column that says how many real games one row stands for,
+    #: set only by a sport whose row is coarser than a game. MLB sets it to
+    #: "games": a row there is a player's season, and a page that counts
+    #: appearances must SUM this column rather than COUNT(*) rows. Empty
+    #: means a row is a game and COUNT(*) is the truth.
+    games_per_row: str = ""
 
     #: Current club name -> every identity that counts as that club.
     #:
@@ -204,7 +269,9 @@ class Schema:
     #: differs states it here rather than health.py learning three sports'
     #: worth of special cases. An entry mapping to None skips the check.
     career_totals_sql: dict = field(default_factory=dict)
-    rebuild_cmd: str = "python -m afl.build_db"
+    #: The command that rebuilds this sport's database, shown when a
+    #: required column is missing. No AFL default: each sport states its own.
+    rebuild_cmd: str = ""
 
     def canonical_venue(self, name):
         return self.venue_aliases.get(str(name).strip().lower(), name)
@@ -475,6 +542,20 @@ class Generic:
         return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
                     WHERE {s.is_final} = 1 AND {stat} >= ?""", [n])
 
+    def postseason_stat_total_min(self, stat, n):
+        """Accumulated `n` or more of `stat` across a whole finals career.
+
+        "Kicked 30+ goals in finals" is a different question from a
+        single finals game and from the regular-season career total, and
+        neither of those could stand in for it. NULL games are excluded
+        rather than counted as zero, same as every other total here.
+        """
+        self._check(stat)
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {s.is_final} = 1 AND {stat} IS NOT NULL
+                    GROUP BY {s.player_id} HAVING SUM({stat}) >= ?""", [n])
+
     def postseason_stat_average_min(self, stat, avg, min_games=None):
         """Averaged `avg` or more of `stat` across finals."""
         self._check(stat)
@@ -508,6 +589,141 @@ class Generic:
                     GROUP BY {s.player_id}
                     HAVING COUNT(DISTINCT {s.season}) >= ?""",
                 [_code(round_code), _code(result), appearances])
+
+    def played_round_between(self, round_code, lo, hi):
+        """Appeared in a named title round within a span of seasons.
+
+        Gridley scopes achievements by era -- "GRAND FINAL PLAYER DURING
+        2020s" -- and answering that with the unscoped version accepts a
+        1980s Grand Finalist for a 2020s square.
+        """
+        s = self.s
+        return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
+                    WHERE {s.round} = ? AND {s.season} BETWEEN ? AND ?""",
+                [_code(round_code), lo, hi])
+
+    def round_outcome_between(self, round_code, result, lo, hi):
+        """Recorded an outcome in a named title round within a season span."""
+        s = self.s
+        return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
+                    WHERE {s.round} = ? AND {s.result} = ?
+                      AND {s.season} BETWEEN ? AND ?""",
+                [_code(round_code), _code(result), lo, hi])
+
+    def games_in_season_min(self, n, season=None):
+        """Played `n` or more games within one season.
+
+        With `season` the question is about that year ("20+ GAMES IN
+        2023"); without it, any season of the career qualifies.
+        """
+        s = self.s
+        if season is None:
+            return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
+                        GROUP BY {s.player_id}, {s.season}
+                        HAVING COUNT(*) >= ?""", [n])
+        return (f"""SELECT {s.player_id} FROM {s.games} WHERE {s.season} = ?
+                    GROUP BY {s.player_id} HAVING COUNT(*) >= ?""",
+                [season, n])
+
+    def results_in_season_min(self, result, n):
+        """Played in `n`+ games with one result in a single season --
+        "15 LOSSES SINGLE SEASON" counts appearances in losses, not the
+        club's ladder record."""
+        s = self.s
+        return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
+                    WHERE {s.result} = ?
+                    GROUP BY {s.player_id}, {s.season}
+                    HAVING COUNT(*) >= ?""", [_code(result), n])
+
+    def results_in_a_row(self, result, n):
+        """Appeared in `n` consecutive games (of their own career) with one
+        result -- "10 WINS IN A ROW".
+
+        A window of the player's last `n` appearances, ordered the way the
+        career unfolded: the streak is over games they played, so a match
+        they sat out does not break it, which is how the puzzle means it.
+        """
+        s = self.s
+        n = int(n)
+        return (f"""SELECT DISTINCT {s.player_id} FROM (
+                      SELECT {s.player_id},
+                             SUM(CASE WHEN {s.result} = ? THEN 1 ELSE 0 END)
+                               OVER w AS hits,
+                             COUNT(*) OVER w AS span
+                      FROM {s.games}
+                      WINDOW w AS (PARTITION BY {s.player_id}
+                                   ORDER BY {s.season}, {s.date}
+                                   ROWS BETWEEN ? PRECEDING
+                                            AND CURRENT ROW)
+                    ) WHERE span = ? AND hits = ?""",
+                [_code(result), n - 1, n, n])
+
+    def postseason_wins_min(self, n):
+        """Won `n` or more post-season games -- more than won_postseason's
+        single win, less than a premiership count."""
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {s.is_final} = 1 AND {s.result} = 'W'
+                    GROUP BY {s.player_id} HAVING COUNT(*) >= ?""", [n])
+
+    def postseason_at_multiple_clubs(self, clubs=2):
+        """Played a post-season game for `clubs` or more different clubs."""
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {s.is_final} = 1
+                    GROUP BY {s.player_id}
+                    HAVING COUNT(DISTINCT {s.club_now}) >= ?""", [clubs])
+
+    def stat_total_more_than(self, stat_a, stat_b):
+        """Career total of one stat exceeds another's -- "MORE FREES FOR
+        THAN AGAINST". Rows where neither stat was recorded contribute
+        nothing, so the comparison is over the recorded era only."""
+        self._check(stat_a, stat_b)
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {stat_a} IS NOT NULL OR {stat_b} IS NOT NULL
+                    GROUP BY {s.player_id}
+                    HAVING SUM(COALESCE({stat_a}, 0))
+                         > SUM(COALESCE({stat_b}, 0))""", [])
+
+    def club_stat_leader(self, stat, times=1):
+        """Led their club's season total of `stat` at least `times` times.
+
+        Ties at the top all count as leading, matching how "had the most
+        for their team" reads when two players finish level.
+        """
+        self._check(stat)
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM (
+                      SELECT {s.player_id}, {s.season}, {s.club_now},
+                             RANK() OVER (
+                               PARTITION BY {s.season}, {s.club_now}
+                               ORDER BY SUM({stat}) DESC) AS pos
+                      FROM {s.games} WHERE {stat} IS NOT NULL
+                      GROUP BY {s.player_id}, {s.season}, {s.club_now}
+                    ) WHERE pos = 1
+                    GROUP BY {s.player_id} HAVING COUNT(*) >= ?""", [times])
+
+    def career_teammates_min(self, n):
+        """Shared a club-season with `n` or more distinct other players.
+
+        Club-season rather than match sheet, matching Gridley's own note
+        that a listed teammate they never took the field with still counts.
+        Collapsing to distinct (player, club, season) rows first keeps the
+        self-join at squad size rather than squad-size-times-games-played
+        squared, which is the difference between ~1s and never finishing.
+        """
+        s = self.s
+        return (f"""WITH ps AS (
+                      SELECT DISTINCT {s.player_id}, {s.club_now}, {s.season}
+                      FROM {s.games}
+                    )
+                    SELECT a.{s.player_id} FROM ps a
+                    JOIN ps b ON b.{s.club_now} = a.{s.club_now}
+                            AND b.{s.season} = a.{s.season}
+                            AND b.{s.player_id} <> a.{s.player_id}
+                    GROUP BY a.{s.player_id}
+                    HAVING COUNT(DISTINCT b.{s.player_id}) >= ?""", [n])
 
     def debuted_between(self, lo, hi):
         s = self.s
@@ -577,10 +793,14 @@ class Generic:
 
     # -- venues ------------------------------------------------------
     def played_at_venue(self, venue):
+        # names.like_contains escapes % and _ in the venue itself, so a
+        # ground whose name carries either matches literally. The names
+        # module is imported lazily to keep core free of module-level deps.
+        import names
         s = self.s
         return (f"SELECT DISTINCT {s.player_id} FROM {s.games} "
-                f"WHERE {s.venue} LIKE ?",
-                [f"%{s.canonical_venue(venue)}%"])
+                f"WHERE {s.venue} LIKE ? ESCAPE '\\'",
+                [names.like_contains(s.canonical_venue(venue))])
 
     def played_at_venues(self, venues):
         """Played at any venue in a pre-resolved geographic group."""
@@ -592,6 +812,29 @@ class Generic:
         sql = (f"SELECT DISTINCT {s.player_id} FROM {s.games} "
                f"WHERE {s.venue} IN ({placeholders})")
         return sql, list(names)
+
+    def games_at_venue_min(self, venue, n):
+        """Played `n` or more games at one venue.
+
+        "100+ games at the MCG" is a home-ground tenure question, not the
+        "ever appeared there" one played_at_venue answers. Same alias
+        canonicalisation and escaped LIKE as the other venue builders.
+        """
+        import names
+        s = self.s
+        return (f"""SELECT {s.player_id} FROM {s.games}
+                    WHERE {s.venue} LIKE ? ESCAPE '\\'
+                    GROUP BY {s.player_id} HAVING COUNT(*) >= ?""",
+                [names.like_contains(s.canonical_venue(venue)), n])
+
+    def played_in_decade(self, decade):
+        """Played at least one game in the decade starting `decade`.
+
+        Any year inside the decade names it: 2015 means the 2010s, which
+        is 2010-2019 inclusive -- the wording Gridley itself uses.
+        """
+        start = int(decade) - (int(decade) % 10)
+        return self.played_in_season_range(start, start + 9)
 
     # -- post-season (generic shape; sports name it finals or playoffs) --
     def postseason_games_min(self, n):
@@ -632,11 +875,12 @@ class Generic:
                      WHERE {s.is_final} = 1 AND {s.result} = 'W')""", [])
 
     def won_postseason_at(self, venue):
+        import names
         s = self.s
         return (f"""SELECT DISTINCT {s.player_id} FROM {s.games}
                     WHERE {s.is_final} = 1 AND {s.result} = 'W'
-                      AND {s.venue} LIKE ?""",
-                [f"%{s.canonical_venue(venue)}%"])
+                      AND {s.venue} LIKE ? ESCAPE '\\'""",
+                [names.like_contains(s.canonical_venue(venue))])
 
     def score_average_in_postseason(self, avg=1.0):
         s = self.s
@@ -887,9 +1131,24 @@ def _sql_literal(value):
 
 
 def _inline(sql, params):
-    for value in params:
-        sql = sql.replace("?", _sql_literal(value), 1)
-    return sql
+    """Substitute placeholders left to right, never scanning inlined text.
+
+    The old one-at-a-time ``str.replace`` re-scanned the whole string each
+    pass, so a bound value containing ``?`` ("Who? Jones") had its own text
+    treated as the next placeholder and later literals were spliced into the
+    middle of it. Splitting on the placeholders first makes each ``?`` in
+    the original SQL — and only those — a substitution point.
+    """
+    parts = sql.split("?")
+    if len(parts) - 1 != len(params):
+        raise ValueError(
+            f"SQL has {len(parts) - 1} placeholders but {len(params)} "
+            f"parameters")
+    out = [parts[0]]
+    for value, tail in zip(params, parts[1:]):
+        out.append(_sql_literal(value))
+        out.append(tail)
+    return "".join(out)
 
 
 def to_standalone_sql(constraints, schema: Schema, limit=25):

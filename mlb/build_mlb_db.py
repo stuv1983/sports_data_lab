@@ -213,11 +213,15 @@ def season_stats(batting, pitching, keys):
     one team-season, so the stints are summed. ERA is weighted by IPouts,
     because the mean of two ERAs is not an ERA.
     """
+    # min_count=1 throughout: a stint whose statistic Lahman never
+    # recorded (19th-century RBIs, caught-stealing before 1951) is NaN,
+    # and a group of nothing but NaN must stay NULL in the database. A
+    # bare .sum() would write 0, inventing a measurement of nothing.
     if batting.empty:
         bat = pd.DataFrame(columns=[*keys, *BATTING_STATS.values()])
     else:
         bat = (batting.groupby(keys, as_index=False)[list(BATTING_STATS)]
-               .sum().rename(columns=BATTING_STATS))
+               .sum(min_count=1).rename(columns=BATTING_STATS))
 
     if pitching.empty:
         pit = pd.DataFrame(columns=[*keys, *PITCHING_SUMS.values(), "era"])
@@ -227,7 +231,8 @@ def season_stats(batting, pitching, keys):
         pit["_er_weighted"] = (pd.to_numeric(pit["ERA"], errors="coerce")
                                * pit["_outs"])
         pit = pit.groupby(keys, as_index=False).agg(
-            **{new: (old, "sum") for old, new in PITCHING_SUMS.items()},
+            **{new: (old, lambda s: s.sum(min_count=1))
+               for old, new in PITCHING_SUMS.items()},
             _outs=("_outs", "sum"), _er_weighted=("_er_weighted", "sum"))
         pit["era"] = (pit["_er_weighted"] / pit["_outs"]
                       ).where(pit["_outs"] > 0).round(2)
@@ -362,8 +367,10 @@ def build_players(people, games, postseason_seasons):
         debut_season=("season", "min"),
         final_season=("season", "max"),
         career_games=("games", "sum"),
-        career_hits=("hits", "sum"),
-        career_home_runs=("home_runs", "sum"),
+        # min_count=1: a career whose every season predates the statistic
+        # being recorded stays NULL, never becomes a measured 0.
+        career_hits=("hits", lambda s: s.sum(min_count=1)),
+        career_home_runs=("home_runs", lambda s: s.sum(min_count=1)),
     ).reset_index()
 
     career = _add_postseason_only_players(career, games)
@@ -627,6 +634,9 @@ def load_rivalries(db, people, people_teams, verbose, refresh=False):
         matches = load_retrosheet.load_matches(con, refresh=refresh,
                                                team_names=names)
         log(verbose, f"match history: {matches:,} matches")
+        lineups = load_retrosheet.load_lineups(con, refresh=refresh,
+                                               crosswalk=crosswalk)
+        log(verbose, f"starting lineups: {lineups:,} games")
     except Exception as error:                                  # noqa: BLE001
         # Never silent, even under --quiet: the build otherwise looks
         # complete while two squares are missing from the board.

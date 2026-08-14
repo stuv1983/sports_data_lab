@@ -58,6 +58,7 @@ that wants a table can do `pd.DataFrame(r.__dict__ for r in rows)`.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import date
 from dataclasses import dataclass
@@ -825,6 +826,96 @@ def venues_available(con: sqlite3.Connection) -> list[str]:
     return [r[0] for r in con.execute(
         f"SELECT venue_raw, COUNT(*) n FROM {SOURCE_TABLE} "
         f"WHERE venue_raw IS NOT NULL GROUP BY 1 ORDER BY n DESC")]
+
+
+#: A round label that is a number, optionally behind a letter or two:
+#: the AFL's 'R14', the NFL's 'W3'. Finals codes never match.
+_NUMBERED_ROUND = re.compile(r"^[A-Za-z]*(\d+)$")
+
+
+def rounds_available(con: sqlite3.Connection, season: int | None = None,
+                     season_from: int | None = None,
+                     season_to: int | None = None) -> list[str]:
+    """The round labels actually played, in the order they were played.
+
+    Sorting the labels themselves gets two things wrong: 'R2' does not sort
+    before 'R10' alphabetically, and the AFL's finals codes are not
+    alphabetical in the order they are played -- 'EF, GF, PF, QF, SF' is
+    nobody's September. So numbered rounds are ordered by their number, and
+    everything else by where in its own season it fell.
+
+    "Where in its own season" is the round's average position among that
+    season's rounds, as a fraction, not its date. A fraction is comparable
+    across eras where a bare date is not: the 1897 season ran 15 rounds from
+    May to September and 2026 runs 27 from March, so September means
+    'the finals' in one and 'round 21' in the other. It also survives the
+    NFL's season crossing the new year, where the Super Bowl is played in
+    February and would otherwise sort in front of week 1.
+
+    Numbers are used ahead of position because position alone is skewed by
+    which seasons a round exists in at all: round 17 only ever appears in
+    seasons long enough to have one, so it averages later in the season than
+    round 19, which needs a longer season still.
+
+    Rounds with no label at all -- the MLB and NBA regular seasons, which
+    record one only for the postseason -- are absent rather than listed as a
+    blank, so a caller offering these as a filter offers only the filters
+    that mean something.
+    """
+    where, params = _where(
+        ("round IS NOT NULL", []),
+        ("season = ?" if season is not None else "",
+         [season] if season is not None else []),
+        ("season >= ?" if season_from is not None else "",
+         [season_from] if season_from is not None else []),
+        ("season <= ?" if season_to is not None else "",
+         [season_to] if season_to is not None else []),
+        _trust(False),
+    )
+    rows = con.execute(
+        f"""SELECT season, round, MIN(match_date) FROM {SOURCE_TABLE}{where}
+            GROUP BY season, round""", params).fetchall()
+
+    positions: dict[str, list[float]] = {}
+    by_season: dict[int, list[tuple[str, str]]] = {}
+    for season_of, label, first_date in rows:
+        by_season.setdefault(season_of, []).append((first_date or "", label))
+    for played in by_season.values():
+        played.sort()
+        for i, (_, label) in enumerate(played, start=1):
+            positions.setdefault(label, []).append(i / len(played))
+
+    def key(label: str) -> tuple[int, float, str]:
+        numbered = _NUMBERED_ROUND.match(label)
+        if numbered:
+            return (0, int(numbered.group(1)), label)
+        seen = positions[label]
+        return (1, sum(seen) / len(seen), label)
+
+    return sorted(positions, key=key)
+
+
+def matches_without_a_round(con: sqlite3.Connection,
+                            season: int | None = None) -> int:
+    """How many matches `rounds_available` cannot describe.
+
+    The MLB and NBA sources record a round for the postseason and nothing
+    for the regular season, so a round filter over those reaches a few
+    hundred matches out of a couple of hundred thousand. A caller offering
+    the filter should say so rather than let a reader conclude the regular
+    season is missing.
+    """
+    where, params = _where(
+        ("round IS NULL", []),
+        ("season = ?" if season is not None else "",
+         [season] if season is not None else []),
+        _trust(False),
+    )
+    # Counted by game key, not by row: the source holds one row per club per
+    # match, so counting rows would double every match.
+    return con.execute(
+        f"SELECT COUNT(DISTINCT source_game_key) "
+        f"FROM {SOURCE_TABLE}{where}", params).fetchone()[0]
 
 
 # --------------------------------------------------------- reconciliation

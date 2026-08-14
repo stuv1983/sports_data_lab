@@ -23,7 +23,18 @@ SCHEMA = core.Schema(
     career_postseason="postseason_played",
     game_score="home_runs",
     is_final="is_postseason",
+    #: Lahman's finest grain is a player's season with one club, so there
+    #: is no per-match table and no box score to build from `games`. The
+    #: match card falls back to the Retrosheet result row, which does carry
+    #: the score, the venue and the crowd.
+    matches="",
     stats=STATS,
+    #: ERA is a rate, not a count: summing it across rows is arithmetic
+    #: nonsense, so the search compiler refuses season./career. totals.
+    rate_stats=("era",),
+    #: A row is a season; its `games` column says how many games it stands
+    #: for. Pages counting appearances SUM this rather than COUNT(*) rows.
+    games_per_row="games",
     clubs=mlb_reference.teams(),
     club_lineage=mlb_reference.club_lineage(),
     venue_aliases=mlb_reference.venue_aliases(),
@@ -77,12 +88,19 @@ SPORT = Sport(
     has_past_games=True,
     past_games_hint=("Run `python -m utils.mlb.load_retrosheet` to fetch and load "
                      "the Retrosheet game logs."),
+    #: From the same game logs. A season-grain `games` table has no
+    #: per-player row for one match, so the match card shows who took the
+    #: field rather than a box score it cannot build.
+    lineup_module="mlb.lineups",
     #: `result` on a postseason row is the *series* outcome from SeriesPost,
     #: one row per player per round, so a 'WS' win is the title itself
     #: rather than one win inside a seven-game series.
     title_round="WS",
     has_awards_page=True,
     awards_page_module="mlb.awards_page",
+    #: Lahman's AwardsPlayers, keyed by player_id directly -- the player
+    #: card reads honours from it without the Draftguru link tables.
+    native_awards_table="awards",
     has_ground_explorer=True,
     ground_explorer_module="mlb.ground_explorer",
     optional_layers={"Awards data": "awards_available",
@@ -103,6 +121,29 @@ SPORT = Sport(
     }),
     club_data_hint=("Run `python utils/derive_club_tables.py --sport mlb` "
                     "for Team Explorer."),
+    query_tables=(
+        "players", "games", "clubs", "arenas", "arena_teams", "awards",
+        "hall_of_fame", "all_star", "player_positions",
+        "mlb_game_lineups", "mlb_player_rivalry_games",
+        "club_player_register", "club_player_totals",
+        "club_player_records",
+    ),
+    query_column_kinds={
+        "games.date": "date", "games.is_postseason": "boolean",
+        "clubs.updated_at": "datetime",
+        "club_player_register.dob": "date",
+        "club_player_records.match_date": "date",
+        "mlb_player_rivalry_games.is_win": "boolean",
+        # Declarable since load_retrosheet.iso_game_date: the loader
+        # stores ISO (the compact YYYYMMDD it used to keep broke every
+        # chronological comparison), and normalize_rivalry_dates.py
+        # rewrote existing rows. The format contract lives in
+        # tests/test_query_metadata.py.
+        "mlb_player_rivalry_games.game_date": "date",
+    },
+    query_low_cardinality_columns=(
+        "games.club_now", "games.result", "games.round",
+    ),
     search_examples=(
         'club:"New York Yankees" games>=1000 sort:obscurity',
         'season.home_runs>=40 debut:1990..1999',

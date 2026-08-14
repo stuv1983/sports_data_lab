@@ -51,6 +51,7 @@ import re
 import sqlite3
 import urllib.request
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from data_paths import cache_dir, raw_dir, sport_db
@@ -64,6 +65,42 @@ USER_AGENT = "SportsDataLab/1.0 (personal research; contact via repository)"
 #: turns the Past Games page on for a sport -- the module is generic, only
 #: its location is historical.
 MATCH_TABLE = "club_match_sources"
+
+#: Who took the field, one row per side per game -- the nearest thing to a
+#: box score this database can hold.
+#:
+#: Lahman's finest grain is a player-season, so an MLB match card had
+#: nothing per-player to show and said so. The game logs carry both sides'
+#: nine batting-order starters inline, with a fielding position each, plus
+#: the starting pitcher: 92% of all 235,607 games have a complete 18-man
+#: lineup and every game from 1901 does.
+#:
+#: The lineup is one ordered value rather than nine rows because that is
+#: what a batting order is, and because the shape decides whether this is
+#: affordable: nine rows per side repeats a 20-character game key eighteen
+#: times per game and measures 318 MB against a 236 MB database, where one
+#: row per side measures 82 MB. Names are not repeated either -- they live
+#: once each in `mlb_retro_players` -- so the payload is the identifiers
+#: and the positions, in the order they batted.
+LINEUP_TABLE = "mlb_game_lineups"
+
+#: Retrosheet id -> name, and the Lahman id where the crosswalk resolves
+#: one. The name is what a card prints; the Lahman id is what lets it open
+#: that player's career.
+RETRO_PLAYER_TABLE = "mlb_retro_players"
+
+#: Within a lineup, one player is "retroid:position:order"; players are
+#: separated by ";". Both characters are absent from every Retrosheet id
+#: and position code, so neither can be part of a value.
+#:
+#: The batting order is written out rather than left to be counted from the
+#: entry's place in the list. The pitcher a designated hitter bats for has
+#: no order and is stored last, and inferring "the tenth is the pitcher"
+#: silently gives him ninth place in any lineup the source recorded short
+#: of nine -- a name in the wrong slot, with nothing about it looking
+#: wrong.
+LINEUP_SEPARATOR = ";"
+LINEUP_FIELD = ":"
 
 #: Postseason game-log files -> the round label they hold. These are named
 #: files rather than year files, in the same 161-field format.
@@ -243,6 +280,27 @@ def _starters(row: list[str], offset: int, pitcher_id: str):
     return ids
 
 
+def iso_game_date(raw: str) -> str | None:
+    """Retrosheet's compact ``YYYYMMDD`` -> ISO, else None.
+
+    Stored dates are ISO so mlb/sport.py can declare the column a date
+    and the query builder's chronological operators mean what they say
+    (compact text breaks them: '19110426' < '1949-04-19' lexically).
+    None for anything that is not a real calendar date -- a malformed or
+    partial value must be skipped, never stored as a pretend date.
+    """
+    text = str(raw or "").strip()
+    # Exactly eight digits before strptime sees it: strptime is lenient
+    # about unpadded fields, so '1911042' would otherwise parse as
+    # 1911-04-02 instead of being refused as the partial value it is.
+    if len(text) != 8 or not text.isdigit():
+        return None
+    try:
+        return datetime.strptime(text, "%Y%m%d").date().isoformat()
+    except ValueError:
+        return None
+
+
 def _ensure_table(con: sqlite3.Connection) -> None:
     con.execute("""
         CREATE TABLE IF NOT EXISTS mlb_player_rivalry_games (
@@ -260,6 +318,119 @@ def _ensure_table(con: sqlite3.Connection) -> None:
     con.execute(
         "CREATE INDEX IF NOT EXISTS ix_rivalry_player "
         "ON mlb_player_rivalry_games(rivalry_key, player_id)")
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS ix_rivalry_date "
+        "ON mlb_player_rivalry_games(game_date, player_id)")
+
+
+def _lineup(row: list[str], offset: int, pitcher_id: str) -> str:
+    """One side's batting order as the stored value.
+
+    The nine slots in the order they batted, then the starting pitcher
+    where a designated hitter kept him out of the order. A slot the source
+    left blank is skipped rather than held open: 19th-century logs are
+    missing lineups altogether, and a run of empty slots would draw as a
+    lineup of nobody instead of as the gap it is.
+    """
+    seen, parts = set(), []
+    for slot in range(9):
+        retro_id = row[offset + slot * 3].strip()
+        if not retro_id:
+            continue
+        position = row[offset + slot * 3 + 2].strip()
+        seen.add(retro_id)
+        parts.append(
+            f"{retro_id}{LINEUP_FIELD}{position}{LINEUP_FIELD}{slot + 1}")
+    pitcher = (pitcher_id or "").strip()
+    if pitcher and pitcher not in seen:
+        # A designated hitter bats for him, so he is a tenth man rather
+        # than one of the nine -- and he is the one everybody looks for.
+        # No batting order, because he did not bat.
+        parts.append(f"{pitcher}{LINEUP_FIELD}1{LINEUP_FIELD}")
+    return LINEUP_SEPARATOR.join(parts)
+
+
+def _lineup_names(row: list[str], offset: int, pitcher_id: str,
+                  pitcher_name: str) -> dict[str, str]:
+    """Retrosheet id -> name for one side, as the game log spells it."""
+    names = {}
+    for slot in range(9):
+        retro_id = row[offset + slot * 3].strip()
+        if retro_id:
+            names[retro_id] = row[offset + slot * 3 + 1].strip()
+    pitcher = (pitcher_id or "").strip()
+    if pitcher:
+        names.setdefault(pitcher, (pitcher_name or "").strip())
+    return names
+
+
+def _ensure_lineup_tables(con: sqlite3.Connection) -> None:
+    con.execute(f"""
+        CREATE TABLE IF NOT EXISTS {LINEUP_TABLE} (
+            source_game_key TEXT NOT NULL,
+            team_position   TEXT NOT NULL,
+            lineup          TEXT NOT NULL,
+            PRIMARY KEY (source_game_key, team_position)
+        )
+    """)
+    con.execute(f"""
+        CREATE TABLE IF NOT EXISTS {RETRO_PLAYER_TABLE} (
+            retro_id  TEXT PRIMARY KEY,
+            player    TEXT,
+            player_id TEXT
+        )
+    """)
+
+
+def load_lineups(con: sqlite3.Connection, refresh: bool = False,
+                 crosswalk: dict[str, str] | None = None) -> int:
+    """Fill the lineup tables from every game log. Returns games covered.
+
+    Keyed on the same `source_game_key` `load_matches` writes, so a match
+    card that already found its game finds who played in it by the id it
+    already has.
+    """
+    _ensure_lineup_tables(con)
+    con.execute(f"DELETE FROM {LINEUP_TABLE}")
+    con.execute(f"DELETE FROM {RETRO_PLAYER_TABLE}")
+
+    if crosswalk is None:
+        crosswalk = _retro_to_player_id()
+    zip_path = _download(refresh=refresh)
+    names: dict[str, str] = {}
+
+    def every_side():
+        def sides(row, _round=None):
+            date, number = row[DATE], row[GAME_NUMBER] or "0"
+            key = f"{date}-{number}-{row[HOME_TEAM]}-{row[VIS_TEAM]}"
+            for offset, position, pitcher, pitcher_name in (
+                (HOME_STARTERS, "H", row[HOME_STARTING_PITCHER],
+                 row[HOME_STARTING_PITCHER + 1]),
+                (VIS_STARTERS, "A", row[VIS_STARTING_PITCHER],
+                 row[VIS_STARTING_PITCHER + 1]),
+            ):
+                names.update(_lineup_names(row, offset, pitcher, pitcher_name))
+                lineup = _lineup(row, offset, pitcher)
+                if lineup:
+                    yield key, position, lineup
+
+        for row in _game_rows(zip_path):
+            if len(row) > HOME_STARTERS + 26:
+                yield from sides(row)
+        for row, _round_label in _postseason_game_rows(zip_path):
+            if len(row) > HOME_STARTERS + 26:
+                yield from sides(row)
+
+    con.executemany(
+        f"INSERT OR REPLACE INTO {LINEUP_TABLE} VALUES (?,?,?)", every_side())
+    con.executemany(
+        f"INSERT OR REPLACE INTO {RETRO_PLAYER_TABLE} VALUES (?,?,?)",
+        ((retro_id, name or None, crosswalk.get(retro_id))
+         for retro_id, name in names.items()))
+    con.commit()
+    return con.execute(
+        f"SELECT COUNT(DISTINCT source_game_key) FROM {LINEUP_TABLE}"
+    ).fetchone()[0]
 
 
 def _ensure_match_table(con: sqlite3.Connection) -> None:
@@ -396,7 +567,9 @@ def load(con: sqlite3.Connection, refresh: bool = False,
         if v_key != h_key or v_side == h_side:
             continue
 
-        date = row[DATE]
+        date = iso_game_date(row[DATE])
+        if date is None:
+            continue
         season = int(date[:4])
         home_won = int(row[HOME_SCORE]) > int(row[VIS_SCORE])
 
@@ -436,5 +609,7 @@ if __name__ == "__main__":
         print(f"mlb_player_rivalry_games: {total:,} rows")
         matches = load_matches(connection, refresh=args.refresh)
         print(f"{MATCH_TABLE}: {matches:,} matches")
+        lineups = load_lineups(connection, refresh=args.refresh)
+        print(f"{LINEUP_TABLE}: {lineups:,} games with a lineup")
     finally:
         connection.close()

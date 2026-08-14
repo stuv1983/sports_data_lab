@@ -11,8 +11,8 @@ def seed_test_players():
 
     print("Seeding core players table from staging data...")
     
-    # Grab unique players from the staging table that have a valid key
-    # We use INSERT OR IGNORE in case you run this multiple times
+    # Unique players from the staging table with a valid key.
+    # INSERT OR IGNORE keeps reruns idempotent.
     cur.execute("""
         INSERT OR IGNORE INTO players (player_name, bbr_key)
         SELECT DISTINCT player_name, player_key 

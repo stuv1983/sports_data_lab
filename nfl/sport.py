@@ -10,7 +10,7 @@ from . import nfl_reference
 from .obscurity_model import MODEL
 
 #
-# The database is built by the standalone build_nfl_db.py from nflverse via
+# The database is built by nfl/build_db.py from nflverse via
 # nflreadpy, then adapted by utils/nfl/patch_nfl_db.py, which
 # derives the columns core.py needs -- club names, venue, result, is_playoff,
 # career_game_no and a touchdown total -- and measures the statistic list
@@ -27,7 +27,7 @@ STATS = nfl_reference.stats()
 CLUBS = nfl_reference.teams()
 
 SCHEMA = core.Schema(
-    #: Career columns build_nfl_db.py writes on `players`. It names the
+    #: Career columns nfl/build_db.py writes on `players`. It names the
     #: club-history columns teams_hist / n_teams rather than reusing the
     #: AFL's, so the schema maps them here rather than the build renaming
     #: them.
@@ -43,11 +43,42 @@ SCHEMA = core.Schema(
     weight="weight",
     college="college_name",
     draft_year="draft_year",
+    #: nflverse names the schedule table's key game_id and puts the venue
+    #: in `stadium`; there is no attendance column at all, so the card
+    #: shows no crowd rather than a blank one.
+    match_key="game_id",
+    games_match_key="game_id",
+    games_home_flag="",
+    games_side_key="team",
+    match_venue="stadium",
+    match_date="gameday",
+    match_round="week",
+    match_attendance="",
+    #: The schedule carries the conditions and the market, which is most of
+    #: what makes one NFL game different from another.
+    match_facts=(
+        ("gametime", "Kick-off"), ("overtime", "Overtime"),
+        ("roof", "Roof"), ("surface", "Surface"),
+        ("temp", "Temperature (°F)"), ("wind", "Wind (mph)"),
+        ("home_coach", "Home coach"), ("away_coach", "Away coach"),
+        ("home_qb_name", "Home QB"), ("away_qb_name", "Away QB"),
+        ("referee", "Referee"), ("spread_line", "Spread"),
+        ("total_line", "Total line"), ("div_game", "Divisional"),
+    ),
+    #: nfl_reference.stats() leads with touchdowns because that is the
+    #: headline career figure; a box score reads by phase of play instead.
+    box_score=(
+        "completions", "attempts", "passing_yards", "passing_tds",
+        "passing_interceptions", "carries", "rushing_yards", "rushing_tds",
+        "receptions", "targets", "receiving_yards", "receiving_tds",
+        "touchdowns", "def_tackles_solo", "def_sacks", "def_interceptions",
+        "fg_made", "special_teams_tds", "fantasy_points",
+    ),
     stats=STATS,
     clubs=CLUBS,
     club_lineage=nfl_reference.club_lineage(),
     venue_aliases=nfl_reference.venue_aliases(),
-    rebuild_cmd="python .\\build_nfl_db.py --all-history, then "
+    rebuild_cmd="python -m nfl.build_db --all-history, then "
                 "python -m utils.nfl.patch_nfl_db",
     solve_cols=(
         ("p.player", "Player"),
@@ -74,11 +105,11 @@ SPORT = Sport(
                 postseason_one="playoff game", title="Super Bowl",
                 grid_source="Immaculate Grid"),
     theme="nfl",
-    build_cmd="python .\\build_nfl_db.py --all-history",
+    build_cmd="python -m nfl.build_db --all-history",
     preview=True,
     missing_db_hint=("No NFL database found at "
                      f"{sport_db('nfl')}. Build it with "
-                     "`python .\\build_nfl_db.py --all-history`, then run "
+                     "`python -m nfl.build_db --all-history`, then run "
                      "`python -m utils.nfl.patch_nfl_db` to add the columns the "
                      "app reads."),
     empty_hint=("Nothing satisfies both. Note that nflverse's weekly player "
@@ -107,7 +138,7 @@ SPORT = Sport(
         "awards_available": ("Run `python -m utils.shared.load_wiki_awards "
                              "--sport nfl --root <wiki-scrape-root>`."),
         **{
-        probe: "Rebuild with `python build_nfl_db.py --all-history "
+        probe: "Rebuild with `python -m nfl.build_db --all-history "
                "--extended --replace`, then `python -m utils.nfl.patch_nfl_db`."
         for probe in ("rosters_weekly_available", "snap_counts_available",
                       "injuries_available", "depth_charts_available",
@@ -136,6 +167,21 @@ SPORT = Sport(
     #: before the weekly statistics begin. A player with no game is not an
     #: answer to any square, and scoring him is scoring an absence.
     obscurity_population="career_games >= 1",
+    query_tables=(
+        "players", "games", "matches", "teams", "arenas", "arena_teams",
+        "draft_picks", "player_seasons", "player_teams", "rosters",
+        "team_games", "team_seasons",
+    ),
+    query_column_kinds={
+        "players.birth_date": "date",
+        "games.date": "date", "games.is_playoff": "boolean",
+        "matches.gameday": "date",
+        "rosters.birth_date": "date",
+    },
+    query_low_cardinality_columns=(
+        "games.season_type", "games.result", "games.position",
+        "games.club_now", "games.club_hist", "games.opponent_team",
+    ),
     search_examples=(
         'club:"Kansas City Chiefs" games>=100 sort:obscurity',
         'game.passing_yards>=400 postseason:true',

@@ -1,9 +1,8 @@
 """The tab icon and the iOS home-screen icon.
 
-`static/icons/` is empty in the repository -- the icons are the operator's,
-not the project's -- so these tests write their own PNGs into a temporary
-directory and point `branding.ICON_DIR` at it. The one thing asserted about
-the real folder is that an empty one changes nothing.
+Most tests write their own PNGs into a temporary directory and point
+`branding.ICON_DIR` at it, so the shipped application icons do not affect
+fallback and precedence checks.
 """
 
 import json
@@ -64,6 +63,20 @@ def test_a_180_file_is_preferred_for_the_home_screen(icons):
     assert branding.apple_icon_file("afl") == icons / "afl-180.png"
     # ...and does not become the tab icon in the process
     assert branding.favicon_file("afl") == icons / "afl.png"
+
+
+def test_all_supplied_apple_icon_sizes_are_written_to_the_head(icons):
+    for size in (60, 76, 120, 152):
+        _png(icons / f"default-{size}.png")
+
+    links = [t for t in _tags(branding.head_script(sports.AFL))
+             if t.get("rel") == "apple-touch-icon"]
+
+    assert [t["sizes"] for t in links] == [
+        "60x60", "76x76", "120x120", "152x152"]
+    assert [t["href"].split("?", 1)[0] for t in links] == [
+        f"/app/static/icons/default-{size}.png"
+        for size in (60, 76, 120, 152)]
 
 
 # ------------------------------------------------------- the head script

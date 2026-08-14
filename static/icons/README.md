@@ -5,7 +5,9 @@ shows when the app is saved to a home screen. Nothing here is required: with
 the folder empty the app falls back to the emoji each sport carries in its
 registry entry, which is what it used before these files existed.
 
-`branding.py` reads them; no code change is needed to swap an icon.
+`branding.py` reads them; no code change is needed to swap an icon. The
+repository currently ships the default favicon and the supplied 60, 76, 120,
+and 152 px Apple touch icons.
 
 ## Filenames
 
@@ -13,13 +15,14 @@ registry entry, which is what it used before these files existed.
 | --- | --- |
 | `default.png` | Tab icon (favicon) for every sport |
 | `default-180.png` | Home-screen icon for every sport |
+| `default-60.png`, `default-76.png`, `default-120.png`, `default-152.png` | Additional Apple touch sizes |
 | `afl.png`, `nba.png`, `mlb.png`, `nfl.png` | That one sport's tab icon |
 | `afl-180.png`, `nba-180.png`, … | That one sport's home-screen icon |
 
-A sport's own file wins over `default`. If a sport has no `-180` file, its
-plain file is used for the home screen too, so a **single square PNG per
-sport is enough** — the `-180` files only matter when you want a different,
-simpler mark at small size.
+A sport's own file wins over `default`. When size-specific Apple files are
+present, each is added to the page with its exact size. If none are present,
+the `-180` file or plain file is used for the home screen, so a **single
+square PNG per sport is enough**.
 
 ## Sizes
 

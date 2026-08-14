@@ -12,6 +12,7 @@ PNG::
 
     static/icons/default.png        tab icon, for any sport without its own
     static/icons/default-180.png    home-screen icon, likewise
+    static/icons/default-152.png    optional additional iOS size
     static/icons/afl.png            one sport's tab icon, beating default
     static/icons/afl-180.png        one sport's home-screen icon
 
@@ -32,9 +33,10 @@ from pathlib import Path
 #: Where the icons live, and the one directory a user has to know about.
 ICON_DIR = Path(__file__).resolve().parent / "static" / "icons"
 
-#: The size iOS asks for. A file named `<sport>-180.png` is used for the home
-#: screen; without one the plain `<sport>.png` is used at whatever size it is,
-#: which iOS will scale.
+#: Apple devices have requested several icon sizes over time. Supplying more
+#: than one lets each device use the closest asset without scaling. A 180 px
+#: icon remains the preferred single-file convention.
+APPLE_ICON_SIZES = (60, 76, 120, 152, 180)
 APPLE_ICON_SIZE = 180
 
 #: Marks every node this module writes into the parent document, so a rerun
@@ -73,6 +75,24 @@ def apple_icon_file(sport_key):
     return _find(sport_key, f"-{APPLE_ICON_SIZE}") or _find(sport_key, "")
 
 
+def apple_icon_files(sport_key):
+    """Available size-specific home-screen icons, or the single fallback.
+
+    Each item is ``(size, path)``. ``size`` is ``None`` for an unsized plain
+    icon. This keeps the original one-file setup working while allowing a
+    supplied Apple icon set to retain all of its native resolutions.
+    """
+    icons = []
+    for size in APPLE_ICON_SIZES:
+        path = _find(sport_key, f"-{size}")
+        if path is not None:
+            icons.append((size, path))
+    if icons:
+        return icons
+    path = apple_icon_file(sport_key)
+    return [(None, path)] if path is not None else []
+
+
 def page_icon(sport):
     """What to pass to `st.set_page_config(page_icon=...)`.
 
@@ -108,12 +128,16 @@ def head_script(sport, *, theme_color="", static_serving=True,
     a candidate.
     """
     tags = []
-    icon = apple_icon_file(sport.key) if static_serving else None
-    if icon is not None:
+    icons = apple_icon_files(sport.key) if static_serving else []
+    for size, icon in icons:
         url = _static_url(icon, base_url_path)
-        tags.append({"tag": "link", "rel": "apple-touch-icon", "href": url})
-        tags.append({"tag": "link", "rel": "apple-touch-icon-precomposed",
-                     "href": url})
+        attrs = {"tag": "link", "rel": "apple-touch-icon", "href": url}
+        if size is not None:
+            attrs["sizes"] = f"{size}x{size}"
+        tags.append(attrs)
+        precomposed = dict(attrs)
+        precomposed["rel"] = "apple-touch-icon-precomposed"
+        tags.append(precomposed)
     tags.append({"tag": "meta", "name": "apple-mobile-web-app-capable",
                  "content": "yes"})
     tags.append({"tag": "meta", "name": "mobile-web-app-capable",

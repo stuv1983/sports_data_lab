@@ -256,7 +256,7 @@ TABLE_PURPOSE = {
     "awards": "Award winners and placings",
     "all_australian": "All-Australian selections",
     "captaincies": "Club captains by season",
-    "rising_star_nominees": "FootyWire Rising Star nominations",
+    "rising_star_nominees": "Rising Star nominations (FootyWire, Wikipedia)",
     "family_members": "People in a listed football family",
     "family_relationships": "Explicit relationships between people",
     "family_draft": "Father-son and academy draft rows",
@@ -272,7 +272,7 @@ def stat_coverage_rows(con: sqlite3.Connection) -> list[dict]:
 
     Two builders write a table called `stat_coverage` and they do not agree
     on its columns. load_stat_coverage.py (AFL, NBA) writes a curated row
-    per statistic with a prose `coverage_notes`; build_nfl_db.py measures
+    per statistic with a prose `coverage_notes`; nfl/build_db.py measures
     its own and writes `table_name`, `populated_rows` and `total_rows`
     instead. Only `stat_name`, `available_from` and `available_to` are
     common to both.

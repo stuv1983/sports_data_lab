@@ -47,6 +47,64 @@ def test_a_ground_still_resolves_to_the_ground():
     assert label("MCG WON A FINAL") == "won a final at mcg"
 
 
+# ---------------------------------------------------------- rising star
+
+def test_a_bare_rising_star_axis_is_the_nomination_not_the_award():
+    """Gridley words the nomination square as just "RISING STAR" (board
+    #1117) and the award as "RISING STAR WINNER"; the bare phrase must
+    reach the nomination rule, and the winner wording must stay with the
+    awards block above it."""
+    assert label("RISING STAR") == "Rising Star nominee"
+    assert label("RISING STAR NOMINATION") == "Rising Star nominee"
+    assert label("RISING STAR WINNER") == "Rising Star winner"
+
+
+# ------------------------------------------------- venue tenure counts
+
+def test_a_games_count_at_a_ground_is_tenure_not_attendance():
+    """"100+ GAMES AT THE MCG" used to fall through to the played-at rule
+    and answer "ever appeared there" — wrong by a hundred games."""
+    assert label("100+ GAMES AT THE MCG") == "100+ games at mcg"
+    assert label("50+ VFL/AFL GAMES AT KARDINIA PARK") == \
+        "50+ games at kardinia park"
+    # The bare forms keep their old readings.
+    assert label("MCG") == "played at mcg"
+    assert label("MCG WON A FINAL") == "won a final at mcg"
+
+
+def test_league_name_noise_is_stripped():
+    assert label("150+ VFL/AFL GAMES") == "150+ games played"
+
+
+# ----------------------------------------------------- finals stat scope
+
+def test_plural_finals_is_the_career_total_singular_is_one_game():
+    """"KICKED 30+ GOALS IN FINALS" is a finals-career total; reading the
+    plural as a single game answered it with a bar nobody has cleared in
+    one afternoon. "IN A FINAL" stays a single-game feat, and "KICKED" is
+    the scoring verb, never the kicks statistic."""
+    assert label("KICKED 30+ GOALS IN FINALS") == "30+ goals in finals (career)"
+    assert label("30+ FINALS GOALS") == "30+ goals in finals (career)"
+    assert label("5+ GOALS IN A FINAL") == "5+ goals in a final"
+    assert label("20+ KICKS") == "20+ kicks in a game"
+
+
+def test_a_stat_in_a_grand_final_is_a_feat_not_participation():
+    """"3+ GOALS IN A GRAND FINAL" was swallowed by the bare participation
+    rule; the participation and premiership readings must survive."""
+    assert label("3+ GOALS IN A GRAND FINAL") == "3+ goals in a grand final"
+    assert label("PLAYED A GRAND FINAL") == "played a grand final"
+    assert label("WON A GRAND FINAL") == "premiership player"
+    assert label("2+ GRAND FINALS") == "played in 2+ grand finals"
+
+
+# ---------------------------------------------------------------- decades
+
+def test_a_decade_reads_as_its_ten_seasons():
+    assert label("PLAYED IN 2010s") == "played in the 2010s"
+    assert label("PLAYED IN THE 1990s") == "played in the 1990s"
+
+
 # --------------------------------------------------- implicit game scope
 
 def test_a_scopeless_stat_total_is_read_as_one_game():

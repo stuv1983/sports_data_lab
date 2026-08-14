@@ -235,6 +235,25 @@ def played_in_derby(derby):
             _derby_teams(derby))
 
 
+def derby_won(derby):
+    """Won this derby at least once -- "SHOWDOWN WINNER" asks for a win,
+    not the stronger more-wins-than-losses record."""
+    return (f"""SELECT DISTINCT player_id FROM games
+                WHERE {_DERBY_MATCHES} AND result = 'W'""",
+            _derby_teams(derby))
+
+
+def derby_stat_in_game(derby, stat, n):
+    """Reached `n` of a statistic in a single game of this derby --
+    "SHOWDOWN KICKED A GOAL", "SYDNEY DERBY 5+ TACKLES"."""
+    import sports
+    if stat not in sports.AFL_STATS:
+        raise ValueError(f"unknown stat: {stat}")
+    return (f"""SELECT DISTINCT player_id FROM games
+                WHERE {_DERBY_MATCHES} AND {stat} >= ?""",
+            _derby_teams(derby) + [n])
+
+
 def marquee_events_available(con: sqlite3.Connection) -> bool:
     """True once afl/scrape_marquee_games.py has tagged any match.
 
@@ -290,6 +309,23 @@ def marquee_event_games_min(event, games):
     """, [event, games])
 
 
+def marquee_event_won(event):
+    """Played for the winning side of this marquee fixture at least once."""
+    return ("""SELECT DISTINCT player_id FROM games
+               WHERE match_event = ? AND result = 'W'""", [event])
+
+
+def marquee_event_played_since(event, season):
+    """Played this fixture from a given season on.
+
+    The Big Freeze is the King's Birthday match, but only since 2015 --
+    the fixture existed for decades before the name did, and a square
+    asking for the Big Freeze means the frozen era.
+    """
+    return ("""SELECT DISTINCT player_id FROM games
+               WHERE match_event = ? AND season >= ?""", [event, season])
+
+
 MATCH_BUILDERS = {
     "Played in a win by X+ points":   (won_by_min, ["points"]),
     "Played in a loss by X+ points":  (lost_by_min, ["points"]),
@@ -303,11 +339,15 @@ MATCH_BUILDERS = {
     "Losing record in a derby":       (derby_losing_record, ["derby"]),
     "X+ games in a derby":            (derby_games_min, ["derby", "games"]),
     "Played in a derby":              (played_in_derby, ["derby"]),
+    "Won a derby":                    (derby_won, ["derby"]),
+    "X+ of a stat in a derby game":   (derby_stat_in_game,
+                                       ["derby", "stat", "x"]),
     "Winning record in a marquee match":
         (marquee_event_winning_record, ["event"]),
     "X+ marquee matches":             (marquee_event_games_min,
                                        ["event", "games"]),
     "Played in a marquee match":      (played_marquee_event, ["event"]),
+    "Won a marquee match":            (marquee_event_won, ["event"]),
 }
 
 #: Builders needing the scraped `match_event` tags. The derby builders are
@@ -316,6 +356,7 @@ MARQUEE_BUILDER_NAMES = {
     "Winning record in a marquee match",
     "X+ marquee matches",
     "Played in a marquee match",
+    "Won a marquee match",
 }
 
 #: Builders that need the optional all-games layer, so the UI can say why

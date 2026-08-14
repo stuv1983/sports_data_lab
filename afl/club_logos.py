@@ -151,6 +151,40 @@ def resolve(clubs: dict[str, dict],
     return found
 
 
+def era_logo_files(names, folder: Path | None = None,
+                   exclude=()) -> dict[str, Path]:
+    """name -> logo file, for club names outside the current-clubs table.
+
+    A 1954 match card says Footscray, and Footscray had its own colours;
+    the Bears are their own club with their own badge. Those names never
+    reach `resolve`, which starts from the clubs a sport has *now*, so
+    their files sit unmatched -- this picks them up.
+
+    Matched only against the files in `exclude`'s complement: the files no
+    current club claimed. That is what keeps a short historical name from
+    stealing a current club's file -- 'Melbourne' is inside
+    'North_Melbourne_FC_logo', but that file is already North's.
+    """
+    folder = folder or LOGO_DIR
+    taken = set(exclude)
+    keyed = [(p, _key(p.stem)) for p in logo_files(folder) if p not in taken]
+    found: dict[str, Path] = {}
+    claimed: set[Path] = set()
+    for name in sorted({str(n) for n in names if n},
+                       key=lambda n: -len(_key(n))):
+        key = _key(name)
+        if len(key) < 3:
+            continue
+        for path, filekey in keyed:
+            if path in claimed:
+                continue
+            if key in filekey:
+                found[name] = path
+                claimed.add(path)
+                break
+    return found
+
+
 def unmatched(clubs: dict[str, dict],
               folder: Path | None = None) -> list[Path]:
     """Logo files that resolved to no club — usually a naming surprise."""

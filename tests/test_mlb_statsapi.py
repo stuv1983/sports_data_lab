@@ -538,8 +538,10 @@ def _with_match_sources(path, rows=()):
 
 
 def _match(key, club="Atlanta Braves", season=2026):
+    # is_final 0, as the fixed source emits: these are gameType="R"
+    # regular-season fixtures, never postseason rounds.
     return {"source_game_key": key, "source_club_id": club, "season": season,
-            "round": None, "is_final": 1, "match_date": f"{season}-04-01",
+            "round": None, "is_final": 0, "match_date": f"{season}-04-01",
             "venue_raw": "Truist Park", "team_position": "H", "result": "W",
             "points_for": 5, "points_against": 3, "margin": 2,
             "attendance": None, "match_id": None, "match_status": "unique"}
@@ -673,6 +675,9 @@ def test_a_match_row_follows_the_convention_of_the_table_it_lands_in(tmp_path):
 
     assert len(matches) == 2, "one row per club per game"
     assert {m["round"] for m in matches} == {None}
+    # gameType="R": a regular-season fixture must never be flagged as a
+    # final -- is_final 1 here once put the whole summer in October.
+    assert {m["is_final"] for m in matches} == {0}
     assert {m["source_club_id"] for m in matches} == {
         "Oakland Athletics", "Atlanta Braves"}
     winner, = [m for m in matches if m["result"] == "W"]
@@ -683,3 +688,72 @@ def test_a_match_row_follows_the_convention_of_the_table_it_lands_in(tmp_path):
 def test_a_game_still_being_played_is_not_written_down(tmp_path):
     api = _FakeApi([ATHLETICS, BRAVES], {"schedule": _schedule("I")})
     assert _source(api, {}, tmp_path).season_schedule(2026) == []
+
+
+# ------------------------------------------------- snapshot validation
+#
+# replace_season and replace_match_sources both delete before they insert,
+# so their gates are the only thing standing between a Stats API outage
+# and a wiped season.
+
+def test_an_empty_stats_response_for_a_stored_season_is_rejected(tmp_path):
+    path = _database(tmp_path)
+    with closing(sqlite3.connect(path)) as con:
+        verdict, reason = load_statsapi.validate_snapshot(con, 2025, [])
+    assert verdict == "reject"
+    assert "untouched" in reason
+
+
+def test_an_empty_response_for_an_unstored_season_is_a_harmless_skip(tmp_path):
+    path = _database(tmp_path)
+    with closing(sqlite3.connect(path)) as con:
+        verdict, _ = load_statsapi.validate_snapshot(con, 2030, [])
+    assert verdict == "skip"
+
+
+def test_a_severely_partial_stats_response_is_rejected(tmp_path):
+    path = _database(tmp_path)
+    with closing(sqlite3.connect(path)) as con:
+        con.executemany(
+            "INSERT INTO games (player_id, season, is_postseason) "
+            "VALUES (?, 2024, 0)", [(f"p{i}",) for i in range(150)])
+        verdict, _ = load_statsapi.validate_snapshot(con, 2024, _rows())
+    assert verdict == "reject"
+
+
+def test_an_empty_schedule_response_leaves_stored_matches_alone(tmp_path):
+    """The player-season gate protects `games`; this one protects the
+    club_match_sources fixtures the loader also owns. An empty schedule
+    must not delete a season of match history it cannot put back."""
+    path = _with_match_sources(_database(tmp_path), [
+        ("statsapi-1", "Atlanta Braves", 2026, None, 0, "2026-04-01",
+         "Truist Park", "H", "W", 5, 3, 2, None, None, "unique"),
+        ("statsapi-1", "Oakland Athletics", 2026, None, 0, "2026-04-01",
+         "Truist Park", "A", "L", 3, 5, 2, None, None, "unique"),
+    ])
+    with closing(sqlite3.connect(path)) as con:
+        written = load_statsapi.replace_match_sources(
+            con, 2026, [], verbose=False)
+        con.commit()
+        kept = con.execute(
+            "SELECT COUNT(*) FROM club_match_sources").fetchone()[0]
+    assert written == 0
+    assert kept == 2, "an empty schedule wiped the stored fixtures"
+
+
+def test_a_severely_partial_schedule_response_is_refused(tmp_path):
+    stored = [
+        (f"statsapi-{i}", "Atlanta Braves", 2026, None, 0, "2026-04-01",
+         "Truist Park", "H", "W", 5, 3, 2, None, None, "unique")
+        for i in range(120)
+    ]
+    path = _with_match_sources(_database(tmp_path), stored)
+    with closing(sqlite3.connect(path)) as con:
+        written = load_statsapi.replace_match_sources(
+            con, 2026, [_match(f"statsapi-{i}") for i in range(10)],
+            verbose=False)
+        con.commit()
+        kept = con.execute(
+            "SELECT COUNT(*) FROM club_match_sources").fetchone()[0]
+    assert written == 0
+    assert kept == 120, "a gutted schedule replaced the stored fixtures"

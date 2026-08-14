@@ -13,6 +13,7 @@ sport: that is what lets a sport module import it.
 """
 
 import importlib
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -20,6 +21,33 @@ from typing import Sequence
 import core
 import labels
 import obscurity
+
+#: Sport key -> {era name -> current name}, computed once per process.
+_CLUB_RENAMES: dict = {}
+
+
+def collapse_clubs(parts, renames) -> list:
+    """Collapse era names of one club to a single entry, order preserved.
+
+    `renames` maps an era name to the club's current name. Groups the
+    parts by that identity: a group holding one era name keeps it (the
+    team of the time), a group holding several is named by the identity,
+    because no single era name covers the span. Order-independent within
+    a group, so a ground's GROUP_CONCAT and a career's chronological path
+    both land on the same answer.
+    """
+    order: list = []
+    groups: dict = {}
+    for part in parts:
+        identity = renames.get(part, part)
+        if identity not in groups:
+            groups[identity] = []
+            order.append(identity)
+        if part not in groups[identity]:
+            groups[identity].append(part)
+    return [groups[identity][0] if len(groups[identity]) == 1 else identity
+            for identity in order]
+
 
 @dataclass(frozen=True)
 class Vocab:
@@ -91,6 +119,11 @@ class Sport:
     obscurity_population: str = ""
     #: Optional imported club catalogue shown after the standard layers.
     club_data_table: str = ""
+    #: An awards table keyed directly by player_id (the Lahman shape),
+    #: read by the player card. Distinct from the Draftguru awards layer,
+    #: which links through person_links and is declared by
+    #: has_draftguru_player_cards instead.
+    native_awards_table: str = ""
     #: Optional broad-family availability probe on the constraints module.
     family_probe: str = ""
     #: What one row of the `games` table actually is, when it is not a
@@ -119,9 +152,24 @@ class Sport:
     has_club_explorer: bool = False
     has_awards_page: bool = False
     has_past_games: bool = False
+    #: Module holding this sport's data caveats -- how it numbers rounds,
+    #: which results it records differently from the competition's own
+    #: record. Declared per sport because they are inherited from whichever
+    #: source the sport was built from, and only the AFL has any.
+    data_notes_module: str = ""
     #: Optional sport-owned page for venue/ground history and records.
     ground_explorer_module: str = ""
     has_ground_explorer: bool = False
+    #: Optional sport-owned page for the draft. Declared per sport because
+    #: what a draft record even holds differs: the AFL's carries a signing
+    #: rule (father-son, academy, zone) that no other sport here has.
+    draft_page_module: str = ""
+    has_draft_page: bool = False
+    #: Module supplying starting lineups for a sport whose `games` rows are
+    #: not box scores. The MLB build is season-grain -- Lahman has no box
+    #: scores -- so its match card has no per-player rows to draw and shows
+    #: who took the field instead.
+    lineup_module: str = ""
     #: The `games.round` value whose win means the sport's title -- 'GF' for
     #: the AFL, 'WS' for the MLB, 'SB' for the NFL. The player profile counts
     #: distinct seasons won to show a premiership/World Series/Super Bowl
@@ -143,6 +191,31 @@ class Sport:
     #: so the page cannot name a command without being told which.
     past_games_hint: str = ""
     family_hint: str = ""
+    #: Modules whose ``extensions()`` factory supplies this sport's extra
+    #: Advanced Search tokens (query_filters.SearchExtension instances).
+    #: The AFL declares afl.search_tokens for its captaincy, draft and
+    #: family filters; the shared compiler itself knows no sport's tables.
+    search_extension_modules: tuple = ()
+    #: Tables the Advanced Search query builder may expose. Discovery
+    #: finds *everything* in the file -- staging, manifests, link tables,
+    #: sqlite_stat1 -- and read-only access prevents modification, not
+    #: disclosure or expensive scans, so what is queryable is an explicit
+    #: allowlist. A sport that declares nothing offers only its core
+    #: players/games/matches tables.
+    query_tables: tuple = ()
+    #: ``{"table.column": kind}`` overrides for the query builder's
+    #: type discovery, for columns whose declared SQL type misleads --
+    #: every build stores dates as TEXT and flags as INTEGER, and the
+    #: builder must offer date pickers and true/false controls there,
+    #: not substring matches and arbitrary arithmetic.
+    query_column_kinds: dict = field(default_factory=dict)
+    #: ``("table.column", ...)`` text columns the visual tree may profile
+    #: for a select widget's value list. Profiling is a DISTINCT scan per
+    #: column, so which columns deserve one is the sport's explicit call
+    #: -- clubs, results, positions -- never "every text column", which
+    #: spent whole seconds scanning names and dates on each cold render.
+    #: Undeclared text columns stay free-text fields.
+    query_low_cardinality_columns: tuple = ()
     search_examples: tuple = ()
     grid_defaults: tuple = ()
     venue_display: dict = field(default_factory=dict)
@@ -169,6 +242,98 @@ class Sport:
         """The sport's constraints module, imported on first use."""
         return importlib.import_module(self.module)
 
+    def notes(self):
+        """The sport's data-notes module, or None when it declares none.
+
+        Imported on use like `C`, so a page can ask any sport for its
+        caveats and get nothing back rather than having to know which
+        sports have them.
+        """
+        if not self.data_notes_module:
+            return None
+        try:
+            return importlib.import_module(self.data_notes_module)
+        except ImportError:
+            return None
+
+    # -- club identity -------------------------------------------------
+    def club_renames(self) -> dict:
+        """games.club_hist -> club_now, wherever the two differ.
+
+        The renames the data itself records: Kangaroos -> North Melbourne,
+        South Melbourne -> Sydney, Footscray -> Western Bulldogs. This is
+        deliberately narrower than `schema.club_lineage`, which also folds
+        genuinely separate clubs into a successor for constraint answers --
+        the Bears into the Lions -- and those must never collapse on
+        screen: the Bears played as the Bears.
+
+        Cached for the life of the process rather than per revision: a
+        rename is history, and a database refresh does not change history.
+        """
+        cached = _CLUB_RENAMES.get(self.key)
+        if cached is not None:
+            return cached
+        renames: dict[str, str] = {}
+        s = self.schema
+        hist = getattr(s, "club_hist", "")
+        now = getattr(s, "club_now", "")
+        games = getattr(s, "games", "")
+        if hist and now and games and self.exists():
+            try:
+                con = sqlite3.connect(f"file:{self.db}?mode=ro", uri=True)
+                try:
+                    renames = {h: n for h, n in con.execute(
+                        f"SELECT DISTINCT {hist}, {now} FROM {games} "
+                        f"WHERE {hist} <> {now}") if h and n}
+                finally:
+                    con.close()
+            except sqlite3.Error:
+                renames = {}
+        _CLUB_RENAMES[self.key] = renames
+        return renames
+
+    def collapse_clubs(self, parts) -> list:
+        """One entry per club, named as the club was at the time.
+
+        A career list reading "Kangaroos, North Melbourne" is one club
+        twice, not two clubs. Within one identity: a single era name is
+        kept as written -- a Footscray career that ended before the rename
+        stays Footscray -- and several era names collapse to the name the
+        club goes by now, because no single era covers them.
+        """
+        return collapse_clubs(parts, self.club_renames())
+
+    def collapse_club_path(self, value) -> str:
+        """`collapse_clubs` over a '|' or comma separated club string."""
+        text = str(value or "")
+        parts = [part.strip() for part in re.split(r"[|,]", text)
+                 if part.strip()]
+        if not parts:
+            return text
+        sep = "|" if "|" in text else ", "
+        return sep.join(self.collapse_clubs(parts))
+
+    def lineups(self):
+        """The sport's lineup module, or None when it declares none."""
+        if not self.lineup_module:
+            return None
+        try:
+            return importlib.import_module(self.lineup_module)
+        except ImportError:
+            return None
+
+    def search_extensions(self) -> list:
+        """Fresh SearchExtension instances for one Advanced Search compile.
+
+        Imported on use like `C`, so a sport with no extensions costs
+        nothing and a page can pass `sport.search_extensions()` for any
+        sport without knowing which declare extra tokens.
+        """
+        out = []
+        for name in self.search_extension_modules:
+            out.extend(importlib.import_module(name).extensions())
+        return out
+
     def daily_grid_fetcher(self):
         """The callable behind `daily_grid_feed`, or None when unset.
 
@@ -193,7 +358,10 @@ class Sport:
     def exists(self):
         try:
             con = self.connect()
-            con.execute(f"SELECT 1 FROM {self.schema.players} LIMIT 1")
+            try:
+                con.execute(f"SELECT 1 FROM {self.schema.players} LIMIT 1")
+            finally:
+                con.close()
             return True
         except sqlite3.OperationalError:
             return False

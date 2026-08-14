@@ -8,7 +8,7 @@ module is generic despite where it lives, so populating this table is the
 whole of what turns the Past Games page and the Team Explorer's match tabs
 on for the NFL -- exactly as mlb/load_retrosheet.py does for the MLB.
 
-Unlike the MLB, nothing is downloaded. build_nfl_db.py already imports
+Unlike the MLB, nothing is downloaded. nfl/build_db.py already imports
 nflverse's schedule into ``matches``: 7,276 games from 1999 to 2025, each
 with both sides, both scores, the stadium and the game type. This module is
 a projection of that table into the two-rows-per-match shape club_history

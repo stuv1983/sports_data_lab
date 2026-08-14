@@ -111,12 +111,55 @@ career_home_runs_min = _G.career_score_min
 career_home_runs_max = _G.career_score_max
 career_home_runs_between = _G.career_score_between
 
-career_stat_total_min = _G.career_stat_total_min
 CAREER_AVG_MIN_GAMES = _G.CAREER_AVG_MIN_GAMES
 SEASON_AVG_MIN_GAMES = _G.SEASON_AVG_MIN_GAMES
 
-home_runs_at_multiple_clubs = _G.score_at_multiple_clubs
-games_at_multiple_clubs = _G.games_at_multiple_clubs
+
+def career_stat_total_min(stat, n):
+    """Accumulated `n` or more of `stat` across a regular-season career.
+
+    Not the generic builder: that sums every row, and this sport's rows
+    include postseason lines. A career total here means the regular season
+    -- the same convention career_home_runs is built with -- so a player
+    at 2,996 hits plus a long October must not clear career.hits>=3000.
+    """
+    if stat not in SCHEMA.stats:
+        raise ValueError(f"unknown statistic: {stat!r}")
+    return (f"""SELECT {SCHEMA.player_id} FROM {SCHEMA.games}
+                WHERE {SCHEMA.is_final} = 0 AND {stat} IS NOT NULL
+                GROUP BY {SCHEMA.player_id} HAVING SUM({stat}) >= ?""", [n])
+
+
+def home_runs_at_multiple_clubs(score=30, clubs=2):
+    """`score`+ regular-season home runs for each of `clubs` franchises."""
+    return (f"""SELECT {SCHEMA.player_id} FROM (
+                  SELECT {SCHEMA.player_id}, {SCHEMA.club_now},
+                         SUM({SCHEMA.game_score}) AS agg
+                  FROM {SCHEMA.games} WHERE {SCHEMA.is_final} = 0
+                  GROUP BY {SCHEMA.player_id}, {SCHEMA.club_now}
+                  HAVING agg >= ?
+                ) GROUP BY {SCHEMA.player_id} HAVING COUNT(*) >= ?""",
+            [score, clubs])
+
+
+def games_at_multiple_clubs(games=500, clubs=2):
+    """`games`+ regular-season games for each of `clubs` franchises.
+
+    The generic builder COUNT(*)s rows, which on this season-grain table
+    counted *seasons* under a label that says games -- "50+ games at two
+    clubs" was unsatisfiable, since nobody has fifty season-rows with one
+    franchise. A row's `games` column is how many games it stands for.
+    """
+    return (f"""SELECT {SCHEMA.player_id} FROM (
+                  SELECT {SCHEMA.player_id}, {SCHEMA.club_now},
+                         SUM(games) AS n
+                  FROM {SCHEMA.games} WHERE {SCHEMA.is_final} = 0
+                  GROUP BY {SCHEMA.player_id}, {SCHEMA.club_now}
+                  HAVING n >= ?
+                ) GROUP BY {SCHEMA.player_id} HAVING COUNT(*) >= ?""",
+            [games, clubs])
+
+
 played_with_id = _G.played_with_id
 
 played_in_season_range = _G.played_in_season_range
@@ -146,13 +189,16 @@ won_postseason_at = _G.won_postseason_at
 # -- exactly as constraints.premiership_player() reads 'GF' for the AFL and
 # constraints_nba.played_in_the_finals() reads 'F'.
 
+# Compared bare (`round = ?`), never as UPPER(TRIM(round)): wrapping the
+# column blinds SQLite to the round indexes. The build stores codes already
+# normalised, and the round/result hygiene test guards that invariant.
 WORLD_SERIES_ROUND = "WS"
 
 
 def played_in_the_world_series():
     """Appeared in a World Series game."""
     return ("SELECT DISTINCT player_id FROM games "
-            "WHERE UPPER(TRIM(round)) = ?", [WORLD_SERIES_ROUND])
+            "WHERE round = ?", [WORLD_SERIES_ROUND])
 
 
 def won_the_world_series():
@@ -164,14 +210,14 @@ def won_the_world_series():
     player on the roster who never left the bench is not in BattingPost.
     """
     return ("SELECT DISTINCT player_id FROM games "
-            "WHERE UPPER(TRIM(round)) = ? AND result = 'W'",
+            "WHERE round = ? AND result = 'W'",
             [WORLD_SERIES_ROUND])
 
 
 def never_played_the_world_series():
     """Played, but never in a World Series game."""
     return ("SELECT DISTINCT player_id FROM games WHERE player_id NOT IN "
-            "(SELECT player_id FROM games WHERE UPPER(TRIM(round)) = ?)",
+            "(SELECT player_id FROM games WHERE round = ?)",
             [WORLD_SERIES_ROUND])
 
 
@@ -469,6 +515,47 @@ BUILDERS = {
     # "5+ WAR season" is how a solver says it.
     "X+ WAR in a season":         (season_war_min, ["war"]),
     "X+ career WAR":              (career_war_min, ["war"]),
+}
+
+#: The category shelves the criterion pickers arrange BUILDERS on --
+#: the same names the AFL catalogue uses, so a reader who learned one
+#: sport's picker can navigate every sport's. A builder named nowhere
+#: here falls to the picker's "More" shelf.
+BUILDER_GROUPS = {
+    "Clubs & journeys": (
+        "Played for club", "First career game for club", "One-club player",
+        "Multi-club player", "Played for X+ clubs", "X+ goals at 2+ clubs",
+        "X+ games at 2+ clubs", "Winning record in a rivalry",
+        "X+ games in a rivalry",
+    ),
+    "Career milestones": (
+        "150+ / X+ career games", "Fewer than X career games",
+        "X+ career goals", "X or fewer career goals", "X+ career hits",
+        "X+ of a stat in a career", "Career average of a stat",
+        "X+ career WAR",
+    ),
+    "Season & era": (
+        "Played between seasons", "Debuted between seasons",
+        "X+ of a stat in one season", "Season average of a stat",
+        ".300+ batting average season", "Two stats in the same season",
+        "X+ WAR in a season",
+    ),
+    "Finals & premierships": (
+        "Played in a final", "Won a final", "X+ finals games",
+        "No finals wins (played finals)", "Never won a final",
+        "Never played finals", "Played in the World Series",
+        "Won the World Series", "Played in X+ World Series",
+        "Won X+ World Series", "Lost X+ World Series",
+        "Never played in the World Series",
+    ),
+    "Grounds & venues": (
+        "Played at venue", "Played in state", "Won a final at venue",
+    ),
+    "Physical": ("Played a position", "Born outside the US"),
+    "Awards & honours": (
+        "Won an award", "All-Star selection", "Hall of Fame",
+    ),
+    "Teammates": ("Played with…",),
 }
 
 #: Builders needing an optional layer. app.py filters BUILDERS by these

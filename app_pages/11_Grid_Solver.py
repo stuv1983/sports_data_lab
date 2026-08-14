@@ -1,4 +1,8 @@
 import datetime
+import hashlib
+import html
+import random
+import sqlite3
 
 import streamlit as st
 import pandas as pd
@@ -7,7 +11,6 @@ import core
 import ui_widgets
 import components
 import sports
-import random
 
 SPORT = st.session_state.SPORT
 con = st.session_state.con
@@ -32,28 +35,51 @@ def axis_widget(key, default_type, defaults):
     return ui_widgets.axis_widget(key, default_type, defaults, SPORT, DB_REVISION, AVAILABLE)
 
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Grid setup")
+st.markdown("# Grid solver")
+st.caption(
+    f"Build or load a {V.grid_source} board. Every square is solved as soon "
+    "as its row and column are set."
+)
 
-# Axis keys are namespaced by sport. Streamlit's session state is flat, so
-# without this an axis left on "Played for club / St Kilda" survives a
-# switch to the NBA and throws on the club lookup.
-st.sidebar.markdown("### Columns")
-cols_def = []
-# Declared per sport: an NBA board opening on "St Kilda" would be silently
-# coerced to clubs[0] by axis_widget and answer a question nobody asked.
-col_defaults, row_defaults = SPORT.grid_defaults
-for i, (dt, dv) in enumerate(col_defaults):
-    with st.sidebar.expander(f"Column {i+1}", expanded=False):
-        cols_def.append(axis_widget(SPORT.k("c", i), dt, dv))
+SETUP = st.container(border=True)
+SETUP.markdown("## Grid setup")
 
-st.sidebar.markdown("### Rows")
-rows_def = []
-for i, (dt, dv) in enumerate(row_defaults):
-    with st.sidebar.expander(f"Row {i+1}", expanded=False):
-        rows_def.append(axis_widget(SPORT.k("r", i), dt, dv))
+# Only offered where the sport declares a feed AND a parser: a fetched board
+# arrives as six lines of the site's own wording, and reading those is what
+# afl/parse_criteria.py does -- for the AFL only.
+DAILY = f"Latest {V.grid_source}"
+CAN_FETCH_DAILY = bool(SPORT.daily_grid_feed and SPORT.criterion_parser)
+SOURCES = ["Build my own", "Saved grid", "Auto-made grid", "Paste criteria",
+           "Past grid", "Random supported grid"]
+if CAN_FETCH_DAILY:
+    SOURCES.insert(0, DAILY)
+source_key = SPORT.k("gridsource")
+if st.session_state.get(source_key) not in SOURCES:
+    st.session_state[source_key] = DAILY if CAN_FETCH_DAILY else "Build my own"
+source = SETUP.selectbox(
+    "Start with", SOURCES, key=source_key,
+    help="Choose the latest published board, create your own, or open a saved grid.",
+)
 
-st.sidebar.markdown("---")
+# Axis keys are namespaced by sport. Streamlit's session state is flat, so a
+# club from one sport cannot leak into another. The six controls live beside
+# the board now, where a first-time solver can actually find them.
+cols_def, rows_def = [], []
+if source == "Build my own":
+    col_defaults, row_defaults = SPORT.grid_defaults
+    SETUP.markdown("### Columns")
+    column_cards = SETUP.columns(3)
+    for i, (dt, dv) in enumerate(col_defaults):
+        with column_cards[i].container(border=True):
+            st.markdown(f"**Column {i + 1}**")
+            cols_def.append(axis_widget(SPORT.k("c", i), dt, dv))
+
+    SETUP.markdown("### Rows")
+    row_cards = SETUP.columns(3)
+    for i, (dt, dv) in enumerate(row_defaults):
+        with row_cards[i].container(border=True):
+            st.markdown(f"**Row {i + 1}**")
+            rows_def.append(axis_widget(SPORT.k("r", i), dt, dv))
 
 # ---------------------------------------------------------- grid sources
 # Three ways in besides building the axes by hand. All of them run every
@@ -159,8 +185,6 @@ def _fetch_daily_board(sport_key, date):
 
 def _auto_grid():
     """Create a supported 3x3 board whose nine cells all have an answer."""
-    import random
-
     played_for = C.BUILDERS["Played for club"][0]
     career_min = C.BUILDERS["150+ / X+ career games"][0]
     played_between = C.BUILDERS["Played between seasons"][0]
@@ -205,18 +229,18 @@ def show_report(picked, mode):
     report.
     """
     g = picked.grid
-    st.sidebar.markdown(f"**{g.key}** · source `{g.source}`")
-    st.sidebar.caption(picked.line())
+    SETUP.markdown(f"**{g.key}** · source `{g.source}`")
+    SETUP.caption(picked.line())
 
     if not g.complete:
-        st.sidebar.warning(
+        SETUP.warning(
             f"Partial capture — {len(g.partial_criteria)} of six "
             "criteria were recorded, so this board cannot be drawn. "
             "The criteria themselves still parse; see the report below.")
         st.session_state.pop("loaded", None)
     elif picked.unsupported and mode == "Authentic":
         names = ", ".join(f"“{c.text}”" for c in picked.unsupported)
-        st.sidebar.error(
+        SETUP.error(
             f"Not playable in Authentic mode: {names} "
             f"({'; '.join(c.reason for c in picked.unsupported)}). "
             "Switch to Practice to play a substituted board.")
@@ -226,7 +250,7 @@ def show_report(picked, mode):
             cache = st.session_state.setdefault(SPORT.k("practice"), {})
             prows, pcols, swaps = HG.practice_board(con, picked, cache)
             for original, replacement in swaps:
-                st.sidebar.warning(
+                SETUP.warning(
                     f"Original: {original} — replaced for Practice Mode "
                     f"by “{replacement}”.")
         else:
@@ -234,7 +258,7 @@ def show_report(picked, mode):
         st.session_state.loaded = {"rows": _axes_from(prows),
                                    "cols": _axes_from(pcols)}
 
-    with st.sidebar.expander("Criterion report", expanded=False):
+    with SETUP.expander("Criterion report", expanded=False):
         for c in picked.all_criteria:
             if c.supported:
                 n = f"{c.eligible:,} eligible" if c.eligible is not None \
@@ -252,28 +276,16 @@ def show_report(picked, mode):
             st.caption("All nine intersections execute.")
 
 
-st.sidebar.markdown("### Grid source")
-# Only offered where the sport declares a feed AND a parser: a fetched board
-# arrives as six lines of the site's own wording, and reading those is what
-# afl/parse_criteria.py does -- for the AFL only.
-DAILY = f"Today's {V.grid_source}"
-CAN_FETCH_DAILY = bool(SPORT.daily_grid_feed and SPORT.criterion_parser)
-SOURCES = ["Build my own", "Saved grid", "Auto-made grid", "Paste criteria",
-           "Past grid", "Random supported grid"]
-if CAN_FETCH_DAILY:
-    SOURCES.insert(1, DAILY)
-source = st.sidebar.radio("Source", SOURCES, key=SPORT.k("gridsource"),
-                          label_visibility="collapsed")
-
 if source in ("Paste criteria", "Past grid",
               "Random supported grid", DAILY):
-    mode = st.sidebar.radio(
-        "Mode", ["Authentic", "Practice"], horizontal=True,
+    mode = SETUP.segmented_control(
+        "Mode", ["Authentic", "Practice"],
+        default="Authentic", selection_mode="single",
         key=SPORT.k("gridmode"),
         help="Authentic plays only grids whose six criteria are all "
              "supported, with no substitutions. Practice replaces an "
              "unsupported criterion with a comparable one and labels the "
-             "swap on the axis.")
+             "swap on the axis.") or "Authentic"
 else:
     mode = "Authentic"
 
@@ -285,20 +297,27 @@ if source == DAILY and CAN_FETCH_DAILY:
     # above. Only a day the scan has not reached yet costs an HTTP request,
     # which keeps the common case free while still making today's board
     # playable before the scan next runs.
-    st.sidebar.caption(
+    SETUP.caption(
         f"Opens the {V.grid_source} board for a given day. Saved boards "
         "come from the database; anything newer is read straight from "
         f"[{SPORT.daily_grid_site.split('//')[-1]}]"
         f"({SPORT.daily_grid_site}).")
-    day = st.sidebar.date_input("Board date", value=datetime.date.today(),
-                                key=SPORT.k("dailydate"),
-                                format="YYYY-MM-DD")
+    newest_saved_day = max(LIB_BY_DATE) if LIB_BY_DATE else None
+    try:
+        default_day = datetime.date.fromisoformat(newest_saved_day)
+    except (TypeError, ValueError):
+        default_day = datetime.date.today()
+    day = SETUP.date_input(
+        "Board date", value=default_day, key=SPORT.k("dailydate"),
+        format="YYYY-MM-DD",
+        help="Defaults to the newest board saved in the database.",
+    )
     day_iso = day.isoformat()
 
     picked = None
     saved = LIB_BY_DATE.get(day_iso)
     if saved is not None:
-        st.sidebar.caption(
+        SETUP.caption(
             f"From the saved library — captured by "
             f"{saved.grid.source.replace('_', ' ')}.")
         with st.spinner("Checking every square against the database…"):
@@ -308,21 +327,38 @@ if source == DAILY and CAN_FETCH_DAILY:
         with st.spinner(f"Asking {V.grid_source} for {day_iso}…"):
             board = _fetch_daily_board(SPORT.key, day_iso)
         if board:
+            # Save a trusted live board immediately, then reopen it through
+            # the normal captured-library path on the fresh DB revision.
+            from utils.fetch_grids import save_grid as save_captured_grid
+            try:
+                action = save_captured_grid(
+                    SPORT.db, day_iso, V.grid_source,
+                    board["rows"], board["cols"], board.get("grid_num"),
+                )
+            except (KeyError, OSError, RuntimeError, ValueError,
+                    sqlite3.Error) as exc:
+                SETUP.warning(
+                    "The live board opened, but it could not be added to the "
+                    f"saved library: {exc}"
+                )
+            else:
+                if action != "unchanged":
+                    st.toast("Latest board saved", icon=":material/check_circle:")
+                    st.rerun()
             with st.spinner("Checking every square against the database…"):
                 picked = feed_report(SPORT.key, SPORT.db, DB_REVISION,
                                      day_iso, V.grid_source, board)
         if picked is None:
-            st.sidebar.warning(
+            SETUP.warning(
                 f"No {V.grid_source} board came back for {day_iso}. Each "
                 "board is published on its own day, an older one may have "
                 "dropped off the feed, and the site may simply be "
                 "unreachable — the feed answers all three the same way.")
             st.session_state.pop("loaded", None)
         else:
-            st.sidebar.caption(
-                "Fetched live — not yet in the saved library. The "
-                "scheduled scan will store it.")
-        if st.sidebar.button("Check again", key=SPORT.k("daily_refetch")):
+            SETUP.caption("Fetched live from the published board feed.")
+        if SETUP.button("Check again", key=SPORT.k("daily_refetch"),
+                        icon=":material/refresh:"):
             _fetch_daily_board.clear()
             st.rerun()
 
@@ -330,22 +366,27 @@ if source == DAILY and CAN_FETCH_DAILY:
         show_report(picked, mode)
 
 elif source == "Saved grid":
-    saved = accounts.list_saved_grids(AUTH_USER.id, SPORT.key)
-    if not saved:
-        st.sidebar.info("You have no saved grids for this sport yet.")
+    # The page can be opened anonymously when an administrator loosens the
+    # grid_solver audience, so AUTH_USER is not guaranteed here.
+    saved = (accounts.list_saved_grids(AUTH_USER.id, SPORT.key)
+             if AUTH_USER else [])
+    if AUTH_USER is None:
+        SETUP.info("Log in to open your saved grids.")
+    elif not saved:
+        SETUP.info("You have no saved grids for this sport yet.")
     else:
         by_id = {item["id"]: item for item in saved}
-        chosen_id = st.sidebar.selectbox(
+        chosen_id = SETUP.selectbox(
             "Saved grid", list(by_id), key=SPORT.k("saved_grid_id"),
             format_func=lambda grid_id: by_id[grid_id]["name"])
-        open_col, delete_col = st.sidebar.columns(2)
+        open_col, delete_col = SETUP.columns(2)
         if open_col.button("Open", key=SPORT.k("saved_grid_open"),
                            type="primary"):
             try:
                 st.session_state.loaded = accounts.load_grid(
                     AUTH_USER.id, chosen_id)
             except accounts.AccountError as exc:
-                st.sidebar.error(str(exc))
+                SETUP.error(str(exc))
             else:
                 st.session_state.cell = None
                 st.rerun()
@@ -355,15 +396,15 @@ elif source == "Saved grid":
             st.rerun()
 
 elif source == "Auto-made grid":
-    st.sidebar.caption(
+    SETUP.caption(
         "Builds a fresh board from clubs, eras, and career milestones, and checks that all nine squares have an answer.")
-    if (st.sidebar.button("Make another", key=SPORT.k("auto_grid_button"),
+    if (SETUP.button("Make another", key=SPORT.k("auto_grid_button"),
                           type="primary")
             or SPORT.k("auto_grid") not in st.session_state):
         with st.spinner("Making a playable grid…"):
             generated = _auto_grid()
         if generated is None:
-            st.sidebar.warning("No complete automatic grid was found. Try again.")
+            SETUP.warning("No complete automatic grid was found. Try again.")
         else:
             st.session_state[SPORT.k("auto_grid")] = generated
             st.session_state.loaded = generated
@@ -380,33 +421,33 @@ elif source in ("Past grid", "Random supported grid") and LIBRARY:
     if source == "Random supported grid":
         pool = ready if mode == "Authentic" else [r for r in LIBRARY
                                                   if r.grid.complete]
-        if st.sidebar.button("Shuffle", key=SPORT.k("gridshuffle")) \
+        if SETUP.button("Shuffle", key=SPORT.k("gridshuffle")) \
                 or SPORT.k("randgrid") not in st.session_state:
-            import random
             st.session_state[SPORT.k("randgrid")] = (
                 random.choice(pool).grid.number if pool else None)
         chosen = st.session_state.get(SPORT.k("randgrid"))
         picked = None
         if chosen is None or chosen not in LIB_BY_NUMBER:
-            st.sidebar.warning("No grid in the library is fully supported.")
+            SETUP.warning("No grid in the library is fully supported.")
         else:
             with st.spinner("Checking every square against the database…"):
                 picked = grid_report(SPORT.key, SPORT.db, DB_REVISION, chosen)
     else:
-        by = st.sidebar.radio("Select by",
+        by = SETUP.segmented_control("Select by",
                               [f"{V.grid_source} number", "Date"],
-                              horizontal=True, key=SPORT.k("gridby"))
+                              default=f"{V.grid_source} number",
+                              key=SPORT.k("gridby"))
         # Every grid stays selectable, including the ones that cannot be
         # played. Hiding them would hide the reason they cannot be played,
         # which is the more useful half of the information.
         if by == f"{V.grid_source} number":
             numbers = [r.grid.number for r in LIBRARY]
-            n = st.sidebar.selectbox(
+            n = SETUP.selectbox(
                 "Grid", numbers, key=SPORT.k("gridnum"),
                 format_func=lambda x: lib_label(LIB_BY_NUMBER[x]))
         else:
             dates = {r.grid.date: r.grid.number for r in LIBRARY}
-            dsel = st.sidebar.selectbox(
+            dsel = SETUP.selectbox(
                 "Date", list(dates), key=SPORT.k("griddatesel"),
                 format_func=lambda x: f"{x} — {LIB_BY_NUMBER[dates[x]].line()}")
             n = dates[dsel]
@@ -420,12 +461,12 @@ elif source in ("Past grid", "Random supported grid") and LIBRARY:
         show_report(picked, mode)
 
 elif source in ("Past grid", "Random supported grid"):
-    st.sidebar.info(f"No captured grid library exists for {SPORT.label} yet.")
+    SETUP.info(f"No captured grid library exists for {SPORT.label} yet.")
 
 elif source == "Paste criteria" and not SPORT.criterion_parser:
     # afl/parse_criteria.py compiles against the AFL constraint set, so offering
     # it for another sport would answer AFL questions from an NBA database.
-    st.sidebar.info(f"Criterion parsing is not available for {SPORT.label}.")
+    SETUP.info(f"Criterion parsing is not available for {SPORT.label}.")
 
 elif source == "Paste criteria":
     from afl import historic_grids as HG
@@ -436,7 +477,7 @@ elif source == "Paste criteria":
     # different answers, and choosing between them from a dropdown is a
     # guess made once and never re-checked. Typing Gridley's own wording
     # hands that decision to afl/parse_criteria.py, which reads the words.
-    with st.sidebar.expander("Type the six criteria", expanded=True):
+    with SETUP.expander("Type the six criteria", expanded=True):
         st.caption(
             "Copy each axis exactly as the board words it — "
             "“50+ GAMES TWO DIFF CLUBS”, “PLAYED IN 2010s”, "
@@ -458,42 +499,50 @@ elif source == "Paste criteria":
             cols=tuple(typed_cols), rows=tuple(typed_rows))
         show_report(HG.analyse(pasted_grid, con, SPORT), mode)
     else:
-        st.sidebar.info("Enter all six criteria to draw the board.")
+        SETUP.info("Enter all six criteria to draw the board.")
         st.session_state.pop("loaded", None)
 
 if "loaded" in st.session_state and source != "Build my own":
     rows_def = st.session_state.loaded["rows"]
     cols_def = st.session_state.loaded["cols"]
-    st.sidebar.info("Using a loaded grid. Pick “Build my own” to go back "
+    SETUP.info("Using a loaded grid. Pick “Build my own” to go back "
                     "to the axes set above.")
 elif source == "Build my own":
     st.session_state.pop("loaded", None)
 
-with st.sidebar.expander("Save this grid", expanded=False):
-    save_name = st.text_input("Grid name", key=SPORT.k("save_grid_name"),
-                              placeholder="Friday challenge")
-    if st.button("Save grid", key=SPORT.k("save_grid_button"),
-                 type="primary", width="stretch"):
-        try:
-            accounts.save_grid(
-                AUTH_USER.id, SPORT.key, save_name, rows_def, cols_def)
-        except (accounts.AccountError, PermissionError) as exc:
-            st.error(str(exc))
-        else:
-            st.success("Grid saved. Open it from Grid source → Saved grid.")
+with SETUP.expander("Save this grid", expanded=False,
+                    icon=":material/save:"):
+    if AUTH_USER is None:
+        st.caption("Log in to save grids.")
+    else:
+        save_name = st.text_input("Grid name", key=SPORT.k("save_grid_name"),
+                                  placeholder="Friday challenge")
+        if st.button("Save grid", key=SPORT.k("save_grid_button"),
+                     type="primary", width="stretch"):
+            try:
+                accounts.save_grid(
+                    AUTH_USER.id, SPORT.key, save_name, rows_def, cols_def)
+            except (accounts.AccountError, PermissionError) as exc:
+                st.error(str(exc))
+            else:
+                st.success("Grid saved. Open it from Start with → Saved grid.")
 
-st.sidebar.markdown("---")
-order = st.sidebar.radio("Rank by",
-                         ["obscurity", f"fewest {V.games}", "oldest", "newest"],
-                         key=SPORT.k("order"))
-order = "fewest games" if order.startswith("fewest") else order
-limit = st.sidebar.slider("Results per square", 5, 100, 25,
-                          key=SPORT.k("limit"))
+with st.popover("Result options", icon=":material/tune:"):
+    order = st.selectbox(
+        "Rank answers by",
+        ["obscurity", f"fewest {V.games}", "oldest", "newest"],
+        key=SPORT.k("order"),
+    )
+    order = "fewest games" if order.startswith("fewest") else order
+    default_limit = st.slider(
+        "Default rows per square", 5, 100, 25,
+        key=SPORT.k("limit"),
+        help="Sets the initial result count. Each opened square can be "
+             "changed independently above its results table.",
+    )
 
 
 # -------------------------------------------------------------- the board
-st.markdown("# Grid Solver")
-st.caption(f"Build or load a {V.grid_source} board. Every square is solved as soon as its axes are set.")
 
 
 def _rebuild(frags, params):
@@ -552,7 +601,38 @@ def square_for(r, c):
                    order)
 
 
-_grid_signature = repr((SPORT.key, rows_def, cols_def))
+def _rows_key(r, c, constraints):
+    """Stable per-square key for its independently chosen result count."""
+    signature = hashlib.blake2s(
+        repr(constraints).encode("utf-8"), digest_size=6).hexdigest()
+    return SPORT.k("result_rows", r, c, signature)
+
+
+def _rows_to_show(r, c, constraints, total):
+    """Render the selected square's custom row-count form."""
+    key = _rows_key(r, c, constraints)
+    initial = min(int(default_limit), int(total))
+    try:
+        current = int(st.session_state.get(key, initial))
+    except (TypeError, ValueError):
+        current = initial
+    st.session_state[key] = max(1, min(current, int(total)))
+
+    with st.form(SPORT.k("result_rows_form", r, c), border=False):
+        field, action = st.columns([2, 1], vertical_alignment="bottom")
+        with field:
+            chosen = st.number_input(
+                "Rows to show",
+                min_value=1,
+                max_value=int(total),
+                step=25,
+                key=key,
+                help="Type any number up to the square's eligible-player "
+                     "count.",
+            )
+        with action:
+            st.form_submit_button("Show rows", width="stretch")
+    return int(chosen)
 
 
 # The first square with both axes defined opens automatically, so the page
@@ -562,16 +642,25 @@ if "cell" not in st.session_state or st.session_state.cell is None:
         ((r, c) for r in range(3) for c in range(3)
          if len(constraints_for(r, c)) == 2), None)
 
+def _axis_html(label):
+    """Escape an axis label before it enters unsafe_allow_html markup.
+
+    Labels carry data-sourced text -- player names from scraped imports,
+    free-typed teammate names -- so only the newline-to-<br> is ours.
+    """
+    return html.escape(str(label)).replace(chr(10), "<br>")
+
+
 header = st.columns([1.1, 1, 1, 1])
 for i, (label, _) in enumerate(cols_def):
     header[i + 1].markdown(
-        f"<div class='axis'>{label.replace(chr(10), '<br>')}</div>",
+        f"<div class='axis'>{_axis_html(label)}</div>",
         unsafe_allow_html=True)
 
 for r in range(3):
     row = st.columns([1.1, 1, 1, 1])
     row[0].markdown(
-        f"<div class='axis'>{rows_def[r][0].replace(chr(10), '<br>')}</div>",
+        f"<div class='axis'>{_axis_html(rows_def[r][0])}</div>",
         unsafe_allow_html=True)
     for c in range(3):
         sq = square_for(r, c)
@@ -608,7 +697,7 @@ for r in range(3):
             span = SCHEMA.career_span(sq.best)
             face = (
                 f"<div class='square{' is-open' if open_here else ''}'>"
-                f"<div class='square-name'>{sq.best_name}</div>"
+                f"<div class='square-name'>{html.escape(str(sq.best_name))}</div>"
                 + (f"<div class='square-meta'>{span}</div>" if span else "")
                 + f"<div>{core.stars_html(sq.obscurity)}</div>"
                 f"<div class='square-meta'>{sq.eligible:,} eligible</div>"
@@ -634,14 +723,20 @@ if st.session_state.cell:
     r, c = st.session_state.cell
     rlab, clab = rows_def[r][0], cols_def[c][0]
     cs = constraints_for(r, c)
+    selected_square = square_for(r, c)
+    total = selected_square.eligible if selected_square else 0
 
     st.markdown(f"### {rlab.replace(chr(10), ' ')} × {clab.replace(chr(10), ' ')}")
-    rows = _solve(
-        SPORT.key, SPORT.db, DB_REVISION,
-        tuple(sql for sql, _ in cs),
-        tuple(value for _, values in cs for value in values),
-        order, limit,
-    )
+    if selected_square is None or total <= 0:
+        rows = ()
+    else:
+        limit = _rows_to_show(r, c, cs, total)
+        rows = _solve(
+            SPORT.key, SPORT.db, DB_REVISION,
+            tuple(sql for sql, _ in cs),
+            tuple(value for _, values in cs for value in values),
+            order, limit,
+        )
 
     if not rows:
         st.info(SPORT.empty_hint)
@@ -659,8 +754,6 @@ if st.session_state.cell:
 
         best = rows[0][1:]          # drop the id the table does not show
         best_name, best_obsc = best[0], best[-1]
-        selected_square = square_for(r, c)
-        total = selected_square.eligible if selected_square else len(rows)
 
         # Star ratings replace the raw 0-100 obscurity score everywhere,
         # scaled against this square's own spread rather than the whole
@@ -675,22 +768,28 @@ if st.session_state.cell:
             lambda o: core.stars_text(o, lo=obs_lo, hi=obs_hi))
         df = df.drop(columns=[obscurity_header])
 
+        # NULL, never 0: a career with no recorded games count shows a
+        # dash rather than formatting None and crashing the card.
+        games_text = (f"{best[3]:,}" if isinstance(best[3], (int, float))
+                      else "—")
         card1, card2, card3 = st.columns(3)
         card1.markdown(
             f"<div class='card'><div class='card-label'>Best answer</div>"
-            f"<div class='card-value'>{best_name}</div>"
+            f"<div class='card-value'>{html.escape(str(best_name))}</div>"
             f"<div class='card-sub'>{best[1]}–{best[2]} · "
-            f"{best[3]:,} {V.games}</div></div>", unsafe_allow_html=True)
+            f"{games_text} {V.games}</div></div>", unsafe_allow_html=True)
         with card1:
             components.player_button(
                 f"Open {best_name}", SPORT, con, pids[0],
                 key=SPORT.k("best_answer", r, c), key_prefix="gridbest")
+        obsc_sub = (f"obscurity {best_obsc:.1f} / 100 database-wide"
+                    if isinstance(best_obsc, (int, float))
+                    else "obscurity unrecorded")
         card2.markdown(
             f"<div class='card'><div class='card-label'>Rarity for this "
             f"square</div><div class='card-value'>"
             f"{core.stars_html(best_obsc, lo=obs_lo, hi=obs_hi)}</div>"
-            f"<div class='card-sub'>obscurity {best_obsc:.1f} / 100 "
-            f"database-wide</div>"
+            f"<div class='card-sub'>{obsc_sub}</div>"
             f"</div>", unsafe_allow_html=True)
         card3.markdown(
             f"<div class='card'><div class='card-label'>Eligible players"

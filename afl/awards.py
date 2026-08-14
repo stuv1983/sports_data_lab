@@ -112,6 +112,38 @@ def all_australian_in_position(position):
                  AND LOWER(t.position) LIKE ?""", [f"%{position.lower()}%"])
 
 
+#: Line groups over the position codes Draftguru's team sheets use.
+#: Explicit code sets, not substring matches: 'FF' is inside 'HFF' and a
+#: LIKE would quietly hand full-forward squares the half-forward flank.
+AA_POSITION_GROUPS = {
+    "forward": ("FF", "CHF", "FP", "HFF"),
+    "back": ("FB", "CHB", "BP", "HBF"),
+    "midfield": ("C", "W", "RR", "Ro"),
+    "ruck": ("Ru",),
+    "interchange": ("IC",),
+}
+
+AA_POSITION_CHOICES = tuple(
+    (key, key.capitalize()) for key in AA_POSITION_GROUPS)
+
+
+def all_australian_position_group(group):
+    """Named All-Australian in one line of the ground -- "ALL AUSTRALIAN
+    FORWARD". Positions are recorded from 1991 on; interchange picks are a
+    separate group, matching Gridley's own exclusion of them."""
+    try:
+        codes = AA_POSITION_GROUPS[str(group).strip().lower()]
+    except KeyError:
+        raise ValueError(f"unknown All-Australian line: {group!r}") from None
+    marks = ",".join("?" for _ in codes)
+    return (f"""SELECT DISTINCT l.player_id
+                FROM all_australian t JOIN person_links l
+                  ON l.dg_person_id = t.dg_person_id
+                WHERE l.match_status IN ('from_draft','unique','resolved')
+                  AND l.player_id IS NOT NULL
+                  AND t.position IN ({marks})""", list(codes))
+
+
 def all_australian_between(lo, hi):
     return ("""SELECT DISTINCT player_id FROM (
                    SELECT l.player_id, t.season
@@ -226,6 +258,8 @@ AWARD_BUILDERS = {
     "All-Australian captain":       (all_australian_captain, []),
     "All-Australian between years": (all_australian_between, ["from", "to"]),
     "All-Australian squad":         (all_australian_squad, []),
+    "All-Australian in a position": (all_australian_position_group,
+                                     ["aa_position"]),
     "Won an award…":                (won_award, ["award"]),
     "Won an award X+ times":        (won_award_times, ["award", "times"]),
     "Brownlow Medallist":           (brownlow_medallist, []),
@@ -303,7 +337,7 @@ def national_draft_pick_between(lo, hi):
     an unqualified `pick BETWEEN 1 AND 10` sweeps in rookie and pre-season
     selections numbered 1-10 as well.
     """
-    return _draft("LOWER(d.draft_type) LIKE '%national%' "
+    return _draft("d.draft_kind = 'national' "
                   "AND d.pick BETWEEN ? AND ?", [lo, hi])
 
 

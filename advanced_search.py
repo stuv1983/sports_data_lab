@@ -10,12 +10,14 @@ import streamlit as st
 
 import components
 import core
+import db_pool
 import query_filters_family as Q
 
 
 def _db_revision(db):
+    # Same shape as app.py's db_revision; see the note there.
     stat = os.stat(db)
-    return stat.st_mtime_ns, stat.st_size
+    return str(db), stat.st_mtime_ns, stat.st_size
 
 
 @st.cache_data(show_spinner=False, max_entries=256)
@@ -43,9 +45,10 @@ def _all_query_params(query_params) -> dict:
         return dict(query_params)
 
 
-#: Fallback examples, in AFL data. A sport declares its own in sports.py --
-#: showing an NBA user `club:Hawthorn` teaches them a query that returns
-#: nothing and reads as the search being broken.
+#: Fallback examples, in AFL data. A sport declares its own via
+#: `search_examples` on its Sport entry -- showing an NBA user
+#: `club:Hawthorn` teaches them a query that returns nothing and reads as
+#: the search being broken.
 EXAMPLES = [
     'club:Hawthorn captain:true games>=100 sort:obscurity',
     'captain_club:Carlton captain_year:1995..2001',
@@ -62,30 +65,120 @@ def _examples(sport):
     return list(sport.search_examples) or EXAMPLES
 
 
-def search_page(sport, con):
+def _apply_suggestion(state_key, query, term, name):
+    """Swap the misspelling for the clicked name, before the form renders.
+
+    Runs as the button's on_click callback, which Streamlit fires before
+    the rerun -- the one moment the form's text can be set without
+    fighting the widget that owns it. The rewritten query then compiles
+    on the very rerun the click caused: one tap, corrected search.
+    """
+    st.session_state[state_key] = Q.replace_name_term(query, term, name)
+
+
+def _suggestion_stars(sport, revision, matches) -> dict:
+    """Obscurity stars for each suggested player, keyed by id.
+
+    Two Gary Abletts are told apart by span and clubs already; the stars
+    say at a glance which namesake is the household name and which is the
+    long tail.
+    """
+    s = sport.schema
+    marks = ",".join("?" for _ in matches)
+    con = db_pool.get_con(sport.db, revision)
+    return {
+        pid: core.stars_text(obscurity)
+        for pid, obscurity in con.execute(
+            f"SELECT {s.player_id}, {s.obscurity} FROM {s.players} "
+            f"WHERE {s.player_id} IN ({marks})",
+            [pid for pid, _, _ in matches])
+    }
+
+
+def _suggest_close_names(sport, query, state_key, revision):
+    """Did-you-mean for a name filter that found nobody.
+
+    The matcher is the player picker's own: strict substring tiers first
+    and a similarity scan only when none of them hit, so what comes back
+    is the closest real spellings, each with the career span, games,
+    clubs and obscurity stars that tell two namesakes apart. Each is a
+    button that rewrites the query and searches again. Shown only when
+    the *name* is what failed -- a name the database does contain means
+    the other filters did the excluding, and repeating it back would be
+    noise.
+    """
+    import ui_widgets
+
+    for term in Q.name_terms(query):
+        matches = ui_widgets.player_matches(term, sport, revision, limit=4)
+        if not matches:
+            continue
+        typed = ui_widgets._player_search_key(term)
+        if any(typed in ui_widgets._player_search_key(name)
+               for _, name, _ in matches):
+            continue
+        stars = _suggestion_stars(sport, revision, matches)
+        st.markdown(f"Nobody is spelled **{term}**. Closest names:")
+        for pid, name, label in matches:
+            st.button(
+                f"{label}  ·  {stars.get(pid, '—')}",
+                key=sport.k(f"dym_{term}_{pid}"),
+                on_click=_apply_suggestion,
+                args=(state_key, query, term, name))
+
+
+def url_query() -> str:
+    """The search expression the current URL encodes, or an empty string.
+
+    The page hosting both search modes reads this to decide which one a
+    deep link means: a shared ``?q=`` or structured-parameter link is a
+    player-search query, so that mode should open holding it.
+    """
+    return Q.query_from_params(_all_query_params(st.query_params)).strip()
+
+
+def search_page(sport, con, heading=True):
     """Render the reusable, URL-addressable player search page."""
     V = sport.vocab
     examples = _examples(sport)
-    has_family = getattr(sport.C, "family_relationships_available", None)
+    # The availability probe is a function returning whether the family
+    # tables are actually loaded; documenting the syntax on the strength
+    # of the function merely *existing* advertised filters whose only
+    # possible answer was "not loaded".
+    family_probe = getattr(sport.C, "family_relationships_available", None)
+    try:
+        has_family = bool(family_probe and family_probe(con))
+    except Exception:
+        has_family = False
 
-    st.markdown("# Advanced Search")
+    if heading:
+        st.markdown("# Advanced Search")
     st.caption(
         f"Combine player, {V.club}, era, match-stat and career filters. "
         "Values are parameterised; only known fields and statistics can "
         "become SQL."
     )
 
-    initial = Q.query_from_params(_all_query_params(st.query_params))
+    # The URL is re-read every run, not only at first render: navigating
+    # to a different ?q= in the same tab must update the query, while an
+    # unchanged URL must not stamp over what the reader is typing. The
+    # seen-key remembers the last URL value this session consumed.
+    url_value = Q.query_from_params(_all_query_params(st.query_params))
     state_key = sport.k("advanced_query")
-    if state_key not in st.session_state:
-        st.session_state[state_key] = initial
+    seen_key = sport.k("advanced_url_query_seen")
+    if url_value and url_value != st.session_state.get(seen_key):
+        st.session_state[state_key] = url_value
+    st.session_state[seen_key] = url_value
+    st.session_state.setdefault(state_key, url_value)
 
     with st.form(sport.k("advanced_search_form")):
         query = st.text_area(
             "Query",
             key=state_key,
             height=90,
+            max_chars=Q.MAX_QUERY_CHARS,
             placeholder=examples[0],
+            persist_state="session",
         )
         st.form_submit_button("Search", type="primary")
 
@@ -126,7 +219,9 @@ def search_page(sport, con):
             ensure = getattr(sport.C, helper_name, None)
             if ensure:
                 ensure(con)
-        sql, params, spec = Q.compile_query(sport.schema, query, con=con)
+        sql, params, spec = Q.compile_query(
+            sport.schema, query, con=con,
+            extensions=sport.search_extensions())
         revision = _db_revision(sport.db)
         frame = _run_query(sql, tuple(params), revision, con)
     except (Q.QuerySyntaxError, ValueError) as exc:
@@ -148,26 +243,14 @@ def search_page(sport, con):
 
     if frame.empty:
         st.info("No players match every filter.")
+        _suggest_close_names(sport, query, state_key, revision)
     else:
-        if "ObscurityRaw" in frame.columns:
-            frame["Rating"] = frame["ObscurityRaw"].map(core.stars_text)
-            frame = frame.drop(columns=["ObscurityRaw"])
-        if "Teams" in frame.columns:
-            frame["Teams"] = frame["Teams"].fillna("").str.replace(
-                "|", ", ", regex=False
-            )
         st.caption(f"{len(frame):,} result{'s' if len(frame) != 1 else ''} shown.")
-        if "PlayerID" in frame.columns:
-            player_ids = frame["PlayerID"].tolist()
-            frame = frame.drop(columns=["PlayerID"])
-            st.caption("Select a row to see that player's full career.")
-            components.clickable_player_table(
-                frame, player_ids, sport, con, key=sport.k("search_results"))
-        else:
-            st.dataframe(frame, hide_index=True, width="stretch")
+        shown = components.player_results_table(
+            frame, sport, con, key=sport.k("search_results"))
         st.download_button(
             "Download results as CSV",
-            data=frame.to_csv(index=False).encode("utf-8"),
+            data=shown.to_csv(index=False).encode("utf-8"),
             file_name=f"{sport.key}_player_search.csv",
             mime="text/csv",
         )

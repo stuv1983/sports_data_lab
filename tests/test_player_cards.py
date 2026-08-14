@@ -23,6 +23,41 @@ def _live(sport, player):
     return con, row[0], explore._db_revision(sport.db)
 
 
+def test_a_rising_star_nomination_shows_on_the_card():
+    """Nominated in 2010 and barred from winning it by suspension.
+
+    Both lines matter: the nomination happened, and the asterisk beside it
+    is the part nothing else in the database records.
+    """
+    con, pid, revision = _live(sports.AFL, "Dustin Martin")
+    try:
+        extra = explore._player_card_enrichment("afl", pid, revision, con)
+        honours = {row["Honour"]: row["Seasons"] for row in extra["honours"]}
+        assert honours.get("AFL Rising Star nominee") == "2010"
+        assert honours.get(
+            "Rising Star nominee, ineligible (suspension)") == "2010"
+    finally:
+        con.close()
+
+
+def test_winning_the_rising_star_is_one_honour_not_two():
+    """The Draftguru awards layer already records every winner since 1993.
+
+    Filing the win under a label of its own listed the same season twice
+    under two names, so it shares that layer's label and the seasons merge.
+    """
+    con, pid, revision = _live(sports.AFL, "Murphy Reid")
+    try:
+        extra = explore._player_card_enrichment("afl", pid, revision, con)
+        rising = [row for row in extra["honours"]
+                  if "Rising Star" in row["Honour"]]
+        assert sorted(row["Honour"] for row in rising) == [
+            "AFL Rising Star nominee", "Rising Star Award"]
+        assert all(row["Times"] == 1 for row in rising)
+    finally:
+        con.close()
+
+
 def test_dustin_martin_card_has_titles_draft_votes_and_major_honours():
     con, pid, revision = _live(sports.AFL, "Dustin Martin")
     try:
@@ -30,8 +65,11 @@ def test_dustin_martin_card_has_titles_draft_votes_and_major_honours():
         honours = {row["Honour"]: row["Times"] for row in extra["honours"]}
         assert explore._titles_won(sports.AFL, con, pid, revision) == 3
         assert ("Brownlow votes", "213") in extra["metrics"]
+        # The path to the draft sits under the selection itself, junior
+        # club first, exactly as Draftguru writes it.
         assert extra["bio"] == [
-            ("Draft", "Pick 3 · 2009 · National · Richmond")]
+            ("Draft", "Pick 3 · 2009 · National · Richmond"),
+            ("Recruited from", "Castlemaine / Bendigo U18")]
         assert honours["Norm Smith Medal"] == 3
         assert honours["All-Australian"] == 4
         logos = explore._player_card_logos(sports.AFL, con, "Richmond")

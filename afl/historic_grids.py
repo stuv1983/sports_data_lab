@@ -333,6 +333,12 @@ def _optional_unavailable_reason(con, sql):
         if available is None or not available(con):
             return "Club captain data is not loaded; run `python -m utils.afl.load_captains`."
 
+    if re.search(r"\bhall_of_fame\b", lowered):
+        available = getattr(C, "hall_of_fame_available", None)
+        if available is None or not available(con):
+            return ("Hall of Fame data is not loaded; run "
+                    "`python -m utils.afl.load_hall_of_fame`.")
+
     if re.search(r"\b(?:awards|all_australian|person_links)\b", lowered):
         available = getattr(C, "awards_available", None)
         if available is None or not available(con):

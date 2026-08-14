@@ -5,7 +5,7 @@ utils/nfl/patch_nfl_db.py -- Adapt the nflverse build to the app's schema.
     python -m utils.nfl.patch_nfl_db
     python -m utils.nfl.patch_nfl_db --dry-run
 
-build_nfl_db.py imports nflreadpy faithfully: `games` is one weekly
+nfl/build_db.py imports nflreadpy faithfully: `games` is one weekly
 player-statistics row, keyed to a game in `matches`, and it carries no
 notion of a club name, a venue, a result or a career game number. core.py
 asks every sport's `games` table for exactly those, so this script derives
@@ -127,9 +127,16 @@ def patch_games(con, say):
 
     scoring = [c for c in TOUCHDOWN_COLUMNS if c in present]
     if scoring:
+        # Row-level presence detection: a row whose every component is
+        # NULL was not measured, and must stay NULL -- COALESCE alone
+        # would stamp it a recorded 0. Mixed presence still adds the
+        # components that are there.
+        all_missing = " AND ".join(f"{c} IS NULL" for c in scoring)
         total = " + ".join(f"COALESCE({c}, 0)" for c in scoring)
-        con.execute(f"UPDATE games SET touchdowns = {total}")
-        say(f"  games.touchdowns <- {' + '.join(scoring)}")
+        con.execute(f"UPDATE games SET touchdowns = "
+                    f"CASE WHEN {all_missing} THEN NULL ELSE {total} END")
+        say(f"  games.touchdowns <- {' + '.join(scoring)} (NULL when all "
+            f"components are NULL)")
     else:
         say("  ! no touchdown columns found; games.touchdowns left NULL")
 
@@ -334,15 +341,51 @@ def write_reference(con, say, path):
 # --------------------------------------------------------------- indexes
 
 def add_indexes(con, say):
-    for name, sql in (
-        ("ix_games_club_now", "games(club_now)"),
-        ("ix_games_club_hist", "games(club_hist)"),
-        ("ix_games_playoff", "games(is_playoff)"),
-        ("ix_games_player_game_no", "games(player_id, career_game_no)"),
-        ("ix_games_venue", "games(venue)"),
-    ):
-        con.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {sql}")
-    say("  indexes created")
+    """Indexes for the columns the app's generated SQL actually filters on.
+
+    Derived from the sport's own Schema (the logical fields core.py and
+    the constraint builders name) rather than hardcoded column strings, so
+    a renamed column in nfl/sport.py renames its index here with it --
+    and a column the build did not produce is skipped, not crashed on.
+    """
+    from nfl.sport import SCHEMA as s
+
+    present = columns(con, s.games)
+    wanted = (
+        ("ix_games_club_now", (s.club_now,)),
+        ("ix_games_club_hist", (s.club_hist,)),
+        # (is_playoff, season): the postseason builders always pair the
+        # flag with a season or result filter, and the flag alone is far
+        # too low-cardinality to be worth the lookup.
+        ("ix_games_playoff", (s.is_final, s.season)),
+        ("ix_games_opponent", (s.opponent,)),
+        ("ix_games_player_game_no", (s.player_id, s.career_game_no)),
+        ("ix_games_player_season", (s.player_id, s.season)),
+        ("ix_games_season_round", (s.season, s.round)),
+        ("ix_games_venue", (s.venue,)),
+    )
+    made = kept = 0
+    for name, cols in wanted:
+        if not all(col and col in present for col in cols):
+            say(f"  ! {name} skipped: {', '.join(cols)} not all present")
+            continue
+        # CREATE INDEX IF NOT EXISTS keeps whatever definition already
+        # holds the name, so an upgraded definition (a widened composite,
+        # a renamed column) would silently never land. Compare the live
+        # definition and drop-and-recreate when it differs.
+        existing = [row[2] for row in sorted(
+            con.execute(f"PRAGMA index_info({name})"))]
+        if existing == list(cols):
+            kept += 1
+            continue
+        if existing:
+            con.execute(f"DROP INDEX {name}")
+            say(f"  {name} rebuilt: ({', '.join(existing)}) -> "
+                f"({', '.join(cols)})")
+        con.execute(
+            f"CREATE INDEX {name} ON {s.games}({', '.join(cols)})")
+        made += 1
+    say(f"  {made} schema-derived indexes created, {kept} already current")
 
 
 # ------------------------------------------------------------------- main
@@ -356,7 +399,7 @@ def patch(db, dry_run=False, verbose=True, write_reference_file=True):
             if required not in have:
                 raise SystemExit(
                     f"{db} has no {required} table -- build it first with "
-                    f"`python .\\build_nfl_db.py --all-history`.")
+                    f"`python -m nfl.build_db --all-history`.")
 
         say(f"Patching {db}")
         patch_games(con, say)

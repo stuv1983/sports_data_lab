@@ -26,6 +26,24 @@ def venue_options(sport_key, db, revision):
 
 
 @st.cache_data(show_spinner=False)
+def recruit_source_options(sport_key, db, revision):
+    """Places a player can have been recruited through, most-used first.
+
+    Asked of the sport's constraints module rather than assumed, the same
+    way marquee events are: a recruitment path is a Draftguru shape and no
+    other sport here records one.
+    """
+    module = sports.get(sport_key).C
+    lookup = getattr(module, "recruit_sources", None)
+    if lookup is None:
+        return []
+    try:
+        return list(lookup(db_pool.get_con(db, revision)))
+    except Exception:
+        return []
+
+
+@st.cache_data(show_spinner=False)
 def marquee_event_options(sport_key, db, revision):
     """Marquee fixture names actually tagged in this database."""
     module = sports.get(sport_key).C
@@ -66,49 +84,80 @@ def _player_search_key(value):
 _HAS_NAME = "{player} IS NOT NULL AND TRIM({player}) <> ''"
 
 
-#: How many players the browser holds so it can filter them as the user
-#: types. The whole table is 24,218 names in the MLB and 25,050 in the NFL,
-#: and shipping every one costs about 1.7 MB on each rerun -- paid again for
-#: every picker on the page, of which Play Grids has nine. Ordered by career
-#: games, 4,000 names is around 300-400 KB and covers 99% of NBA games played
-#: and 69-80% elsewhere; anyone outside it is still reachable, because typing
-#: a name the list does not hold falls through to `player_matches`, which
-#: reads all of them. Raise it for a shorter tail at a larger download.
+#: How many players the browser holds when the whole table is too large to
+#: ship (see QUICK_PLAYER_WHOLE_TABLE_MAX). Ordered by career games, 4,000
+#: names is around 300-400 KB and covers 69-80% of games played; anyone
+#: outside it is still reachable, because typing a name the list does not
+#: hold falls through to `player_matches`, which reads all of them.
 QUICK_PLAYER_LIMIT = 4000
 
+#: A players table no larger than this ships entire, so every name filters
+#: live in the browser. Being outside the shipped list is worse than the
+#: download it saves: the free-text fallback below only fires once the
+#: browser *commits* the typed name, which its combobox does on Enter or on
+#: the "Add: ..." row and not on a click away -- so a reader who typed
+#: "Kayle Kirby" (one game, 2017) and reached for the button saw their text
+#: still sitting in the box and nothing selected. A grid square's answer is
+#: routinely a career that short, which put the answers most worth finding
+#: on the wrong side of the cap. The AFL (13,358 names, about 560 KB) and
+#: the NBA (4,937) fit; the MLB (24,220) and the NFL (25,037) do not.
+QUICK_PLAYER_WHOLE_TABLE_MAX = 15_000
 
-@st.cache_data(show_spinner=False)
-def quick_player_options(sport_key, db, revision, limit=QUICK_PLAYER_LIMIT):
-    """The most-played players, for the browser to filter through live.
+
+@st.cache_resource(show_spinner=False)
+def quick_player_options(sport_key, db, revision, limit=None):
+    """Players for the browser to filter through live, most-played first.
 
     Streamlit's text input only reports a value on Enter or blur, so a
     search box cannot show matches while the user is still typing. A
     selectbox can: it filters options already in the browser, with no
-    round trip. That only works for options the browser has, hence the cap.
+    round trip. That only works for options the browser has, hence the
+    limit -- passed explicitly, or decided here from the table's size.
+
+    cache_resource, not cache_data: cache_data pickles its value on every
+    hit, and a picker asks for every one of these rows on every rerun. The
+    value is a tuple of tuples -- treat it as read-only.
     """
-    s = sports.get(sport_key).schema
-    rows = db_pool.get_con(db, revision).execute(
+    sport = sports.get(sport_key)
+    s = sport.schema
+    con = db_pool.get_con(db, revision)
+    named = _HAS_NAME.format(player=s.player)
+    if limit is None:
+        total = con.execute(
+            f"SELECT COUNT(*) FROM {s.players} WHERE {named}").fetchone()[0]
+        limit = (total if total <= QUICK_PLAYER_WHOLE_TABLE_MAX
+                 else QUICK_PLAYER_LIMIT)
+    rows = con.execute(
         f"SELECT {s.player_id}, {s.player}, {s.debut_season}, "
         f"{s.final_season}, {s.career_games}, {s.clubs_hist} "
-        f"FROM {s.players} WHERE {_HAS_NAME.format(player=s.player)} "
+        f"FROM {s.players} WHERE {named} "
         f"ORDER BY COALESCE({s.career_games}, 0) DESC, {s.player} "
         f"LIMIT ?", (limit,)).fetchall()
-    return [(pid, nm, _player_label(nm, d, f, g, cl))
-            for pid, nm, d, f, g, cl in rows]
+    return tuple((pid, nm,
+                  _player_label(nm, d, f, g, sport.collapse_club_path(cl)))
+                 for pid, nm, d, f, g, cl in rows)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def player_options(sport_key, db, revision):
-    """Every player, with an unambiguous label and a search-only name key."""
-    s = sports.get(sport_key).schema
+    """Every player, with an unambiguous label and a search-only name key.
+
+    cache_resource for the same reason as quick_player_options: this is
+    the 25,000-row list player_matches scans per keystroke commit, and
+    paying a pickle round-trip per scan dwarfed the scan itself. The
+    value is a tuple of tuples -- treat it as read-only.
+    """
+    sport = sports.get(sport_key)
+    s = sport.schema
     rows = db_pool.get_con(db, revision).execute(
         f"SELECT {s.player_id}, {s.player}, {s.debut_season}, "
         f"{s.final_season}, {s.career_games}, {s.clubs_hist} "
         f"FROM {s.players} WHERE {_HAS_NAME.format(player=s.player)} "
         f"ORDER BY {s.player}").fetchall()
-    return [(pid, nm, _player_label(nm, d, f, g, cl),
-             _player_search_key(nm))
-            for pid, nm, d, f, g, cl in rows]
+    return tuple((pid, nm,
+                  _player_label(nm, d, f, g, sport.collapse_club_path(cl)),
+                  _player_search_key(nm))
+                 for pid, nm, d, f, g, cl in rows)
 
 
 def _player_label(name, debut, final, games, clubs):
@@ -220,9 +269,16 @@ def clear_player_picker(key):
     do that. Renaming one therefore left the last answer sitting in the box
     looking like a fresh question, which is exactly the bug this exists to
     make impossible: the widget owns its own keys and clears them here.
+
+    The chosen name is assigned None rather than dropped. Dropping it clears
+    the value the script reads but sends the browser nothing, so the box
+    goes on displaying the last name over a selection that is already gone
+    -- a blank-looking round with a stale name in it, or on Play Grids the
+    previous square's answer sitting in the next square's box. Assigning
+    None is what makes Streamlit push the empty value out to the widget.
     """
-    for suffix in ("_pick", "_narrow"):
-        st.session_state.pop(f"{key}{suffix}", None)
+    st.session_state[f"{key}_pick"] = None
+    st.session_state.pop(f"{key}_narrow", None)
 
 
 def player_picker(key, sport, db_revision, label="Player name", default_name=""):
@@ -257,7 +313,12 @@ def player_picker(key, sport, db_revision, label="Player name", default_name="")
         placeholder="Start typing a player name…")
 
     if chosen is None:
-        st.caption("Type part of a first name or surname.")
+        # Naming the second gesture matters: text typed into the combobox is
+        # thrown away unless the browser commits it, so a reader who typed a
+        # whole name and clicked the button was left looking at their own
+        # text with nothing selected and no clue what to do about it.
+        st.caption("Type part of a first name or surname, then choose a "
+                   "name — or press Enter to search every player.")
         return None
     if chosen in known:
         return chosen, known[chosen][0]
@@ -315,6 +376,8 @@ _STAT_SCOPE_LABELS = {
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])} avg\nper {V.game}",
     "X+ of a stat in a final":
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])}\nin a {V.postseason_one}",
+    "X+ of a stat in finals (career)":
+        lambda a, V: f"{a[1]}+ {_stat_label(a[0])}\nin {V.postseason}",
     "Finals average of a stat":
         lambda a, V: f"{a[1]}+ {_stat_label(a[0])} avg\nin {V.postseason}",
 }
@@ -372,18 +435,63 @@ def _fill_placeholders(template, args, vocab):
 def axis_widget(key, default_type, defaults, sport, db_revision, available_builders):
     """One axis of the grid. Returns (label, constraint) or (label, None)."""
     defaults = defaults or {}
+    C = sport.C
+
     kinds = available_builders
+    # A sport that organises its catalogue gets a category picker first,
+    # so sixty builders read as a dozen kinds of question. Builders in no
+    # declared group still appear, under "More" -- a new BUILDERS entry is
+    # usable before anyone files it. Sports without groups keep the flat
+    # list.
+    groups = getattr(C, "BUILDER_GROUPS", None)
+    if groups:
+        grouped = {}
+        for category, names in groups.items():
+            offered = [k for k in names if k in kinds]
+            if offered:
+                grouped[category] = offered
+        placed = {k for offered in grouped.values() for k in offered}
+        extras = [k for k in kinds if k not in placed]
+        if extras:
+            grouped["More"] = extras
+        categories = list(grouped)
+        default_category = next(
+            (c for c in categories if default_type in grouped[c]),
+            categories[0])
+        category = st.selectbox(
+            "Question category", categories,
+            index=categories.index(default_category),
+            key=f"{key}_group", label_visibility="collapsed")
+        kinds = grouped.get(category, kinds)
+
     default_index = kinds.index(default_type) if default_type in kinds else 0
     kind = st.selectbox("Type", kinds, index=default_index,
                         key=f"{key}_kind", label_visibility="collapsed",
                         format_func=lambda k: _builder_label(k, sport.vocab))
-    
+    label, built, _args, _who = criterion_inputs(
+        key, kind, defaults, sport, db_revision)
+    return label, built
+
+
+def criterion_inputs(key, kind, defaults, sport, db_revision):
+    """Render the argument widgets for one builder kind and compile it.
+
+    The half of axis_widget below its two pickers, split out so the query
+    builder can offer the same criteria through its own search-first
+    picker. Returns ``(label, built, args, player_label)``: the display
+    label, the compiled (sql, params) constraint or None while an argument
+    is unresolved, the raw argument values in BUILDERS order (what a
+    stored criterion needs to rebuild or re-edit itself), and the resolved
+    player name for the kinds that pick one.
+    """
+    defaults = defaults or {}
     C = sport.C
     SCHEMA = sport.schema
     V = sport.vocab
 
     fn, argnames = C.BUILDERS[kind]
     args = []
+    player_label = None
 
     for a in argnames:
         wk = f"{key}_{a}"
@@ -420,13 +528,36 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
             else:
                 pid, player_name = selected
                 args.append(pid)
+                player_label = player_name
                 st.session_state[f"{wk}_label"] = player_name
         elif a == "kind":
             draft_kinds = list(getattr(C, "DRAFT_TYPES", ()))
             args.append(st.selectbox("Draft type", draft_kinds, key=wk))
         elif a == "source":
-            args.append(st.text_input("Recruited from",
-                                      defaults.get("source", ""), key=wk))
+            # A list, not a text box. The values are steps of a
+            # recruitment path -- "Oakleigh U18", "Port Adelaide (SANFL)"
+            # -- and nobody guesses those spellings; typing "Oakleigh"
+            # into the old box worked only because the match was a loose
+            # substring, which also made "Geelong" mean three places.
+            # The count is in the label because it is how many answers the
+            # square will have.
+            sources = recruit_source_options(sport.key, sport.db, db_revision)
+            if sources:
+                names = [name for name, _ in sources]
+                want = defaults.get("source", names[0])
+                idx = names.index(want) if want in names else 0
+                pick = st.selectbox(
+                    "Recruited from", range(len(sources)), index=idx,
+                    format_func=lambda i, options=sources:
+                        f"{options[i][0]}  ·  {options[i][1]} selections",
+                    key=wk,
+                    help="Any step of the path to the draft: the junior "
+                         "club, the school, the talent-league or "
+                         "state-league club.")
+                args.append(sources[pick][0])
+            else:
+                args.append(st.text_input("Recruited from",
+                                          defaults.get("source", ""), key=wk))
         elif a == "award":
             names = list(C.AWARD_SLUGS)
             want = defaults.get("award")
@@ -473,6 +604,18 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
         elif a == "player":
             args.append(st.text_input("Player", defaults.get("player", ""),
                                       key=wk))
+        elif a == "aa_position":
+            choices = list(getattr(C, "AA_POSITION_CHOICES", ()))
+            keys = [k for k, _ in choices]
+            want = defaults.get("aa_position")
+            idx = keys.index(want) if want in keys else 0
+            pick = st.selectbox("Line", range(len(choices)), index=idx,
+                                format_func=lambda i, options=choices:
+                                    options[i][1],
+                                key=wk,
+                                help="Positions are recorded on "
+                                     "All-Australian teams from 1991.")
+            args.append(choices[pick][0] if choices else None)
         elif a == "award_axis":
             choices = list(getattr(C, "AWARD_AXIS_CHOICES", ()))
             keys = [k for k, _ in choices]
@@ -568,14 +711,26 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
             args.append(st.number_input(
                 word.capitalize(), min_value=1,
                 value=int(defaults.get(a, fallback)), step=1, key=wk))
+        elif a == "decade":
+            lo, hi = season_span(sport.key, sport.db, db_revision)
+            starts = list(range(lo - lo % 10, hi + 1, 10))
+            want = int(defaults.get("decade", starts[-1]))
+            idx = starts.index(want) if want in starts else len(starts) - 1
+            args.append(st.selectbox(
+                "Decade", starts, index=idx, key=wk,
+                format_func=lambda d: f"{d}s ({d}–{d + 9})"))
         elif a in ("cm", "kg"):
-            label, lo, hi, fallback = {
-                "cm": ("Height (cm)", 150, 250, 190),
-                "kg": ("Weight (kg)", 50, 160, 90),
+            # No upper cap: the tallest or heaviest player on record is a
+            # fact about the data, not a bound on what may be asked --
+            # capping at 250 cm forbade the question "is anyone taller".
+            label, fallback = {
+                "cm": ("Height (cm)", 190),
+                "kg": ("Weight (kg)", 90),
             }[a]
             args.append(st.number_input(
-                label, min_value=lo, max_value=hi,
-                value=int(defaults.get(a, fallback)), step=1, key=wk))
+                label, min_value=1,
+                value=int(defaults.get(a, fallback)), step=1, key=wk,
+                help="Observed records are context, not an input cap."))
         else:
             year_kinds = {
                 "Played between seasons", "Debuted between seasons",
@@ -601,17 +756,45 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
                     step=1, key=wk,
                     help="This is the X in the builder name above."))
 
+    label = builder_label(kind, args, sport, player_label)
+
+    if kind in ("Teammate of…", "Played with…") and (
+            not args or args[0] is None):
+        return label, None, args, player_label
+
+    try:
+        return label, fn(*args), args, player_label
+    except Exception as e:
+        st.warning(str(e))
+        return label, None, args, player_label
+
+
+def builder_label(kind, args, sport, player_label=None):
+    """The board or chip label for one configured builder.
+
+    Pure: everything it needs arrives as arguments, so the query builder
+    can label a stored criterion without re-rendering its widgets.
+    """
+    C = sport.C
+    V = sport.vocab
+
     label = kind
     if kind == "Played for club":
         label = args[0]
     elif kind == "Teammate of…":
-        label = f"{st.session_state.get(f'{key}_player_id_label', '—')} teammate"
+        label = f"{player_label or '—'} teammate"
     elif kind == "Played with…":
-        label = f"played with\n{st.session_state.get(f'{key}_player_id_label', '—')}"
+        label = f"played with\n{player_label or '—'}"
     elif kind in ("Played at venue", "Won a final at venue"):
         verb = ("played at" if kind.startswith("Played")
                 else f"won a {V.postseason_one} at")
         label = f"{verb}\n{args[0]}"
+    elif kind == "X+ games at venue":
+        label = f"{args[1]}+ {V.games} at\n{args[0]}"
+    elif kind == "Played in a decade":
+        label = f"played in the\n{args[0]}s"
+    elif kind == "X+ of a stat in a grand final":
+        label = f"{args[1]}+ {_stat_label(args[0])}\nin a grand final"
     elif kind == "Ground performance":
         statuses = dict(getattr(C, "GROUND_STATUS_CHOICES", ()))
         metrics = dict(getattr(C, "GROUND_METRIC_CHOICES", ()))
@@ -671,22 +854,45 @@ def axis_widget(key, default_type, defaults, sport, db_revision, available_build
         label = f"top-{args[0]} Brownlow\n{args[1]}+ times"
     elif kind == "X+ Brownlow votes in a season":
         label = f"{args[0]}+ Brownlow votes\nin a season"
+    elif kind == "X+ games at one club":
+        label = f"{args[0]}+ {V.games} at\none {V.club}"
+    elif kind == "Led club in a stat (season)":
+        stat = _stat_label(args[0])
+        label = (f"led {V.club} in {stat}" if args[1] <= 1
+                 else f"led {V.club} in {stat}\n{args[1]}+ {V.season}s")
+    elif kind == "More of stat A than stat B (career)":
+        label = (f"more career {_stat_label(args[0])}\n"
+                 f"than {_stat_label(args[1])}")
+    elif kind == "Lost a Grand Final against…":
+        label = f"lost a grand final\nto {args[0] or '—'}"
+    elif kind == "X+ of a stat in a game at venue":
+        label = f"{args[2]}+ {_stat_label(args[1])}\nin a game at {args[0]}"
+    elif kind == "Won a derby":
+        label = f"won a\n{C.DERBY_LABELS.get(args[0], args[0])}"
+    elif kind == "X+ of a stat in a derby game":
+        label = (f"{args[2]}+ {_stat_label(args[1])} in a\n"
+                 f"{C.DERBY_LABELS.get(args[0], args[0])}")
+    elif kind == "Won a marquee match":
+        label = f"won\n{args[0]}"
+    elif kind == "All-Australian in a position":
+        label = f"All-Australian\n{args[0]}"
+    elif kind in ("Played between seasons", "Debuted between seasons",
+                  "Grand Final between seasons",
+                  "Premiership between seasons", "Drafted between years"):
+        verb = {"Played between seasons": "played",
+                "Debuted between seasons": "debuted",
+                "Grand Final between seasons": "grand final",
+                "Premiership between seasons": "premiership",
+                "Drafted between years": "drafted"}[kind]
+        label = f"{verb}\n{args[0]}–{args[1]}"
 
     # Safety net for every key the chain above has no rule for: a template
     # placeholder must never reach the board. Cheap, and it means a new
     # BUILDERS entry reads correctly before anyone writes it a rule.
     if re.search(r"\b[XY]\b", label):
-        label = _fill_placeholders(label, args, V)
+        label = _fill_placeholders(label, args, sport.vocab)
 
-    if kind in ("Teammate of…", "Played with…") and (
-            not args or args[0] is None):
-        return label, None
-
-    try:
-        return label, fn(*args)
-    except Exception as e:
-        st.warning(str(e))
-        return label, None
+    return label
 
 
 @st.cache_data(show_spinner=False)

@@ -1,4 +1,4 @@
-# Sports Data Lab
+ # Sports Data Lab
 
 A local-first sports database, research toolkit and puzzle-solving application.
 
@@ -70,6 +70,8 @@ The Streamlit application includes the following pages:
 - **Club Explorer** — browse current-club metadata, all-time players and records.
 - **Advanced Search** — combine multiple filters using a compact query language.
 - **Stats Explorer** — browse and rank player statistics.
+- **Visual Explorer** — the database drawn rather than listed: league activity, career
+  trajectories, club trends, match distributions, venue use, awards and data coverage.
 - **Random Discovery** — surface lesser-known players and records.
 - **Grid Solver** — build or load a 3 × 3 player grid and inspect every valid answer.
 - **Game Lab** — explore player, match and criterion combinations.
@@ -101,8 +103,8 @@ above changes how fast a name appears, never whether it can be found.
 Drop PNGs into `static/icons/` to set the browser tab icon and the icon iOS
 uses when the app is saved to a home screen. Per sport (`nba.png`,
 `nba-180.png`) or for all of them (`default.png`, `default-180.png`); see
-[`static/icons/README.md`](static/icons/README.md). With the folder empty each
-sport keeps the emoji from its registry entry, so nothing needs to be added.
+[`static/icons/README.md`](static/icons/README.md). The app ships with its
+default favicon and Apple touch icon set; a sport-specific file overrides it.
 
 `branding.py` handles this. The tab icon goes through Streamlit; the
 home-screen icon does not, because Streamlit renders the `<head>` itself and
@@ -135,6 +137,61 @@ Historical grids may be loaded in two modes:
 - **Practice** — may replace an unsupported criterion with a clearly labelled supported alternative.
 
 Unsupported or incomplete criteria are reported rather than silently guessed.
+
+## Visual Explorer
+
+Visual Explorer answers the questions whose answer is a shape rather than a list. It has
+six sections — Overview, Players, Teams, Matches, Venues and Awards — and every chart is
+aggregated by SQLite before it reaches the browser: the databases run to 1.6 million rows
+and a chart that pulls those into pandas moves a hundred megabytes to produce eighty
+numbers.
+
+Three modules do the work:
+
+- `visual_queries.py` — parameterised aggregate SQL, plus the capability model.
+- `charts.py` — the Altair builders, shared with the player and match cards.
+- `app_pages/19_Visual_Explorer.py` — filters, sections and the click-to-detail wiring.
+
+### Sections are offered on what the database has
+
+`visual_queries.capabilities()` measures the open file once per database revision and a
+section renders only what that answer allows. Nothing is declared per sport, because two
+of the differences that decide whether a chart is honest are invisible from a sport's
+registry entry:
+
+- a row of the MLB's `games` is a player's **season** with one club, so its trajectory
+  charts are labelled per season and it is offered no single-game view at all;
+- `team_seasons` exists in three builds and means something different in each — the AFL's
+  carries wins and a ladder rank, the NBA's wins and a conference rank plus a `phase`
+  column that files two rows a season, and the NFL's is a bag of statistic sums with no
+  wins column — so team records come from the curated table where it can answer and are
+  derived from `club_match_sources` where it cannot.
+
+A section that cannot be answered says which layer is missing and, where one exists, the
+loader command that would fill it. The NBA's Venues section declines with the measured
+figure: 1.9% of its match rows name an arena, and a "busiest arenas" chart drawn from
+that would rank the handful of matches somebody happened to record.
+
+### Rules the charts keep
+
+- **Missing stays missing.** A season a player did not play has no bar; a statistic the
+  source never recorded is absent rather than zero. `df.fillna(0)` appears nowhere.
+- **Rates divide by what was recorded.** A career spanning an era boundary divides by the
+  games the statistic was actually counted in, never by games played — otherwise a 1960s
+  career carries a tackle rate for seasons nobody counted tackles in.
+- **Rate statistics are never summed or averaged.** MLB ERA is shown per season and club
+  exactly as Lahman recorded it; combining two would need innings these tables do not
+  carry.
+- **One y-axis, always.** A total and a per-game rate are two charts side by side.
+- **Colour follows the entity.** Hues are assigned from the selection's stable order, so
+  narrowing the seasons until a club drops out never repaints the clubs that remain, and
+  a ninth series is declined rather than given a ninth colour.
+- **Scatterplots are capped** at `charts.SCATTER_CAP` marks; past that no point can be
+  hovered or clicked, which is the whole reason the chart is interactive.
+
+Clicking a chart opens the same detail cards the rest of the application uses — a point
+on the volume-against-efficiency landscape opens the player, a line on a club trend opens
+the club, a cell of the coverage heatmap opens the season.
 
 ## Advanced Search
 
@@ -269,14 +326,141 @@ Match derivation can then be run separately:
 python -m afl.derive_matches --db my_afl.db
 ```
 
+### Enter a round the source dataset has not published yet
+
+The AFL build reads the cached fitzRoy dataset rather than scraping AFL Tables,
+because [afltables.com](#afl-tables)' robots.txt disallows automated clients on
+the stats paths. That dataset lags the live season, so a round can be played
+and still be missing. `utils/afl/load_round_csv.py` closes the gap from the one
+source that needs no crawler: the AFL Tables match pages, copy-pasted into
+CSVs.
+
+Put one folder per round together, holding the season page's rows for that
+round (two lines per match) and one file per match holding that match page's
+four tables — both sides' *Match Statistics*, then both sides' *Player
+Details*. Then either browse to it:
+
+```bash
+python -m utils.afl.load_round_gui
+```
+
+or name it on the command line:
+
+```bash
+python -m utils.afl.load_round_csv --dir ./rd23 --season 2026 --round 23 --dry-run
+python -m utils.afl.load_round_csv --dir ./rd23 --season 2026 --round 23
+python -m utils.shared.recompute_obscurity --sport afl   # if anyone debuted
+```
+
+Always check first — `--dry-run`, or the **Check** button. It reads everything,
+resolves every name and writes nothing, so the report is the review step.
+
+**What it found.** Both the command line and the window end with a findings
+report, so the decisions the load made are visible rather than only counted:
+
+```
+Findings (nothing was written)
+  [fixed]      shared name, both current: Williams, Bailey plays for two clubs
+               this season; the West Coast row was read as player_id 12836
+  [note]       rushed behinds: 44 of the round's 202 behinds belong to no player
+  [note]       shared name, different eras: 14 names also belong to a player from
+               another era; the season being loaded ruled those out
+  -- 1 fixed, 2 noted
+```
+
+`[fixed]` is something noticed and settled — a duplicate file dropped, a shared
+name resolved, a debutant created. `[note]` is worth knowing but needed no
+decision. `[not fixed]` stopped the load and only a person can settle it. The
+risky decisions are named individually and the routine ones counted, so a
+report stays short enough to read: two players of the same name *both playing
+this season* get a line each, while namesakes separated by a century are one
+line saying how many.
+
+**The browse window.** These CSVs are written by hand and live wherever suits
+at the time, so the folder is a setting rather than a fixed path under `data/`.
+`load_round_gui.py` is a browse window over the same loader: pick the folder,
+and it reports what it found, offers the round summary it thinks you mean, and
+fills in the season and round from the summary's dates and the folder's name.
+**Check** and **Load** run the loader on a worker thread and stream its output
+into the log pane, so a load that takes a minute does not freeze the window.
+Findings are coloured there by their marker — red for `[not fixed]`, green for
+`[fixed]`, amber for `[note]` — and the tally appears in the status line.
+
+The folder is remembered as soon as one has been checked, in
+`data/app/round_loader.json`, and the command line reads the same setting —
+so once it has been chosen in either place, `--dir` can be left off:
+
+```bash
+python -m utils.afl.load_round_csv --season 2026 --round 24 --dry-run
+```
+
+Game files are paired to fixtures by the club names in their *Match Statistics*
+headings, never by filename — a hand-assembled folder collects misnamed and
+duplicated copies, and pairing on names means a stale rename cannot load a
+match twice or attach stats to the wrong fixture. Anything else in the folder
+is ignored and named in the report. Where more than one file could be the round
+summary, pass `--summary Rd23.csv`.
+
+Three checks have to pass before anything is written.
+
+Each side's player goals must add up to the quarter scores the summary states.
+
+Every name must resolve to exactly one player. Names are not unique — 460 names
+in `afltables_player_index` belong to more than one player — so a name matching
+several people is settled first by era (a 2026 match was not played by someone
+who last played in 1937, which is what separates the two Archie Robertses) and
+then by club (which separates the two Bailey Williamses playing right now, one
+at the Western Bulldogs and one at West Coast). A name that survives both is
+reported as ambiguous and stops the load rather than being guessed.
+
+Every player's stated career games must be one more than the database holds.
+AFL Tables counts the match being read, so a player with 174 games is listed at
+175 and a debutant at 1. That makes the Player Details column an independent
+check on the identity decision — it catches a misspelled name that would
+otherwise be created as a new player and split a real career in two, and it
+catches a match to the wrong namesake from the other direction.
+
+**A player's first game.** A name that matches nobody is a debut: it gets a new
+`player_id` and a `players` row. The date of birth is exact rather than
+estimated, being the match date less the age the Player Details table states,
+so `18-Nov-2005` comes out of "20y 285d" on 9 August 2026 without needing a
+source that carries birthdays. Career totals are counted from the games rows
+themselves, and obscurity is left unscored for `recompute_obscurity`, which is
+the only thing that should write it — so run that after a round with a debut in
+it, or the new players rank as maximally obscure until you do.
+
+The career-games check is what keeps this honest. A debut is only accepted when
+AFL Tables agrees it is the player's first game; if the source says career game
+115 and the database holds none, the load stops rather than inventing a
+115-game rookie.
+
+**Surviving a rebuild.** `afl/build_db.py` replaces `games` and `players`
+wholesale, which would drop a hand-entered round. The parsed rows are therefore
+kept in `manual_round_games`, and the fixtures in `club_match_sources` beside
+the [All Games](#club-all-games-match-sources) observations. `afl/build_db.py`
+re-applies them itself at the end of every rebuild, so a scheduled refresh
+cannot quietly lose a round. Rounds the rebuild has now produced upstream are
+skipped, so this stops mattering by itself once the dataset catches up:
+
+```bash
+python -m utils.afl.load_round_csv --apply-only     # after a manual rebuild
+python -m utils.afl.load_round_csv --forget 2026 23 # once fitzRoy carries it
+```
+
 ## Automated database updates
 
 The `database_updates.py` script runs on a schedule and keeps the AFL, NBA, and MLB databases current without rebuilding them from scratch. A **"regular"** update runs frequently (every ~7 days for AFL, ~5 months for NBA, etc.) and appends/refreshes only the most recent season's games. A **"full"** rebuild is manual and rare (after a source format change or a deliberate reset):
 
+Updates never run inside the Streamlit process — the web app is strictly
+read-only and only reports what the last run did. Start one from the command
+line (or let its systemd timer do it):
+
 ```bash
-python database_updates.py              # automated regular update
-python database_updates.py --full       # manual full rebuild (rare)
-python database_updates.py --dry-run    # preview without writing
+python -m database_updates run --event regular --sports afl nba mlb nfl
+python -m database_updates run --event full --sports afl   # full rebuild (rare)
+python -m database_updates run --event regular --dry-run   # preview, writes nothing
+python -m database_updates status                          # last run's result
+python -m database_updates check                           # read-only integrity/currency
 ```
 
 **MLB and NBA no longer rebuild from scratch in automated updates.** Instead:
@@ -509,17 +693,17 @@ hint instead.
 
 ## Build the NFL database
 
-The NFL build downloads [nflverse](#nflverse) data through `nflreadpy`. It is a standalone script at the repository root, not a package module, and it runs in two steps: a builder that imports nflverse faithfully, then an adapter that derives the columns the application reads.
+The NFL build downloads [nflverse](#nflverse) data through `nflreadpy`. It runs in two steps: a builder that imports nflverse faithfully, then an adapter that derives the columns the application reads.
 
 ```bash
 pip install nflreadpy
-python build_nfl_db.py --all-history --replace              # -> data/nfl/nfl.db
-python build_nfl_db.py --all-history --extended --replace   # + 8 more optional datasets
+python -m nfl.build_db --all-history --replace              # -> data/nfl/nfl.db
+python -m nfl.build_db --all-history --extended --replace   # + 8 more optional datasets
 python -m utils.nfl.patch_nfl_db                            # adapter step (required)
 python -m utils.shared.recompute_obscurity --sport nfl      # recompute career scores
 
 # Incremental updates are handled by nflreadpy's own schedule
-python build_nfl_db.py --all-history --replace --dry-run    # check for new data
+python -m nfl.build_db --all-history --replace --dry-run    # check for new data
 ```
 
 `--replace` is not optional once a database exists. Without it the builder
@@ -536,7 +720,7 @@ than silently absent.
 
 ### The adapter step
 
-`build_nfl_db.py` writes nflverse's own tables. `utils/nfl/patch_nfl_db.py` derives
+`nfl/build_db.py` writes nflverse's own tables. `utils/nfl/patch_nfl_db.py` derives
 what `core.py` asks every sport for and nflverse does not carry: `club_hist`
 and `club_now` (from the team catalogue and the code map in
 `nfl/nfl_reference.py`), `date`, `venue`, `round` and `result` (from
@@ -935,15 +1119,15 @@ See [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md) for source credits, terms and r
 Each sport owns a runtime package for constraints, builds, source adapters,
 and sport-only pages. One-shot loaders and database maintenance live under
 `utils/`, grouped into `afl/`, `nba/`, `nfl/`, `mlb/`, and `shared/`. The
-repository root holds the multi-sport application framework and the standalone
-NFL builder.
+repository root holds the multi-sport application framework.
 
 ```
 app.py  core.py  sports.py  explore.py  ...   the sport-agnostic framework
 afl/    constraints, build, scrapers, Club Explorer, Game Lab
 nba/    constraints, build, source adapters, Basketball-Reference staging
 mlb/    constraints, the Lahman build, franchise reference
-data/   afl/  nba/  mlb/  -- databases, raw sources, caches, references
+nfl/    constraints, the nflverse build, franchise reference
+data/   afl/  nba/  mlb/  nfl/  -- databases, raw sources, caches, references
 utils/  afl/  nba/  nfl/  mlb/  shared/  operational tooling
 tests/  docs/
 ```
@@ -955,6 +1139,7 @@ modules from the repository root:
 python -m afl.build_db
 python -m nba.build_nba_db --source csv
 python -m mlb.build_mlb_db
+python -m nfl.build_db --all-history
 ```
 
 Two rules keep the split honest, and both are enforced by
@@ -989,7 +1174,7 @@ object rather than an `if`.
 | **`utils/mlb/load_statsapi.py`** | **MLB incremental loader: appends/refreshes seasons from Stats API** |
 | `mlb/mlb_reference.py` | MLB franchise list, lineage, measured stat eras |
 | `nfl/constraints_nfl.py` | NFL constraint builders |
-| `build_nfl_db.py` | NFL builder (standalone, downloads nflverse data) |
+| `nfl/build_db.py` | NFL builder (downloads nflverse data through nflreadpy) |
 | `utils/nfl/patch_nfl_db.py` | NFL adapter: derives columns the app needs from nflverse tables |
 | `afl/derive_matches.py` | Match derivation and stable match ID assignment (reusable for any sport) |
 | `data_paths.py` | Single source of truth for all database and data paths |
@@ -1015,9 +1200,22 @@ object rather than an `if`.
 | `utils/afl/load_family_draft.py` | Family-draft relationship loader |
 | `utils/afl/load_club_sources.py` | Club metadata and all-time records loader |
 | `utils/afl/fetch_club_sources.py` | Cache club source pages |
+| `utils/afl/load_round_csv.py` | Load a hand-entered AFL Tables round the source dataset has not published yet |
+| `utils/afl/load_round_gui.py` | Browse window over that loader: pick the folder, check it, load it |
 | `utils/shared/load_wiki_reference.py` | Wikipedia reference import (NBA/NFL/MLB) |
 | `utils/shared/clean_project.py` | Identify and remove generated artefacts |
 | `utils/shared/optimise_database.py` | Index optimization suggestions |
+| `utils/nba/load_and_link_nba_sample.py` | NBA sample-data ingestion and identity resolution (`data/nba/sample`) |
+
+**Diagnostics** (read-only; none of these write to a database):
+
+| File | Purpose |
+|---|---|
+| `utils/search_cli.py` | Command-line front end to the Advanced Search compiler |
+| `utils/shared/diagnose_answer.py` | Explain why the solver thinks a player answers a square, and log rejections |
+| `utils/afl/audit_all_games_linkage.py` | How much of the all-games history reached the queryable tables |
+| `utils/afl/audit_club_nicknames.py` | Club identity and nickname coverage |
+| `utils/afl/validate_club_records.py` | Validate the cached AFL Tables record pages in `data/afl/raw/clubs` |
 
 Database files, caches, downloaded pages, generated SQL and third-party source datasets are excluded through `.gitignore`, as is `archive/`.
 

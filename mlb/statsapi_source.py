@@ -394,8 +394,10 @@ class StatsApiSource:
                         "source_game_key": f"statsapi-{game_id}",
                         "source_club_id": club_id,
                         "season": int(season),
+                        # gameType="R" above: these are regular-season
+                        # fixtures, never postseason rounds.
                         "round": None,
-                        "is_final": 1,
+                        "is_final": 0,
                         "match_date": match_date,
                         "venue_raw": venue,
                         "team_position": team_pos,

@@ -44,12 +44,29 @@ VENUE_ALIASES = {
     "football park": "Football Park", "aami stadium": "Football Park",
     "princes park": "Princes Park", "waverley": "Waverley Park",
     "victoria park": "Victoria Park", "windy hill": "Windy Hill",
+    # Bellerive Oval has been renamed twice by sponsors; Gridley uses the
+    # current name. Jiangwan hosted the 2017-19 China games.
+    "ninja stadium": "Bellerive Oval", "blundstone arena": "Bellerive Oval",
+    "bellerive": "Bellerive Oval", "bellerive oval": "Bellerive Oval",
+    "jiangwan": "Jiangwan Stadium", "jiangwan stadium": "Jiangwan Stadium",
 }
 
 SCHEMA = core.Schema(
     career_score="career_goals",
+    career_postseason="finals_played",
     game_score="goals",
     is_final="is_final",
+    #: A box score reads left to right the way AFL Tables prints one --
+    #: possession first, then scoring, then the contest -- which is a
+    #: different order from STATS above, where the most-asked-for square
+    #: comes first.
+    box_score=(
+        "kicks", "handballs", "disposals", "marks", "goals", "behinds",
+        "tackles", "hitouts", "goal_assists", "inside50s", "clearances",
+        "rebounds", "contested", "uncontested", "contested_marks",
+        "marks_i50", "one_percenters", "bounces", "clangers", "frees_for",
+        "frees_against", "brownlow",
+    ),
     stats=STATS,
     clubs=CLUBS,
     club_lineage=CLUB_LINEAGE,
@@ -112,8 +129,11 @@ SPORT = Sport(
     has_awards_page=True,
     awards_page_module="afl.awards_page",
     has_past_games=True,
+    data_notes_module="afl.data_notes",
     ground_explorer_module="afl.ground_explorer",
     has_ground_explorer=True,
+    draft_page_module="afl.draft_page",
+    has_draft_page=True,
     has_draftguru_player_cards=True,
     past_games_hint=("Run `python -m utils.afl.fetch_club_sources`, then "
                      "`python -m utils.afl.load_club_all_games`."),
@@ -144,6 +164,55 @@ SPORT = Sport(
                     "`python -m utils.afl.load_club_sources` for Club Explorer."),
     family_hint=("Run `afl/scrape_wikipedia_families.py`, then "
                  "`python -m utils.afl.load_family_relationships` for family links."),
+    search_extension_modules=("afl.search_tokens",),
+    #: The tables Advanced Search's query builder exposes: the analytical
+    #: layers a reader would ask about, not the scrape indexes, staging
+    #: snapshots, link tables and issue logs that share the file.
+    query_tables=(
+        "players", "games", "matches", "match_details", "clubs",
+        "captaincies", "draft", "brownlow_results", "brownlow_round_votes",
+        "all_australian", "all_australian_history", "awards",
+        "hall_of_fame", "rising_star_nominees", "season_goals",
+        "team_seasons", "team_selections", "family_relationships",
+        "venue_summary", "venue_match_records", "venue_player_records",
+        "venue_player_game_records", "venue_team_records",
+        "club_player_register", "club_player_totals",
+        "club_player_records", "club_player_averages", "historic_grids",
+    ),
+    #: The build declares dates as TEXT and flags as INTEGER; the query
+    #: builder needs the application-level truth to offer the right
+    #: operators.
+    query_column_kinds={
+        # dob columns are declarable again: build_db and the round loader
+        # write ISO through utils/afl/dob.canonical_dob, and
+        # utils/afl/normalize_dob.py rewrote the mixed spellings already
+        # stored. tests/test_query_metadata.py holds the format contract.
+        "players.dob": "date",
+        "games.date": "date",
+        "games.dob": "date",
+        "games.birth_est": "date",
+        "games.is_home": "boolean", "games.is_final": "boolean",
+        "matches.match_date": "date", "matches.is_final": "boolean",
+        "match_details.scheduled_datetime": "datetime",
+        "clubs.updated_at": "datetime",
+        "venue_match_records.match_date": "date",
+        "club_player_register.dob": "date",
+        "club_player_records.match_date": "date",
+        "historic_grids.date": "date",
+        "all_australian.is_captain": "boolean",
+        "all_australian.is_vice_captain": "boolean",
+        "hall_of_fame.is_legend": "boolean",
+        "rising_star_nominees.is_season_winner": "boolean",
+        "season_goals.is_club_leading": "boolean",
+    },
+    #: Text columns worth a distinct-values scan when the visual tree
+    #: renders, so they become select widgets. An explicit allowlist, not
+    #: a guess: profiling every text column of a wide table cost seconds
+    #: per cold render, mostly on names and dates no select could hold.
+    query_low_cardinality_columns=(
+        "games.club_now", "games.club_hist", "games.opponent",
+        "games.result", "games.round", "games.venue",
+    ),
     search_examples=(
         'club:Hawthorn games>=200 sort:obscurity',
         'game.disposals>=40 postseason:true',

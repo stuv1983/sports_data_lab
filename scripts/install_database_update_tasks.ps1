@@ -35,4 +35,10 @@ Install-SdlTask "Sports Data Lab - Grand Final and awards update" '-m database_u
 $gridley = New-ScheduledTaskTrigger -Daily -At "06:30"
 Install-SdlTask "Sports Data Lab - Gridley board scan" '-m database_updates gridley-scan --trigger scheduler' $gridley
 
+# One Rising Star nomination is announced per round, on the Monday after it.
+# 8am leaves the morning's announcement time to reach Wikipedia; a week with
+# no new nomination costs one request and changes nothing.
+$risingStar = New-ScheduledTaskTrigger -Weekly -WeeksInterval 1 -DaysOfWeek Monday -At "08:00"
+Install-SdlTask "Sports Data Lab - Rising Star nominations" '-m database_updates rising-star-scan --trigger scheduler' $risingStar
+
 Write-Host "Database update tasks use Australia/Sydney local time and run missed starts when the computer resumes."

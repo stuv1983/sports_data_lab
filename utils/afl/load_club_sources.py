@@ -29,6 +29,7 @@ from utils.afl.club_sources import (CLUBS, DEFAULT_RAW_DIR, STAT_HEADERS,
                                     selected_clubs, source_name_to_display,
                                     source_path)
 from data_paths import default_db  # noqa: E402  (needs the path above)
+from utils.afl.dob import canonical_dob  # noqa: E402
 
 #: Resolved through data_paths so this loader writes to the same file the
 #: application reads. Hardcoding a path here is what previously split the
@@ -621,13 +622,17 @@ def link_record(record: dict, index: dict[str, list[dict]]) -> None:
         ]
         if in_era:
             candidates = in_era
-    dob = record.get("dob")
+    # Both sides through the canonical form: the register keeps the club
+    # pages' "30-Jan-1987" spelling, players.dob is stored ISO, and a raw
+    # string comparison between the two spellings would never match.
+    dob = canonical_dob(record.get("dob"))
     if dob and len(candidates) > 1:
-        exact = [c for c in candidates if clean_text(c.get("dob")) == clean_text(dob)]
+        exact = [c for c in candidates
+                 if canonical_dob(c.get("dob")) == dob]
         if exact:
             candidates = exact
         else:
-            year = parse_number(dob, integer=True)
+            year = int(dob[:4])
             by_year = [c for c in candidates if c.get("birth_year") == year]
             if by_year:
                 candidates = by_year

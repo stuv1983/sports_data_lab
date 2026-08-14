@@ -15,7 +15,7 @@ from obscurity import Model, Term, span
 #: sit low in the NBA model.
 #:
 #: `touchdowns` is total touchdowns responsible for, passing included --
-#: that is how build_nfl_db computes career_touchdowns, and mixing a
+#: that is how nfl/build_db.py computes career_touchdowns, and mixing a
 #: quarterback's passing scores into the same term as a receiver's is a
 #: known compromise of it.
 #:

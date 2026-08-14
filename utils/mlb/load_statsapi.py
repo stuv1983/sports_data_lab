@@ -179,6 +179,27 @@ def replace_match_sources(con, season: int, matches: list[dict],
                   f"({foreign:,} rows) -- left as they are")
         return 0
 
+    # The same empty/severely-partial gate the player rows get: this
+    # function deletes its own rows before inserting, so a schedule
+    # response that came back empty (or gutted) must leave the stored
+    # fixtures standing rather than wipe a season of match history.
+    stored = con.execute(
+        "SELECT COUNT(*) FROM club_match_sources "
+        "WHERE season=? AND source_game_key LIKE ?",
+        (season, f"{MATCH_KEY_PREFIX}%")).fetchone()[0]
+    if stored and not matches:
+        if verbose:
+            print(f"  ! the schedule returned no matches for {season} "
+                  f"while {stored:,} are stored -- left as they are")
+        return 0
+    if (stored >= MIN_GUARDED_ROWS
+            and len(matches) < stored * MIN_ROW_RATIO):
+        if verbose:
+            print(f"  ! the schedule returned {len(matches):,} matches for "
+                  f"{season} where {stored:,} are stored (below the "
+                  f"{MIN_ROW_RATIO:.0%} floor) -- left as they are")
+        return 0
+
     # The delete goes by the key prefix, not by `round`: the prefix is what
     # marks a row as this loader's own, and rows written before the round
     # convention was settled have to be replaceable too. (source_game_key,
@@ -282,8 +303,12 @@ def recompute_careers(con) -> int:
             SELECT player_id,
                    MIN(season) AS debut, MAX(season) AS final,
                    COALESCE(SUM(games), 0) AS played,
-                   COALESCE(SUM(hits), 0) AS hits,
-                   COALESCE(SUM(home_runs), 0) AS home_runs
+                   -- Bare SUM, never COALESCE(..., 0): SQLite's SUM is
+                   -- NULL when every input is NULL, which is exactly what
+                   -- an unrecorded 19th-century statistic must stay. A
+                   -- zero here would claim the player was measured at 0.
+                   SUM(hits) AS hits,
+                   SUM(home_runs) AS home_runs
             FROM games WHERE is_postseason = 0 GROUP BY player_id
         ) AS career
         WHERE players.player_id = career.player_id;
@@ -327,6 +352,42 @@ def recompute_careers(con) -> int:
         "SELECT COUNT(DISTINCT player_id) FROM games").fetchone()[0]
 
 
+#: A fetched season may not shrink the stored one below this fraction of
+#: its rows, once the stored season is big enough for a ratio to mean
+#: anything. A full MLB season is ~1,500 player-stints; 100 stored rows is
+#: past any synthetic fixture while still early-season for the real thing.
+MIN_ROW_RATIO = 0.5
+MIN_GUARDED_ROWS = 100
+
+
+def validate_snapshot(con, season: int, rows: list) -> tuple[str, str]:
+    """Decide whether a fetched season may replace the stored one.
+
+    Returns (verdict, reason): "ok" to proceed, "skip" for the harmless
+    nothing-fetched-nothing-stored case, "reject" when stored rows had to
+    be protected from an empty or severely partial Stats API response (an
+    outage, an upstream schema change, a cache gone wrong). replace_season
+    deletes before it inserts, so this gate runs first.
+    """
+    stored = con.execute(
+        "SELECT COUNT(*) FROM games WHERE season=? AND is_postseason=0",
+        (season,)).fetchone()[0]
+    if not rows:
+        if stored:
+            return "reject", (
+                f"the Stats API returned no rows for {season} while "
+                f"{stored:,} regular-season rows are stored -- season left "
+                f"untouched")
+        return "skip", (f"nothing fetched for {season} and nothing stored "
+                        f"-- skipped")
+    if stored >= MIN_GUARDED_ROWS and len(rows) < stored * MIN_ROW_RATIO:
+        return "reject", (
+            f"the Stats API returned {len(rows):,} rows for {season} where "
+            f"{stored:,} are stored (below the {MIN_ROW_RATIO:.0%} floor) "
+            f"-- season left untouched")
+    return "ok", ""
+
+
 def live_seasons(seasons, today=None) -> set:
     """Of the seasons asked for, the ones that can still change.
 
@@ -349,13 +410,29 @@ def load(db_path, seasons=None, refresh=False, verbose=True,
               "dry_run": dry_run}
     with closing(sqlite3.connect(db_path)) as con:
         con.execute("PRAGMA foreign_keys=ON")
-        for season in seasons:
+        replaced_any = False
+        rejected = 0
+        for season, rows in ((season, source.season_rows(season))
+                             for season in seasons):
             if verbose:
                 print(f"season {season}...")
-            rows = source.season_rows(season)
             if dry_run:
                 result["seasons"].append(
                     {"season": season, "would_insert": len(rows)})
+                continue
+            # The gate between fetching and deleting: a season the Stats
+            # API answered badly is reported and rejected, never wiped.
+            verdict, reason = validate_snapshot(con, season, rows)
+            if verdict != "ok":
+                if verbose:
+                    print(f"  ! {reason}")
+                if verdict == "reject":
+                    rejected += 1
+                    result["seasons"].append({"season": season,
+                                              "rejected": reason})
+                else:
+                    result["seasons"].append({"season": season,
+                                              "skipped": reason})
                 continue
             result["new_players"] += add_missing_players(
                 con, rows, source, verbose=verbose)
@@ -370,11 +447,14 @@ def load(db_path, seasons=None, refresh=False, verbose=True,
             outcome["matches"] = replace_match_sources(
                 con, season, source.season_schedule(season), verbose=verbose)
             result["seasons"].append(outcome)
+            replaced_any = True
         if dry_run:
             return result
-        if verbose:
-            print("recomputing career totals from games...")
-        result["players_touched"] = recompute_careers(con)
+        result["rejected_seasons"] = rejected
+        if replaced_any:
+            if verbose:
+                print("recomputing career totals from games...")
+            result["players_touched"] = recompute_careers(con)
         con.commit()
     return result
 
@@ -413,6 +493,13 @@ def main(argv=None) -> int:
         print(f"  {season}")
     if not args.dry_run:
         print(f"new players: {result['new_players']}")
+    if result.get("rejected_seasons"):
+        # A season with stored rows was refused an empty/partial snapshot.
+        # The store is safe, but the update did not happen -- exiting 0
+        # would let an orchestrator record the step as a success.
+        print(f"{result['rejected_seasons']} season(s) rejected a bad "
+              f"Stats API snapshot; stored rows retained", file=sys.stderr)
+        return 1
     return 0
 
 

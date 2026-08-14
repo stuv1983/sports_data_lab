@@ -301,12 +301,14 @@ def _pick_target(con, pool):
     return row
 
 
-def _reset(con, pool):
-    st.session_state.gl_target = _pick_target(con, pool)
-    st.session_state.gl_revealed = 1
-    st.session_state.gl_guesses = []
-    st.session_state.gl_solved = False
-    ui_widgets.clear_player_picker("gl_guess")
+def _reset(sport, con, pool):
+    # Every key rides in the sport's namespace (sport.k) so a second
+    # sport's Game Lab can never read this one's target or guesses.
+    st.session_state[sport.k("gl_target")] = _pick_target(con, pool)
+    st.session_state[sport.k("gl_revealed")] = 1
+    st.session_state[sport.k("gl_guesses")] = []
+    st.session_state[sport.k("gl_solved")] = False
+    ui_widgets.clear_player_picker(sport.k("gl_guess"))
 
 
 CLUE_STYLES = ("Database profile", "Gridley criteria")
@@ -317,12 +319,14 @@ def game_lab_page(sport, con, player_picker):
     st.caption("Turning the database into playable challenges.")
     st.markdown("### Guess the Player")
 
+    k = sport.k          # every state and widget key is sport-namespaced
+
     difficulty = st.radio("Difficulty", list(DIFFICULTY), horizontal=True,
-                          key="gl_difficulty")
+                          key=k("gl_difficulty"))
     pool = DIFFICULTY[difficulty]
 
     style = st.radio("Clue style", CLUE_STYLES, horizontal=True,
-                     key="gl_style")
+                     key=k("gl_style"))
     if style == "Gridley criteria":
         st.caption("Clues are criteria that have appeared on real Gridley "
                    "boards. Criteria this database cannot answer — for "
@@ -335,20 +339,20 @@ def game_lab_page(sport, con, player_picker):
     # this, four clues revealed on a six-clue profile ladder carries over
     # onto a three-clue Gridley ladder and shows the game already over.
     shape = (pool, style)
-    if ("gl_target" not in st.session_state
-            or st.session_state.get("gl_shape") != shape):
-        restart = st.session_state.get("gl_pool") != pool
-        st.session_state.gl_shape = shape
-        st.session_state.gl_pool = pool
-        if restart or "gl_target" not in st.session_state:
-            _reset(con, pool)
+    if (k("gl_target") not in st.session_state
+            or st.session_state.get(k("gl_shape")) != shape):
+        restart = st.session_state.get(k("gl_pool")) != pool
+        st.session_state[k("gl_shape")] = shape
+        st.session_state[k("gl_pool")] = pool
+        if restart or k("gl_target") not in st.session_state:
+            _reset(sport, con, pool)
         else:
-            st.session_state.gl_revealed = 1
+            st.session_state[k("gl_revealed")] = 1
 
-    if st.button("New mystery player", key="gl_new"):
-        _reset(con, pool)
+    if st.button("New mystery player", key=k("gl_new")):
+        _reset(sport, con, pool)
 
-    target = st.session_state.gl_target
+    target = st.session_state[k("gl_target")]
     if not target:
         st.error("No eligible player found for this difficulty.")
         return
@@ -369,45 +373,48 @@ def game_lab_page(sport, con, player_picker):
         ladder = clue_ladder(target)
         count_after = lambda n: remaining(con, pool, ladder, n)
 
-    revealed = min(st.session_state.gl_revealed, len(ladder))
+    revealed = min(st.session_state[k("gl_revealed")], len(ladder))
 
     for i, (label, text, _sql, _params) in enumerate(ladder[:revealed], start=1):
         n = count_after(i)
         st.write(f"**Clue {i} · {label}:** {text}")
         st.caption(f"{n:,} player{'s' if n != 1 else ''} still fit.")
 
-    if revealed < len(ladder) and not st.session_state.gl_solved:
+    if revealed < len(ladder) and not st.session_state[k("gl_solved")]:
         nxt = count_after(revealed + 1)
         if st.button(f"Reveal clue {revealed + 1} "
-                     f"(narrows to {nxt:,})", key="gl_more"):
-            st.session_state.gl_revealed += 1
+                     f"(narrows to {nxt:,})", key=k("gl_more")):
+            st.session_state[k("gl_revealed")] += 1
             st.rerun()
 
-    if not st.session_state.gl_solved:
-        selected = player_picker("gl_guess", label="Your guess")
-        if selected is not None and st.button("Submit guess", key="gl_submit"):
+    if not st.session_state[k("gl_solved")]:
+        selected = player_picker(k("gl_guess"), label="Your guess")
+        if selected is not None and st.button("Submit guess",
+                                              key=k("gl_submit")):
             guess_pid, guess_name = selected
             if guess_pid == target[0]:
-                st.session_state.gl_solved = True
+                st.session_state[k("gl_solved")] = True
             else:
                 g = con.execute(
                     f"SELECT {PLAYER_COLS} FROM players WHERE player_id = ?",
                     (guess_pid,)).fetchone()
-                st.session_state.gl_guesses.append((guess_name, feedback(target, g)))
+                st.session_state[k("gl_guesses")].append(
+                    (guess_name, feedback(target, g)))
             st.rerun()
 
-    if st.session_state.gl_solved:
+    if st.session_state[k("gl_solved")]:
         st.success(f"Correct — {target[1]}, in "
-                   f"{len(st.session_state.gl_guesses) + 1} guess"
-                   f"{'es' if st.session_state.gl_guesses else ''} "
+                   f"{len(st.session_state[k('gl_guesses')]) + 1} guess"
+                   f"{'es' if st.session_state[k('gl_guesses')] else ''} "
                    f"after {revealed} clue{'s' if revealed != 1 else ''}.")
 
-    for guess_name, fb in reversed(st.session_state.gl_guesses):
+    for guess_name, fb in reversed(st.session_state[k("gl_guesses")]):
         with st.expander(f"✗ {guess_name}", expanded=True):
-            for k, v in fb.items():
-                st.write(f"**{k}:** {v}")
+            for hint, verdict in fb.items():
+                st.write(f"**{hint}:** {verdict}")
 
-    if not st.session_state.gl_solved and st.button("Give up", key="gl_reveal"):
+    if not st.session_state[k("gl_solved")] and st.button(
+            "Give up", key=k("gl_reveal")):
         st.info(f"It was **{target[1]}** "
                 f"({target[2]}–{target[3]}, {target[4]} games, "
                 f"{target[8].replace('|', ', ')}).")

@@ -31,6 +31,10 @@ SCHEMA = core.Schema(
     club_lineage=nba_reference.club_lineage(),
     venue_aliases=nba_reference.venue_aliases(),
     required_player_cols=("name_key", "career_minutes"),
+    #: The NBA schedule dates a match in `date`; `match_date` is the AFL
+    #: build's name for the same thing.
+    match_date="date",
+    match_facts=(("season_label", "Season"), ("phase", "Phase")),
     rebuild_cmd="python -m nba.build_nba_db",
     solve_cols=(
         ("p.player", "Player"),
@@ -91,6 +95,28 @@ SPORT = Sport(
     }),
     club_data_hint=("Run `python utils/derive_club_tables.py --sport nba` "
                     "for Team Explorer."),
+    query_tables=(
+        "players", "games", "matches", "clubs", "teams", "franchises",
+        "arenas", "arena_teams", "player_seasons", "player_team_history",
+        "team_seasons", "nba_all_nba", "wiki_awards",
+        "club_player_register", "club_player_totals",
+        "club_player_records",
+    ),
+    query_column_kinds={
+        "games.date": "date", "games.is_home": "boolean",
+        "games.is_playoff": "boolean", "matches.date": "date",
+        "clubs.updated_at": "datetime",
+        "club_player_register.dob": "date",
+        "club_player_records.match_date": "date",
+        "teams.is_current": "boolean",
+        "franchises.is_active": "boolean",
+        "team_seasons.made_playoffs": "boolean",
+        "team_seasons.reached_finals": "boolean",
+    },
+    query_low_cardinality_columns=(
+        "games.club_now", "games.club_hist", "games.opponent",
+        "games.result", "games.venue", "games.season_label",
+    ),
     search_examples=(
         'club:"Boston Celtics" games>=500 sort:obscurity',
         'game.points>=50 postseason:true',

@@ -32,11 +32,47 @@ from typing import Iterable
 TRUSTED = {"unique", "resolved"}
 #: Reviewed corrections for nominations the automatic linker cannot resolve.
 OVERRIDES_CSV = "rising_star_name_overrides.csv"
+#: Which source owns a round when more than one publishes it, best first.
+#:
+#: FootyWire carries the nominee's match statistics and Wikipedia does not,
+#: so FootyWire wins every round it has. Wikipedia exists to cover the tail
+#: of the current season, because FootyWire's terms forbid fetching it on a
+#: timer -- see ``afl/fetch_wikipedia_rising_star.py``. A source named in
+#: neither ranks last but is still kept when it is the only one.
+#:
+#: ``admin`` is deliberately last, and that is not a judgement on the
+#: administrator. Hand-entered rows do two different jobs, and ranking them
+#: lowest is what lets one mechanism do both. A nomination nobody else has
+#: published is the only row for its round, so it survives whatever its
+#: rank. A note that an existing nominee has since been suspended is an
+#: annotation, not a replacement: ranked lowest it loses the row -- keeping
+#: the published statistics -- while MERGED_FIELDS still carries the flag
+#: onto the row that won. Ranked highest it would win the round and quietly
+#: throw those statistics away.
+SOURCE_PRECEDENCE = ("footywire", "wikipedia", "admin")
+DEFAULT_SOURCE = "footywire"
+ADMIN_SOURCE = "admin"
 INTEGER_FIELDS = {
     "season", "round_number", "kicks", "handballs", "disposals", "marks",
     "goals", "behinds", "tackles", "hitouts", "frees_for", "frees_against",
-    "supercoach", "afl_fantasy", "is_season_winner",
+    "supercoach", "afl_fantasy", "is_season_winner", "ineligible", "votes",
 }
+#: Facts only one source publishes, which therefore survive losing a round.
+#:
+#: Precedence below decides which source's *row* to keep, and FootyWire
+#: wins because it carries the match statistics. But FootyWire's table has
+#: no notion of a suspended nominee, so a straight row-for-row swap would
+#: silently drop the ineligibility of every nomination FootyWire owns --
+#: which, outside the current season, is all of them.
+#: `votes` and `is_season_winner` ride along for the same reason: the
+#: award's final vote count is published with the winner, long after the
+#: nomination, and neither nomination source carries it.
+#:
+#: Only a truthy value merges, so an edit can add a fact the winning row
+#: lacks but never blank one it has. Clearing a published fact means
+#: removing the edit, not writing a zero over it.
+MERGED_FIELDS = ("ineligible", "ineligible_reason", "votes",
+                 "is_season_winner")
 SOURCE_FIELDS = [
     "source_key", "season", "nomination_round", "round_number", "player",
     "player_display", "name_key", "club", "team_display", "team_slug",
@@ -44,7 +80,8 @@ SOURCE_FIELDS = [
     "disposals", "marks", "goals", "behinds", "tackles", "hitouts",
     "frees_for", "frees_against", "supercoach", "afl_fantasy",
     "unavailable_stats", "is_season_winner", "winner_name", "winner_team", "player_url",
-    "source_url", "scraped_at",
+    "source_url", "scraped_at", "source", "ineligible", "ineligible_reason",
+    "votes", "edited_by", "edited_at",
 ]
 
 
@@ -83,11 +120,136 @@ def read_rows(paths: Iterable[Path]) -> list[dict]:
                 for field in INTEGER_FIELDS:
                     row[field] = _int(row.get(field))
                 row["name_key"] = row.get("name_key") or normalise_name(row.get("player"))
+                row["source"] = (str(row.get("source") or "").strip().lower()
+                                 or DEFAULT_SOURCE)
+                # A source that does not publish these is not asserting
+                # they are false; it is silent. Both columns are NOT NULL,
+                # so silence lands as 0 -- and the merge below can still
+                # fill one in from a source that does know. Without this a
+                # CSV simply lacking the column fails the insert.
+                for flag in ("ineligible", "is_season_winner"):
+                    row[flag] = row.get(flag) or 0
                 key = str(row.get("source_key") or "").strip()
                 if not key:
                     raise ValueError(f"{path}: row has no source_key")
                 rows[key] = row
-    return list(rows.values())
+    return preferred_rows(list(rows.values()))
+
+
+def _source_rank(row: dict) -> int:
+    source = str(row.get("source") or DEFAULT_SOURCE)
+    try:
+        return SOURCE_PRECEDENCE.index(source)
+    except ValueError:
+        return len(SOURCE_PRECEDENCE)
+
+
+def preferred_rows(rows: list[dict]) -> list[dict]:
+    """Keep one source per nomination round, the best one available.
+
+    A round the two sources both publish is one nomination, not two. Left
+    unresolved, a Wikipedia row written in August and a FootyWire row saved
+    by hand in September would both survive into the table and the same
+    player would appear twice for the same round -- with the statistics on
+    only one of them.
+
+    The losing row is not discarded outright: whatever it knows and the
+    winner does not -- see MERGED_FIELDS -- is copied across first, so
+    choosing the richer source never costs a fact.
+
+    Rounds are collapsed across sources only. Two rows from *one* source
+    sharing a round is a fault in that source, and both are kept so the
+    health check can see it rather than one being silently discarded.
+    """
+    for identity in (_round_key, _nominee_key):
+        rows = _collapse(rows, identity)
+    return rows
+
+
+def _collapse(rows: list[dict], identity) -> list[dict]:
+    """Drop lower-precedence duplicates of one nomination identity."""
+    best: dict[tuple, int] = {}
+    for row in rows:
+        key = identity(row)
+        if key is None:
+            continue
+        rank = _source_rank(row)
+        if key not in best or rank < best[key]:
+            best[key] = rank
+
+    merged: dict[tuple, dict] = {}
+    for row in rows:
+        key = identity(row)
+        if key is None or _source_rank(row) == best[key]:
+            continue
+        values = {field: row[field] for field in MERGED_FIELDS
+                  if row.get(field) not in (None, "", 0, "0")}
+        if values:
+            entry = merged.setdefault(key, {"values": {}, "clubs": set()})
+            entry["values"].update(
+                {f: v for f, v in values.items() if f not in entry["values"]})
+            entry["clubs"].add(_club_key(row))
+
+    winners: dict[tuple, list[dict]] = {}
+    kept = []
+    for row in rows:
+        key = identity(row)
+        if key is None:
+            kept.append(row)
+            continue
+        if _source_rank(row) != best[key]:
+            continue
+        winners.setdefault(key, []).append(row)
+        kept.append(row)
+
+    for key, entry in merged.items():
+        targets = winners.get(key, [])
+        if len(targets) > 1:
+            # Two rows answer to this identity, so "the" row to annotate is
+            # not determined. The club decides it, and if it cannot, the
+            # annotation is dropped with a warning rather than applied to
+            # both -- one of which would be the wrong person. Same rule as
+            # the reviewed name overrides: a correction that does not
+            # resolve to exactly one row fails to apply.
+            clubs = entry["clubs"] - {""}
+            targets = [row for row in targets if _club_key(row) in clubs]
+            if len(targets) != 1:
+                print(f"  warning: {key} matches {len(winners.get(key, []))} "
+                      f"nominations; annotation not applied (name the club "
+                      f"to resolve it)", file=sys.stderr)
+                continue
+        for row in targets:
+            for field, value in entry["values"].items():
+                if row.get(field) in (None, "", 0, "0"):
+                    row[field] = value
+    return kept
+
+
+def _club_key(row: dict) -> str:
+    return str(row.get("club") or "").strip().casefold()
+
+
+def _round_key(row: dict) -> tuple[int, int] | None:
+    season, round_number = row.get("season"), row.get("round_number")
+    if season is None or round_number is None:
+        return None
+    return int(season), int(round_number)
+
+
+def _nominee_key(row: dict) -> tuple[int, str] | None:
+    """One player, one season: the same nomination however it is numbered.
+
+    Round number alone is not enough to recognise a shared nomination,
+    because the sources do not always agree on the number. Sam Lalor's 2025
+    nomination came from the weather-shortened Opening Round: Wikipedia
+    labels it "0/1" and FootyWire calls it round 1, so a round-keyed
+    collapse kept both and he appeared twice in one season -- nominated
+    once, counted twice.
+    """
+    season, name_key = row.get("season"), row.get("name_key")
+    if season is None or not name_key:
+        return None
+    return int(season), str(name_key)
 
 
 def _table_exists(con: sqlite3.Connection, name: str) -> bool:
@@ -297,6 +459,12 @@ CREATE TABLE rising_star_nominees (
     player_url TEXT,
     source_url TEXT NOT NULL,
     scraped_at TEXT,
+    source TEXT NOT NULL DEFAULT 'footywire',
+    ineligible INTEGER NOT NULL DEFAULT 0,
+    ineligible_reason TEXT,
+    votes INTEGER,
+    edited_by TEXT,
+    edited_at TEXT,
     player_id INTEGER,
     matched_player TEXT,
     match_method TEXT,
@@ -370,6 +538,8 @@ def load_sources(db_path: str | Path, sources: Iterable[str | Path],
             "CREATE INDEX ix_rs_club ON rising_star_nominees(club, season)",
             "CREATE INDEX ix_rs_status ON rising_star_nominees(match_status)",
             "CREATE INDEX ix_rs_name ON rising_star_nominees(name_key)",
+            "CREATE INDEX ix_rs_ineligible ON rising_star_nominees(ineligible) "
+            "WHERE ineligible = 1",
         ]:
             con.execute(statement)
         if _table_exists(con, "meta"):
@@ -383,6 +553,9 @@ def load_sources(db_path: str | Path, sources: Iterable[str | Path],
         result = {
             "rows": len(linked),
             "trusted": sum(counts.get(status, 0) for status in TRUSTED),
+            "sources": dict(con.execute(
+                "SELECT source, COUNT(*) FROM rising_star_nominees "
+                "GROUP BY source")),
             **counts,
         }
         if verbose:
@@ -402,6 +575,10 @@ def load_sources(db_path: str | Path, sources: Iterable[str | Path],
                 print(f"  safe fallbacks {fallback_count:>5,}")
             if override_count:
                 print(f"  reviewed overrides {override_count:>1,}")
+            for source, count in con.execute(
+                    "SELECT source, COUNT(*) FROM rising_star_nominees "
+                    "GROUP BY source ORDER BY COUNT(*) DESC"):
+                print(f"  from {source:<9} {count:>5,}")
             print(f"Trusted by search/solver: {result['trusted']:,}")
         return result
     finally:
@@ -414,9 +591,14 @@ def default_sources() -> list[Path]:
     except ImportError:
         base = Path("data/afl/raw/footywire/rising_star")
         combined = base / "rising_star_nominees.csv"
-        if combined.exists():
-            return [combined]
-        return sorted((base / "csv").glob("rising_star_nominees_*.csv"))
+        sources = ([combined] if combined.exists()
+                   else sorted((base / "csv").glob("rising_star_nominees_*.csv")))
+        sources.extend(sorted(Path("data/afl/raw/wikipedia/rising_star/csv")
+                              .glob("rising_star_nominees_*.csv")))
+        manual = Path("data/afl/reference/rising_star_manual.csv")
+        if manual.exists():
+            sources.append(manual)
+        return sources
     return rising_star_sources("afl")
 
 
