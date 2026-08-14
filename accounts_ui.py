@@ -4,6 +4,7 @@ import sqlite3
 import streamlit as st
 
 import accounts
+import auth_session
 import database_updates
 import db_pool
 
@@ -663,7 +664,9 @@ def _login_form(prefix="sidebar"):
             if user is None:
                 st.error("Email or password is incorrect, or this account is disabled.")
             else:
-                st.session_state["auth_user_id"] = user.id
+                # Not a bare session_state write: remember() also issues
+                # the cookie that carries this log in into the next tab.
+                auth_session.remember(user)
                 st.rerun()
         except accounts.AccountError as exc:
             st.error(str(exc))

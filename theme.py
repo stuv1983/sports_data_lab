@@ -427,7 +427,6 @@ div[data-testid="column"] .stButton > button:focus:not(:active) {{
   color: var(--chalk);
   line-height: 1.1;
 }}
-.card-banner-stars {{ padding-top: .3rem; white-space: nowrap; }}
 .card-banner-logos {{
   display: flex;
   align-items: center;

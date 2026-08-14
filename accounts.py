@@ -40,6 +40,10 @@ VERIFICATION_TTL = timedelta(hours=24)
 #: invalidates the link already in the account holder's inbox, so an
 #: unthrottled button both floods the address and races the reader.
 RESEND_COOLDOWN = timedelta(minutes=5)
+#: How long a browser may present the same login cookie. Long enough that
+#: the reader is not asked for a password every day, short enough that a
+#: token copied off a shared machine stops working within the month.
+SESSION_TTL = timedelta(days=30)
 
 
 class AccountError(ValueError):
@@ -151,6 +155,15 @@ def ensure_schema(path=DB_PATH):
                 preferences_json TEXT NOT NULL DEFAULT '{}',
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                token_digest TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                last_seen_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS user_sessions_owner
+                ON user_sessions(user_id);
         """)
 
         user_columns = {
@@ -510,6 +523,95 @@ def get_user(user_id, path=DB_PATH):
             "SELECT * FROM users WHERE id=? AND active=1", (int(user_id),)).fetchone())
 
 
+# ------------------------------------------------- persistent log in
+
+def _session_digest(token):
+    """What the database stores in place of the token itself.
+
+    A stolen accounts.db must not hand over working logins, so the
+    session table holds a digest and the browser holds the only copy of
+    the token. SHA-256 without a work factor is right here and wrong for
+    passwords: this secret is 32 random bytes we generated, not something
+    a person chose, so there is no dictionary to run against it.
+    """
+    return "sha256$" + hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+
+def create_session(user_id, path=DB_PATH, ttl=SESSION_TTL):
+    """Issue a login token for one account, and return it once.
+
+    The caller stores this in the reader's browser. It is never recoverable
+    afterwards -- only its digest is kept.
+    """
+    ensure_schema(path)
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    with _db(path) as con:
+        # Housekeeping on the way past: expired rows are worthless and this
+        # is the only routine guaranteed to run on a busy app.
+        con.execute("DELETE FROM user_sessions WHERE expires_at < ?",
+                    (now.isoformat(timespec="seconds"),))
+        con.execute(
+            "INSERT INTO user_sessions"
+            "(token_digest, user_id, created_at, expires_at, last_seen_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (_session_digest(token), int(user_id),
+             now.isoformat(timespec="seconds"),
+             (now + ttl).isoformat(timespec="seconds"),
+             now.isoformat(timespec="seconds")),
+        )
+    return token
+
+
+def session_user(token, path=DB_PATH):
+    """The account a login token stands for, or None.
+
+    None covers every way a token can fail -- unknown, expired, or naming
+    an account since disabled or deleted -- because the caller's response
+    to all of them is the same: show the login form and drop the cookie.
+    """
+    if not token:
+        return None
+    ensure_schema(path)
+    with _db(path) as con:
+        row = con.execute(
+            "SELECT s.expires_at AS expires_at, u.* FROM user_sessions s "
+            "JOIN users u ON u.id = s.user_id "
+            "WHERE s.token_digest = ? AND u.active = 1",
+            (_session_digest(token),),
+        ).fetchone()
+        if row is None:
+            return None
+        expires_at = _parse_stamp(row["expires_at"])
+        if expires_at is None or expires_at <= datetime.now(timezone.utc):
+            con.execute("DELETE FROM user_sessions WHERE token_digest=?",
+                        (_session_digest(token),))
+            return None
+        con.execute(
+            "UPDATE user_sessions SET last_seen_at=? WHERE token_digest=?",
+            (_now(), _session_digest(token)),
+        )
+        return _user(row)
+
+
+def destroy_session(token, path=DB_PATH):
+    """Retire one login token. Logging out of a tab logs out the browser."""
+    if not token:
+        return
+    ensure_schema(path)
+    with _db(path) as con:
+        con.execute("DELETE FROM user_sessions WHERE token_digest=?",
+                    (_session_digest(token),))
+
+
+def destroy_user_sessions(user_id, path=DB_PATH):
+    """Retire every login token for one account."""
+    ensure_schema(path)
+    with _db(path) as con:
+        con.execute("DELETE FROM user_sessions WHERE user_id=?",
+                    (int(user_id),))
+
+
 def get_user_preferences(user_id, path=DB_PATH):
     """Return one member's persistent UI preferences.
 
@@ -625,6 +727,14 @@ def set_user_access(actor_id, user_id, *, role=None, active=None, path=DB_PATH):
                 raise AccountError("At least one active administrator is required.")
         con.execute("UPDATE users SET role=?, active=? WHERE id=?",
                     (new_role, new_active, user_id))
+        if not new_active:
+            # Disabling an account has to reach the browsers already
+            # holding a login cookie for it, not merely the next password
+            # prompt. session_user() would refuse them anyway; deleting
+            # the rows means a re-enabled account does not silently
+            # resurrect month-old tokens.
+            con.execute("DELETE FROM user_sessions WHERE user_id=?",
+                        (user_id,))
 
 
 def set_feature_policy(actor_id, feature, audience, path=DB_PATH):

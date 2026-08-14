@@ -4,6 +4,7 @@ import streamlit as st
 
 import accounts
 import accounts_ui
+import auth_session
 import branding
 import db_pool
 import sports
@@ -33,6 +34,11 @@ if _verified is True:
 elif _verified is False:
     st.error("Invalid or expired verification link. Use **Resend verification "
              "email** on the log in form to get a fresh one.")
+
+# Before the user is read: a tab opened from an already-logged-in browser
+# starts with an empty session_state and has to recover the log in from its
+# cookie, or the whole page below is built for a stranger.
+auth_session.restore()
 
 AUTH_USER = accounts.get_user(st.session_state.get("auth_user_id"))
 USER_PREFERENCES = ui_preferences.normalise(
@@ -129,7 +135,10 @@ with st.sidebar.expander(f"Account · {AUTH_USER.display_name}" if AUTH_USER els
     if AUTH_USER:
         st.caption(f"{AUTH_USER.email} · {AUTH_USER.role}")
         if st.button("Log out", key="account_logout"):
-            st.session_state.pop("auth_user_id", None)
+            # Retires the browser's token too: a log out that left the
+            # cookie standing would log this tab out and the next one
+            # straight back in.
+            auth_session.forget()
             st.rerun()
     else:
         login_tab, join_tab = st.tabs(["Log in", "Join"])
@@ -146,6 +155,25 @@ _PROTECTED_PAGES = {
     "Game lab": "game_lab",
     "Database health": "database_health",
 }
+
+
+def _gated_page(feature, path, title, icon):
+    """A protected page, hidden from the menu when it is out of reach.
+
+    Hidden, not absent. A page left out of the catalogue is a URL
+    Streamlit has never heard of, so opening one in a second tab -- which
+    starts as a fresh session, before the cookie has been read back --
+    answered "page cannot be found" instead of the log in gate below.
+    Registering it means the URL always resolves; the gate under
+    ``st.navigation`` is what decides whether the page may run, exactly as
+    before, so this hides a door rather than unlocking one.
+    """
+    return st.Page(
+        path, title=title, icon=icon,
+        visibility=("visible" if accounts.can_access(AUTH_USER, feature)
+                    else "hidden"),
+    )
+
 
 # Build the authorized catalogue first. Member preferences only filter and
 # reorder this list; they never grant access to a protected page.
@@ -177,22 +205,33 @@ if SPORT.has_ground_explorer:
 if SPORT.has_draft_page:
     page_entries["Explore"].append(("draft", st.Page("app_pages/18_Draft.py", title="Draft", icon=":material/how_to_vote:")))
     
-if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Advanced search"]):
-    page_entries["Explore"].insert(1, ("advanced_search", st.Page("app_pages/8_Advanced_Search.py", title="Advanced search", icon=":material/manage_search:")))
+page_entries["Explore"].insert(1, ("advanced_search", _gated_page(
+    _PROTECTED_PAGES["Advanced search"], "app_pages/8_Advanced_Search.py",
+    "Advanced search", ":material/manage_search:")))
 
-if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Grid solver"]):
-    page_entries["Play"].append(("grid_solver", st.Page("app_pages/11_Grid_Solver.py", title="Grid solver", icon=":material/grid_on:")))
-if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Play grids"]):
-    page_entries["Play"].append(("play_grids", st.Page("app_pages/15_Play_Grids.py", title="Play grids", icon=":material/sports_esports:")))
+page_entries["Play"].append(("grid_solver", _gated_page(
+    _PROTECTED_PAGES["Grid solver"], "app_pages/11_Grid_Solver.py",
+    "Grid solver", ":material/grid_on:")))
+page_entries["Play"].append(("play_grids", _gated_page(
+    _PROTECTED_PAGES["Play grids"], "app_pages/15_Play_Grids.py",
+    "Play grids", ":material/sports_esports:")))
 page_entries["Play"].append(("leaderboards", st.Page("app_pages/17_Leaderboards.py", title="Leaderboards", icon=":material/leaderboard:")))
-if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Game lab"]):
-    page_entries["Play"].append(("game_lab", st.Page("app_pages/12_Game_Lab.py", title="Game lab", icon=":material/science:")))
+page_entries["Play"].append(("game_lab", _gated_page(
+    _PROTECTED_PAGES["Game lab"], "app_pages/12_Game_Lab.py",
+    "Game lab", ":material/science:")))
 
-if accounts.can_access(AUTH_USER, _PROTECTED_PAGES["Database health"]):
-    page_entries["Account & settings"].append(("database_health", st.Page("app_pages/13_Database_Health.py", title="Database health", icon=":material/health_and_safety:")))
+page_entries["Account & settings"].append(("database_health", _gated_page(
+    _PROTECTED_PAGES["Database health"], "app_pages/13_Database_Health.py",
+    "Database health", ":material/health_and_safety:")))
 
-if AUTH_USER and AUTH_USER.is_admin:
-    page_entries["Account & settings"].append(("admin", st.Page("app_pages/14_Admin.py", title="Admin", icon=":material/admin_panel_settings:")))
+# Admin carries its own "administrator access required" check, which is why
+# it can be registered for everyone and merely hidden here.
+page_entries["Account & settings"].append((
+    "admin",
+    st.Page("app_pages/14_Admin.py", title="Admin",
+            icon=":material/admin_panel_settings:",
+            visibility=("visible" if AUTH_USER and AUTH_USER.is_admin
+                        else "hidden"))))
 
 pages = ui_preferences.apply_navigation(page_entries, USER_PREFERENCES)
 pg = st.navigation(pages)

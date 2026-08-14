@@ -609,14 +609,32 @@ def _rows_key(r, c, constraints):
 
 
 def _rows_to_show(r, c, constraints, total):
-    """Render the selected square's custom row-count form."""
+    """Render the selected square's custom row-count form.
+
+    "Show all" is not a convenience. The number widget's stepper refuses
+    any increment that would overshoot max_value rather than clamping to
+    it, so a square with 263 eligible players stepped 225 -> 250 and then
+    disabled its own "+": the last thirteen answers were unreachable
+    unless the reader thought to type the total by hand.
+
+    The intent rides on its own key rather than being written straight to
+    the widget's, because the widget for this square has already been
+    instantiated by the time the button reports a click and Streamlit
+    refuses to have a live widget's state reassigned underneath it. The
+    next run picks the flag up before the widget exists.
+    """
     key = _rows_key(r, c, constraints)
-    initial = min(int(default_limit), int(total))
-    try:
-        current = int(st.session_state.get(key, initial))
-    except (TypeError, ValueError):
-        current = initial
-    st.session_state[key] = max(1, min(current, int(total)))
+    total = int(total)
+    initial = min(int(default_limit), total)
+    if st.session_state.pop(f"{key}:all", False):
+        current = total
+    else:
+        try:
+            current = int(st.session_state.get(key, initial))
+        except (TypeError, ValueError):
+            current = initial
+    current = max(1, min(current, total))
+    st.session_state[key] = current
 
     with st.form(SPORT.k("result_rows_form", r, c), border=False):
         field, action = st.columns([2, 1], vertical_alignment="bottom")
@@ -624,15 +642,25 @@ def _rows_to_show(r, c, constraints, total):
             chosen = st.number_input(
                 "Rows to show",
                 min_value=1,
-                max_value=int(total),
+                max_value=total,
                 step=25,
                 key=key,
                 help="Type any number up to the square's eligible-player "
-                     "count.",
+                     "count, or use Show all to list every one of them.",
             )
+        # An emptied box reads as None until the next run puts a number
+        # back; the table keeps the count it was already showing rather
+        # than the page failing on int(None).
+        chosen = current if chosen is None else int(chosen)
         with action:
             st.form_submit_button("Show rows", width="stretch")
-    return int(chosen)
+            show_all = st.form_submit_button(
+                f"Show all {total:,}", width="stretch",
+                disabled=chosen >= total)
+    if show_all:
+        st.session_state[f"{key}:all"] = True
+        st.rerun()
+    return chosen
 
 
 # The first square with both axes defined opens automatically, so the page
@@ -791,10 +819,12 @@ if st.session_state.cell:
             f"{core.stars_html(best_obsc, lo=obs_lo, hi=obs_hi)}</div>"
             f"<div class='card-sub'>{obsc_sub}</div>"
             f"</div>", unsafe_allow_html=True)
+        shown_sub = ("showing every one" if len(rows) >= total
+                     else f"showing the top {len(rows):,}")
         card3.markdown(
             f"<div class='card'><div class='card-label'>Eligible players"
             f"</div><div class='card-value'>{total:,}</div>"
-            f"<div class='card-sub'>showing the top {len(rows)}</div></div>",
+            f"<div class='card-sub'>{shown_sub}</div></div>",
             unsafe_allow_html=True)
 
         st.markdown("")

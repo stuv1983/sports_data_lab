@@ -303,6 +303,80 @@ def test_invalid_email_shapes_are_rejected(tmp_path, email):
         accounts.register("Test Person", email, "long-enough-password", _accounts(tmp_path))
 
 
+# ------------------------------------------------------ browser sessions
+
+def _verified(path, name, email):
+    user, _ = accounts.register(name, email, "long-enough-password", path)
+    with sqlite3.connect(path) as con:
+        con.execute("UPDATE users SET email_verified=1 WHERE id=?", (user.id,))
+        con.commit()
+    return user
+
+
+def test_a_login_token_names_its_account_and_is_stored_only_as_a_digest(
+        tmp_path):
+    """The browser holds the token; the database holds a digest of it.
+
+    A copy of accounts.db is a copy of everyone's saved grids, which is
+    bad enough -- it must not also be a set of working logins.
+    """
+    path = _accounts(tmp_path)
+    user = _verified(path, "Reader", "reader@example.com")
+
+    token = accounts.create_session(user.id, path)
+    assert accounts.session_user(token, path) == user
+
+    with sqlite3.connect(path) as con:
+        stored = con.execute(
+            "SELECT token_digest FROM user_sessions").fetchone()[0]
+    assert token not in stored
+    assert stored.startswith("sha256$")
+
+
+def test_a_token_that_is_unknown_expired_or_disabled_authorizes_nobody(
+        tmp_path):
+    """Every way a token can fail answers None, because every one of them
+    means the same thing to the caller: show the log in form."""
+    path = _accounts(tmp_path)
+    # First account registered is the administrator, so it goes first.
+    admin = _verified(path, "Owner", "owner@example.com")
+    user = _verified(path, "Reader", "reader@example.com")
+
+    assert accounts.session_user(None, path) is None
+    assert accounts.session_user("not-a-real-token", path) is None
+
+    stale = accounts.create_session(user.id, path, ttl=timedelta(seconds=-1))
+    assert accounts.session_user(stale, path) is None
+    with sqlite3.connect(path) as con:
+        # An expired token is not merely refused, it is dropped.
+        assert con.execute(
+            "SELECT COUNT(*) FROM user_sessions").fetchone()[0] == 0
+
+    live = accounts.create_session(user.id, path)
+    accounts.set_user_access(admin.id, user.id, active=False, path=path)
+    assert accounts.session_user(live, path) is None
+    with sqlite3.connect(path) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM user_sessions WHERE user_id=?",
+            (user.id,)).fetchone()[0] == 0
+
+
+def test_logging_out_retires_the_token_without_touching_the_others(tmp_path):
+    """One browser logs out; a phone signed in to the same account does not."""
+    path = _accounts(tmp_path)
+    user = _verified(path, "Reader", "reader@example.com")
+    laptop = accounts.create_session(user.id, path)
+    phone = accounts.create_session(user.id, path)
+
+    accounts.destroy_session(laptop, path)
+
+    assert accounts.session_user(laptop, path) is None
+    assert accounts.session_user(phone, path) == user
+
+    accounts.destroy_user_sessions(user.id, path)
+    assert accounts.session_user(phone, path) is None
+
+
 # ----------------------------------------------------------- game stats
 
 def test_the_leaderboard_ranks_players_not_games(tmp_path):

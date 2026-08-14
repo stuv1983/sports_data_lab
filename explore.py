@@ -850,6 +850,9 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
         ("draft_year", sc.draft_year),
     ) if col]
     bio_select = "".join(f", {col}" for _, col in bio_fields)
+    # Obscurity is still selected though the card no longer shows it: the
+    # bio columns are read positionally from p[9:], so dropping it would
+    # silently shift every one of them by one.
     profile_sql = (
         f"SELECT {sc.player}, {sc.debut_season}, {sc.final_season}, "
         f"{sc.career_games}, {sc.career_score}, {sc.career_postseason}, "
@@ -927,12 +930,16 @@ def render_player_profile(sport, con, pid, key_prefix="explore",
     subtitle = " · ".join(
         part for part in (span, clubs_shown.replace("|", ", ")) if part)
 
+    # No star rating on the banner. Obscurity is the games' difficulty
+    # measure -- how good an answer this player is to a grid square -- and
+    # it belongs to the game side of the database. On a career card it
+    # reads as a verdict on the player, which is not what it measures, and
+    # it hands anyone who opens a card a hint the game meant to withhold.
     with st.container(border=True):
         st.markdown(
             f"<div class='card-banner'>"
             f"<div><div class='card-banner-name'>{p[0]}</div>"
             f"<div class='card-banner-logos'>{logos_html}</div></div>"
-            f"<div class='card-banner-stars'>{core.stars_html(p[8])}</div>"
             f"</div>"
             f"<div class='card-banner-sub'>{subtitle}</div>",
             unsafe_allow_html=True)
