@@ -4,16 +4,27 @@
 # required -- this only needs ssh/scp/tar, which Git Bash on Windows already
 # has).
 #
+# This replaces the old deploy.ps1, which every time: killed the tmux
+# session, `rm -rf`'d the whole remote project directory, and `scp -r`'d the
+# entire local checkout back -- including the multi-gigabyte data/*.db files,
+# which is why it was slow. Those databases are gitignored and are now kept
+# current on the server by its own systemd update timers (see
+# docs/UBUNTU_DATABASE_UPDATES.md), so this script never touches them: it
+# only ever ships git-tracked files, and only the ones that actually changed.
+#
 # Usage:
 #   ./scripts/deploy_changed_files.sh                # deploy HEAD
 #   ./scripts/deploy_changed_files.sh --from origin/main~3
 #   ./scripts/deploy_changed_files.sh --dry-run
-#   ./scripts/deploy_changed_files.sh --restart sports-data-lab.service
+#   ./scripts/deploy_changed_files.sh --no-tmux-kill --no-server-script
 #
 # Configure once, either by exporting these or by creating a
 # ./scripts/deploy.env file (gitignored) that sets them:
-#   SPORTS_DATA_LAB_DEPLOY_HOST=sportslab@example.com
-#   SPORTS_DATA_LAB_DEPLOY_DIR=/srv/sports_data_lab
+#   SPORTS_DATA_LAB_DEPLOY_HOST=arm@10.0.40.100
+#   SPORTS_DATA_LAB_DEPLOY_DIR=/home/arm/projects/sports_data_lab
+#   SPORTS_DATA_LAB_DEPLOY_TMUX_SESSION=sports-data-lab      # optional
+#   SPORTS_DATA_LAB_DEPLOY_SERVER_SCRIPT=/home/arm/bin/deploy-sports-data-lab.sh  # optional
+#   SPORTS_DATA_LAB_DEPLOY_URL=http://10.0.40.100:6969       # optional, just printed at the end
 #
 # What counts as "changed" is tracked locally in .git/DEPLOY_HEAD -- the sha
 # that was last successfully pushed with this script. First run has no
@@ -30,21 +41,28 @@ fi
 
 HOST=${SPORTS_DATA_LAB_DEPLOY_HOST:-}
 REMOTE_DIR=${SPORTS_DATA_LAB_DEPLOY_DIR:-}
+TMUX_SESSION=${SPORTS_DATA_LAB_DEPLOY_TMUX_SESSION:-sports-data-lab}
+SERVER_SCRIPT=${SPORTS_DATA_LAB_DEPLOY_SERVER_SCRIPT:-/home/arm/bin/deploy-sports-data-lab.sh}
+DEPLOY_URL=${SPORTS_DATA_LAB_DEPLOY_URL:-}
 MARKER="${PROJECT_DIR}/.git/DEPLOY_HEAD"
 TO_REF="HEAD"
 FROM_REF=""
 DRY_RUN=0
-RESTART_SERVICE=""
+KILL_TMUX=1
+RUN_SERVER_SCRIPT=1
+VERIFY=1
 
 usage() {
   cat <<'EOF'
-Usage: deploy_changed_files.sh [--from REF] [--to REF] [--restart SERVICE] [--dry-run]
+Usage: deploy_changed_files.sh [options]
 
-  --from REF        Baseline to diff against. Defaults to the sha recorded in
-                     .git/DEPLOY_HEAD from the last successful run.
-  --to REF          What to deploy. Defaults to HEAD.
-  --restart SERVICE Run `systemctl restart SERVICE` on the remote after copying.
-  --dry-run         Print what would be copied/deleted/restarted; touch nothing.
+  --from REF          Baseline to diff against. Defaults to the sha recorded
+                       in .git/DEPLOY_HEAD from the last successful run.
+  --to REF            What to deploy. Defaults to HEAD.
+  --no-tmux-kill       Don't kill the remote tmux session before copying.
+  --no-server-script   Don't run the remote deploy script after copying.
+  --no-verify          Skip the post-copy sanity check for app.py/requirements.txt.
+  --dry-run            Print what would be copied/deleted/run; touch nothing.
 EOF
 }
 
@@ -52,7 +70,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --from) FROM_REF=${2:-}; shift 2 ;;
     --to) TO_REF=${2:-}; shift 2 ;;
-    --restart) RESTART_SERVICE=${2:-}; shift 2 ;;
+    --no-tmux-kill) KILL_TMUX=0; shift ;;
+    --no-server-script) RUN_SERVER_SCRIPT=0; shift ;;
+    --no-verify) VERIFY=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -94,8 +114,15 @@ echo "Deploying ${FROM_REF} -> ${TO_REF} to ${HOST}:${REMOTE_DIR}"
 [[ -n "${DELETED}" ]] && { echo "Deleted:"; echo "${DELETED}" | sed 's/^/  /'; }
 
 if [[ ${DRY_RUN} -eq 1 ]]; then
+  [[ ${KILL_TMUX} -eq 1 ]] && echo "Would kill tmux session '${TMUX_SESSION}' on ${HOST}."
+  [[ ${RUN_SERVER_SCRIPT} -eq 1 ]] && echo "Would run 'sudo ${SERVER_SCRIPT}' on ${HOST} afterward."
   echo "--dry-run: nothing copied, nothing deleted, DEPLOY_HEAD not updated."
   exit 0
+fi
+
+if [[ ${KILL_TMUX} -eq 1 ]]; then
+  echo "Stopping tmux session '${TMUX_SESSION}' on ${HOST} (if running)"
+  ssh "${HOST}" "tmux kill-session -t '${TMUX_SESSION}' 2>/dev/null || true"
 fi
 
 if [[ -n "${CHANGED}" ]]; then
@@ -112,14 +139,25 @@ if [[ -n "${DELETED}" ]]; then
   done <<< "${DELETED}"
 fi
 
-if [[ -n "${RESTART_SERVICE}" ]]; then
-  echo "Restarting ${RESTART_SERVICE} on ${HOST}"
-  ssh "${HOST}" "sudo systemctl restart '${RESTART_SERVICE}'"
+if [[ ${VERIFY} -eq 1 ]]; then
+  echo "Verifying critical files on ${HOST}"
+  if ! ssh "${HOST}" "test -s '${REMOTE_DIR}/app.py' && test -s '${REMOTE_DIR}/requirements.txt'"; then
+    echo "Remote verification failed: app.py or requirements.txt is missing/empty." >&2
+    echo "DEPLOY_HEAD was not updated -- fix the remote state, then rerun." >&2
+    exit 1
+  fi
+fi
+
+if [[ ${RUN_SERVER_SCRIPT} -eq 1 ]]; then
+  echo "Running ${SERVER_SCRIPT} on ${HOST}"
+  ssh -t "${HOST}" "sudo '${SERVER_SCRIPT}'"
 fi
 
 git rev-parse "${TO_REF}" > "${MARKER}"
 echo "Done. DEPLOY_HEAD is now $(cat "${MARKER}")."
 
 if echo "${CHANGED}" | grep -qx "requirements.txt"; then
-  echo "requirements.txt changed -- remember to run pip install on the server."
+  echo "requirements.txt changed -- confirm ${SERVER_SCRIPT} reinstalls dependencies."
 fi
+
+[[ -n "${DEPLOY_URL}" ]] && echo "${DEPLOY_URL}"
