@@ -101,17 +101,28 @@ if [[ -n $(git status --porcelain) ]]; then
   exit 2
 fi
 
-CHANGED=$(git diff --name-only --diff-filter=ACMR "${FROM_REF}" "${TO_REF}" --)
-DELETED=$(git diff --name-only --diff-filter=D "${FROM_REF}" "${TO_REF}" --)
+# -z / NUL-delimited and read into arrays, not shell word-splitting: git
+# quotes filenames containing spaces, parens, or non-ASCII bytes (e.g. the
+# Collingwood SVG's unicode dash comes back as a C-escaped, double-quoted
+# string), and unquoted `${VAR}` word-splits on the many resource filenames
+# that contain spaces ("Arizona Diamondbacks.svg"). Either alone corrupts the
+# pathspec list passed to `git archive`. -z sidesteps both: no quoting, NUL
+# separators, exact bytes.
+mapfile -d '' -t CHANGED < <(git diff -z --name-only --diff-filter=ACMR "${FROM_REF}" "${TO_REF}" --)
+mapfile -d '' -t DELETED < <(git diff -z --name-only --diff-filter=D "${FROM_REF}" "${TO_REF}" --)
 
-if [[ -z "${CHANGED}" && -z "${DELETED}" ]]; then
+if [[ ${#CHANGED[@]} -eq 0 && ${#DELETED[@]} -eq 0 ]]; then
   echo "Nothing changed between ${FROM_REF} and ${TO_REF}."
   exit 0
 fi
 
 echo "Deploying ${FROM_REF} -> ${TO_REF} to ${HOST}:${REMOTE_DIR}"
-[[ -n "${CHANGED}" ]] && { echo "Changed:"; echo "${CHANGED}" | sed 's/^/  /'; }
-[[ -n "${DELETED}" ]] && { echo "Deleted:"; echo "${DELETED}" | sed 's/^/  /'; }
+if [[ ${#CHANGED[@]} -gt 0 ]]; then
+  echo "Changed:"; printf '  %s\n' "${CHANGED[@]}"
+fi
+if [[ ${#DELETED[@]} -gt 0 ]]; then
+  echo "Deleted:"; printf '  %s\n' "${DELETED[@]}"
+fi
 
 if [[ ${DRY_RUN} -eq 1 ]]; then
   [[ ${KILL_TMUX} -eq 1 ]] && echo "Would kill tmux session '${TMUX_SESSION}' on ${HOST}."
@@ -125,18 +136,20 @@ if [[ ${KILL_TMUX} -eq 1 ]]; then
   ssh "${HOST}" "tmux kill-session -t '${TMUX_SESSION}' 2>/dev/null || true"
 fi
 
-if [[ -n "${CHANGED}" ]]; then
+if [[ ${#CHANGED[@]} -gt 0 ]]; then
   # git archive pulls each file's content straight from the ${TO_REF} tree, so
   # local edits after that commit can't leak into the deploy and untracked
-  # files never get pulled in by accident.
-  git archive "${TO_REF}" -- ${CHANGED} | ssh "${HOST}" "mkdir -p '${REMOTE_DIR}' && tar -xf - -C '${REMOTE_DIR}'"
+  # files never get pulled in by accident. Quoted array expansion keeps each
+  # path a single argument regardless of spaces or unicode.
+  git archive "${TO_REF}" -- "${CHANGED[@]}" | ssh "${HOST}" "mkdir -p '${REMOTE_DIR}' && tar -xf - -C '${REMOTE_DIR}'"
 fi
 
-if [[ -n "${DELETED}" ]]; then
-  while IFS= read -r path; do
-    [[ -z "${path}" ]] && continue
-    ssh "${HOST}" "rm -f -- '${REMOTE_DIR}/${path}'"
-  done <<< "${DELETED}"
+if [[ ${#DELETED[@]} -gt 0 ]]; then
+  for path in "${DELETED[@]}"; do
+    # %q so a path with spaces, quotes, or unicode survives being embedded in
+    # the single command string ssh hands to the remote shell.
+    ssh "${HOST}" "rm -f -- $(printf '%q' "${REMOTE_DIR}/${path}")"
+  done
 fi
 
 if [[ ${VERIFY} -eq 1 ]]; then
@@ -156,8 +169,11 @@ fi
 git rev-parse "${TO_REF}" > "${MARKER}"
 echo "Done. DEPLOY_HEAD is now $(cat "${MARKER}")."
 
-if echo "${CHANGED}" | grep -qx "requirements.txt"; then
-  echo "requirements.txt changed -- confirm ${SERVER_SCRIPT} reinstalls dependencies."
-fi
+for path in "${CHANGED[@]}"; do
+  if [[ "${path}" == "requirements.txt" ]]; then
+    echo "requirements.txt changed -- confirm ${SERVER_SCRIPT} reinstalls dependencies."
+    break
+  fi
+done
 
 [[ -n "${DEPLOY_URL}" ]] && echo "${DEPLOY_URL}"
