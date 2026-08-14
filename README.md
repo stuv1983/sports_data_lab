@@ -39,7 +39,7 @@ The application reads the generated database locally. Database files and downloa
 | **All sports** — Database Health | Supported; schema, row counts, optional-data status |
 | **All sports** — Grid Solver | Supported; find eligible players, ranked by obscurity |
 | **All sports** — Club Explorer | Supported (current-club metadata per-sport) |
-| **All sports** — Past Games | Supported; match search and filtering |
+| **All sports** — Past Games | Supported; match search and filtering, including scoreline search (margin, both sides' scores, combined total) with per-sport named scorelines |
 | **All sports** — Awards page | Supported (award lists per-sport) |
 | **All sports** — Game Lab | Supported (generic modes for all sports) |
 | **NBA** — player-game history | Supported (private local build, incremental live updates) |

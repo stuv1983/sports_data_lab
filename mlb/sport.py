@@ -4,7 +4,7 @@ mlb/sport.py -- The MLB entry in the sports registry.
 
 import core
 from data_paths import sport_db
-from registry import Sport, Vocab
+from registry import Scoreline, Sport, Vocab
 
 from . import mlb_reference
 from .obscurity_model import MODEL
@@ -150,6 +150,29 @@ SPORT = Sport(
         'career.hits>=3000',
         'club:"Brooklyn Dodgers" club_any:"Los Angeles Dodgers"',
         'played:1946..1955 sort:fewest_games',
+    ),
+    scorelines=(
+        Scoreline(
+            "One-run game",
+            "The margin the whole sport is built around.",
+            max_margin=1),
+        Scoreline(
+            "Shutout",
+            "One side held scoreless.",
+            max_low_score=0),
+        Scoreline(
+            "Pitchers' duel",
+            "Three runs or fewer between the two of them.",
+            max_total=3),
+        Scoreline(
+            "Slugfest",
+            "Twenty runs or more scored in the game.",
+            min_total=20),
+        Scoreline(
+            "Both sides in double figures",
+            "Ten runs each and somebody still lost.",
+            min_low_score=10),
+        Scoreline("Ten-run beating", "", min_margin=10),
     ),
     grid_defaults=(
         (("Played for club", {"club": "New York Yankees"}),

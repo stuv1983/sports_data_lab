@@ -83,6 +83,56 @@ class Vocab:
         return label if label.endswith("s") else label + "s"
 
 
+# ------------------------------------------------------------ scorelines
+
+@dataclass(frozen=True)
+class Scoreline:
+    """A shape of result a reader asks for by name.
+
+    "Decided by under a goal" is a six-point margin in the AFL, one run in
+    the MLB and eight points in the NFL, and none of the three can be
+    derived from the numbers alone -- a goal is worth six because that is
+    what the code of football says, not because anything in
+    `club_match_sources` records it. So each sport names its own, and the
+    Past games page turns them into the filters below.
+
+    The fields are the four things a scoreline can be about, each with a
+    floor and a ceiling, and they compose: the user's own example, a game
+    decided by under a goal in which both sides passed a hundred, is
+    `max_margin=5, min_low_score=100`.
+
+    `low_score` and `high_score` are the smaller and larger of the two
+    sides' scores, not the loser's and the winner's -- which is the same
+    thing in every game except a draw, and in a draw "the loser scored at
+    least 100" has no answer while "both sides scored at least 100" does.
+    """
+    label: str
+    #: Shown under the picker. Say what the number means, not what it does:
+    #: "six points is a goal" is the fact a reader needs to trust the filter.
+    help: str = ""
+    min_margin: int | None = None
+    max_margin: int | None = None
+    min_low_score: int | None = None
+    max_low_score: int | None = None
+    min_high_score: int | None = None
+    max_high_score: int | None = None
+    min_total: int | None = None
+    max_total: int | None = None
+
+    def filters(self) -> dict:
+        """The scoreline as keyword arguments for `search_matches`."""
+        return {name: getattr(self, name) for name in SCORELINE_FILTERS}
+
+
+#: The filter names a Scoreline sets, in the order a page should show them.
+#: Named once here because the dataclass, the page's widgets and the search
+#: function all have to agree on them.
+SCORELINE_FILTERS = (
+    "min_margin", "max_margin", "min_low_score", "max_low_score",
+    "min_high_score", "max_high_score", "min_total", "max_total",
+)
+
+
 # ---------------------------------------------------------------- sport
 
 @dataclass(frozen=True)
@@ -217,6 +267,10 @@ class Sport:
     #: Undeclared text columns stay free-text fields.
     query_low_cardinality_columns: tuple = ()
     search_examples: tuple = ()
+    #: `Scoreline` presets for the Past games page, most-asked-for first.
+    #: A sport that declares none still gets the numeric filters; it just
+    #: has no shorthand for them.
+    scorelines: tuple = ()
     grid_defaults: tuple = ()
     venue_display: dict = field(default_factory=dict)
     #: Player-card data supplied by Draftguru's linked people tables.  This

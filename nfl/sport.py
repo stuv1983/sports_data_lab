@@ -4,7 +4,7 @@ nfl/sport.py -- The NFL entry in the sports registry.
 
 import core
 from data_paths import sport_db
-from registry import Sport, Vocab
+from registry import Scoreline, Sport, Vocab
 
 from . import nfl_reference
 from .obscurity_model import MODEL
@@ -189,6 +189,30 @@ SPORT = Sport(
         'career.rushing_yards>=10000',
         'club:"Las Vegas Raiders" club_any:"Los Angeles Chargers"',
         'played:1999..2005 sort:fewest_games',
+    ),
+    scorelines=(
+        Scoreline(
+            "One-score game",
+            "Eight points or fewer: a touchdown and the two-point "
+            "conversion still ties it.",
+            max_margin=8),
+        Scoreline(
+            "Field-goal margin",
+            "Three points or fewer between them.",
+            max_margin=3),
+        Scoreline(
+            "Shutout",
+            "One side held scoreless.",
+            max_low_score=0),
+        Scoreline(
+            "Both sides past 30",
+            "Neither defence turned up, and somebody still lost.",
+            min_low_score=30),
+        Scoreline(
+            "70 points between them",
+            "The highest-scoring games in the data.",
+            min_total=70),
+        Scoreline("Beaten by four scores", "", min_margin=28),
     ),
     grid_defaults=(
         (("Played for club", {"club": "Kansas City Chiefs"}),

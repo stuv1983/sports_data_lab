@@ -7,7 +7,7 @@ build writes, so they are measured rather than hand-maintained.
 
 import core
 from data_paths import sport_db
-from registry import Sport, Vocab
+from registry import Scoreline, Sport, Vocab
 
 from . import nba_reference
 from .obscurity_model import MODEL
@@ -124,6 +124,26 @@ SPORT = Sport(
         'club:"Seattle SuperSonics" club_any:"Oklahoma City Thunder"',
         'career.rebounds>=10000 avg.assists>=6',
         'played:1996..2005 sort:fewest_games',
+    ),
+    scorelines=(
+        Scoreline(
+            "One possession",
+            "Three points or fewer, so a single trip down the floor could "
+            "have taken it the other way.",
+            max_margin=3),
+        Scoreline(
+            "Both sides past 120",
+            "The modern shootout, and the pace-and-space era's signature.",
+            min_low_score=120),
+        Scoreline(
+            "250 points between them",
+            "Combined scoring that belongs to the run-and-gun seasons.",
+            min_total=250),
+        Scoreline(
+            "Neither side reached 90",
+            "The rock fight — mostly the hand-check nineties.",
+            max_high_score=89),
+        Scoreline("Beaten by 30 or more", "", min_margin=30),
     ),
     grid_defaults=(
         (("Played for club", {"club": "Boston Celtics"}),

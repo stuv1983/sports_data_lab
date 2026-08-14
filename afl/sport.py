@@ -8,7 +8,7 @@ three; nothing here knows about them.
 
 import core
 from data_paths import sport_db
-from registry import Sport, Vocab
+from registry import Scoreline, Sport, Vocab
 
 from .obscurity_model import MODEL
 
@@ -220,6 +220,39 @@ SPORT = Sport(
         'career.marks>=1000 avg.disposals>=20',
         'award:brownlow-medal',
         'club:Fitzroy club_any:Carlton',
+    ),
+    #: A goal is six points and a hundred is the century, and neither
+    #: number is anywhere in the match rows -- they come from the code of
+    #: football, so the sport states them rather than the page guessing.
+    scorelines=(
+        Scoreline(
+            "Decided by under a goal",
+            "A goal is six points, so a margin of five or fewer means one "
+            "kick would have changed the result.",
+            max_margin=5),
+        Scoreline(
+            "Under a goal, both past 100",
+            "The close one that was also a shootout: five points or fewer "
+            "between them, and neither side under a hundred.",
+            max_margin=5, min_low_score=100),
+        Scoreline(
+            "Both sides past 100",
+            "Every game in which the losing side still made three figures.",
+            min_low_score=100),
+        Scoreline("Drawn", "No margin at all.", max_margin=0),
+        Scoreline(
+            "Beaten by 100 or more",
+            "The hundred-point thrashing, either way round.",
+            min_margin=100),
+        Scoreline(
+            "Neither side reached 50",
+            "The low-scoring arm wrestle — wet decks, old grounds, and the "
+            "modern game's rare shutdowns.",
+            max_high_score=49),
+        Scoreline(
+            "250 points between them",
+            "The highest-scoring games ever played; the record is 345.",
+            min_total=250),
     ),
     grid_defaults=(
         (("Played for club", {"club": "St Kilda"}),

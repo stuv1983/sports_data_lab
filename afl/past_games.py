@@ -107,6 +107,125 @@ def _match_table(matches, two_sided: bool) -> pd.DataFrame:
     } for m in matches])
 
 
+#: Scoreline filter name -> the widget holding it. The page needs the map
+#: in both directions -- to stamp a preset into the widgets, and to read
+#: the widgets back as filters -- so it is written once.
+_SCORELINE_KEYS = {
+    "min_margin": "pg_margin", "max_margin": "pg_margin_max",
+    "min_low_score": "pg_low_min", "max_low_score": "pg_low_max",
+    "min_high_score": "pg_high_min", "max_high_score": "pg_high_max",
+    "min_total": "pg_total_min", "max_total": "pg_total_max",
+}
+
+#: The preset picker's resting state. It reads as a menu of actions rather
+#: than as a mode, because the numbers below it are the search: choosing
+#: 'Under a goal' and then widening the margin to fifteen is an ordinary
+#: thing to do, and a picker still claiming 'Under a goal' afterwards
+#: would be describing a search nobody is running.
+_NO_PRESET = "—"
+
+
+def _apply_scoreline(sport, presets: dict) -> None:
+    """Stamp a preset's bounds into the number boxes.
+
+    Runs as the picker's on_click callback, which Streamlit fires before
+    the rerun -- the one moment a widget's value can be set without
+    fighting the widget that owns it.
+    """
+    preset = presets.get(st.session_state.get(sport.k("pg_scoreline")))
+    if preset is None:
+        return
+    for name, value in preset.filters().items():
+        st.session_state[sport.k(_SCORELINE_KEYS[name])] = value
+    st.session_state[sport.k("pg_scoreline")] = _NO_PRESET
+    # Remembered only so the caption can name the preset while the numbers
+    # still match it. Not a filter: the numbers are.
+    st.session_state[sport.k("pg_scoreline_applied")] = preset.label
+
+
+def _scoreline_summary(values: dict) -> str:
+    """The bounds in words, for a caption under the boxes."""
+    def span(lo, hi, both, floor, ceiling):
+        if lo is not None and hi is not None:
+            return both.format(lo=lo, hi=hi)
+        if lo is not None:
+            return floor.format(lo=lo)
+        if hi is not None:
+            return ceiling.format(hi=hi)
+        return ""
+
+    parts = [
+        span(values["min_margin"], values["max_margin"],
+             "margin {lo}–{hi}", "margin {lo} or more", "margin {hi} or less"),
+        span(values["min_low_score"], values["max_low_score"],
+             "both teams {lo}–{hi}", "both teams {lo} or more",
+             "one team {hi} or less"),
+        span(values["min_high_score"], values["max_high_score"],
+             "top score {lo}–{hi}", "one team {lo} or more",
+             "neither team above {hi}"),
+        span(values["min_total"], values["max_total"],
+             "combined {lo}–{hi}", "combined {lo} or more",
+             "combined {hi} or less"),
+    ]
+    return " · ".join(part for part in parts if part)
+
+
+def _scoreline_filters(sport) -> dict:
+    """Render the scoreline controls and return them as search filters.
+
+    An empty box is no bound, which is why every one of them defaults to
+    empty rather than to zero: zero is a real answer here. 'Neither team
+    above 0' is a scoreless draw and 'margin 0 or less' is every draw ever
+    played, so a zero the reader did not type must not be read as one they
+    did.
+    """
+    k = sport.k
+    st.caption(
+        f"Filters on the result itself, so they work with no "
+        f"{sport.vocab.club} chosen. Leave a box empty for no limit.")
+
+    presets = {preset.label: preset for preset in sport.scorelines}
+    if presets:
+        st.selectbox(
+            "Named scorelines", [_NO_PRESET, *presets], key=k("pg_scoreline"),
+            on_change=_apply_scoreline, args=(sport, presets),
+            help="Fills the boxes below. Edit them freely afterwards.")
+
+    def number(column, name, label, hint=None):
+        return column.number_input(
+            label, min_value=0, value=None, step=1, placeholder="Any",
+            key=k(_SCORELINE_KEYS[name]), help=hint)
+
+    s1, s2, s3, s4 = st.columns(4)
+    values = {
+        "min_margin": number(s1, "min_margin", "Margin at least",
+                             "Absolute margin, so it selects blowouts either "
+                             "way."),
+        "max_margin": number(s1, "max_margin", "Margin at most",
+                             "0 finds drawn games."),
+        "min_low_score": number(s2, "min_low_score", "Both teams at least"),
+        "max_low_score": number(s2, "max_low_score", "One team at most",
+                                "The lower of the two scores. 0 finds "
+                                "shutouts."),
+        "min_high_score": number(s3, "min_high_score", "One team at least",
+                                 "The higher of the two scores."),
+        "max_high_score": number(s3, "max_high_score", "Neither team above"),
+        "min_total": number(s4, "min_total", "Combined at least",
+                            "Both scores added together."),
+        "max_total": number(s4, "max_total", "Combined at most"),
+    }
+
+    summary = _scoreline_summary(values)
+    applied = presets.get(st.session_state.get(k("pg_scoreline_applied")))
+    # Name the preset only while the numbers still are it. Once they are
+    # edited the caption describes what is actually being searched.
+    if applied and applied.filters() == values and applied.help:
+        st.caption(f"**{applied.label}** — {applied.help}")
+    elif summary:
+        st.caption(summary)
+    return values
+
+
 def past_games_page(sport, con: sqlite3.Connection) -> None:
     V = sport.vocab
     # Widget/state keys ride in the sport namespace: this page serves
@@ -216,6 +335,21 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
         help=(f"Set the {V.season} above back to any to search a span of "
               "years." if one_season else None))
 
+    # Scoreline before the rest: it is the one filter set that asks about
+    # the match rather than about who was in it, and so is the reason to
+    # come here without a club in mind at all.
+    #
+    # The bounds are read back out of session state to title the expander,
+    # because an expander is collapsed by default and a filter nobody can
+    # see is a search returning 328 games out of 17,000 for no visible
+    # reason.
+    held = {name: st.session_state.get(k(key))
+            for name, key in _SCORELINE_KEYS.items()}
+    held_summary = _scoreline_summary(held)
+    with st.expander("Scoreline" + (f" · {held_summary}" if held_summary
+                                    else "")):
+        scoreline = _scoreline_filters(sport)
+
     with st.expander("More filters"):
         d1, d2, d3 = st.columns(3)
         use_date = d1.checkbox("Filter by exact date", key=k("pg_use_date"))
@@ -240,26 +374,30 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
                 ANY: "Any", "H": "Home", "A": "Away",
                 "F": f"{V.postseason.capitalize()} (no home side)"}[p],
             key=k("pg_where"), disabled=(club == ANY))
-        min_margin = d3.number_input(
-            "Minimum margin", min_value=0, max_value=200, value=0, step=5,
-            key=k("pg_margin"),
-            help="Absolute margin, so it selects blowouts either way.")
         min_crowd = d3.number_input(
             "Minimum crowd", min_value=0, max_value=130000, value=0,
             step=5000, key=k("pg_crowd"))
 
     order = st.selectbox(
         "Sort by",
-        ["date_desc", "date_asc", "margin_desc", "margin_asc", "crowd_desc",
-         "crowd_asc"],
+        ["date_desc", "date_asc", "margin_desc", "margin_asc", "total_desc",
+         "total_asc", "crowd_desc", "crowd_asc"],
         format_func=lambda o: {
             "date_desc": "Most recent", "date_asc": "Oldest",
             "margin_desc": "Biggest margin", "margin_asc": "Smallest margin",
+            "total_desc": "Highest scoring", "total_asc": "Lowest scoring",
             "crowd_desc": "Biggest crowd", "crowd_asc": "Smallest crowd",
         }[o], key=k("pg_order"))
 
     # -- search ----------------------------------------------------------
     club_id = None if club == ANY else club
+    # With a club, the margin is that club's and its sign is the point:
+    # biggest wins first, biggest losses last. With no club the table shows
+    # an absolute margin already, and a signed sort would rank by how
+    # heavily the first-named side won -- filing the biggest away wins
+    # under "smallest margin".
+    if club_id is None and order in ("margin_desc", "margin_asc"):
+        order = order.replace("margin_", "margin_abs_")
     matches = CH.search_matches(
         con,
         club_id=club_id,
@@ -272,7 +410,7 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
         team_position=None if (where == ANY or club_id is None) else where,
         scope=scope,
         round_text=None if round_pick == ANY else round_pick,
-        min_margin=min_margin or None,
+        **scoreline,
         min_attendance=min_crowd or None,
         order=order, limit=2000,
     )
@@ -286,6 +424,9 @@ def past_games_page(sport, con: sqlite3.Connection) -> None:
         return
 
     summary = f"{len(matches):,} {V.games}"
+    scoreline_summary = _scoreline_summary(scoreline)
+    if scoreline_summary:
+        summary += f" · {scoreline_summary}"
     if club_id:
         won = sum(m.result == "W" for m in matches)
         drew = sum(m.result == "D" for m in matches)

@@ -743,6 +743,48 @@ class Match:
             self.team_position, self.team_position)
 
 
+#: The two sides' scores, as the smaller and the larger. Every row already
+#: carries both -- `points_against` on one row is `points_for` on the
+#: other -- so a condition about "both teams" needs no second join, and
+#: means the same thing whichever side's row is being read.
+_LOW_SCORE = "MIN(a.points_for, a.points_against)"
+_HIGH_SCORE = "MAX(a.points_for, a.points_against)"
+_TOTAL = "(a.points_for + a.points_against)"
+
+#: Scoreline filter name -> the expression it bounds. `margin` is absolute
+#: here, not signed: "decided by under a goal" is a fact about the match,
+#: and a club filter must not turn it into "and that club lost by under a
+#: goal".
+_SCORELINE_BOUNDS = {
+    "margin": "ABS(a.margin)",
+    "low_score": _LOW_SCORE,
+    "high_score": _HIGH_SCORE,
+    "total": _TOTAL,
+}
+
+
+def _scoreline(bounds: dict) -> list[tuple[str, list]]:
+    """`{'max_margin': 5, 'min_low_score': 100}` -> WHERE clauses.
+
+    Zero is a real bound, not an absent one -- `max_low_score=0` is how a
+    shutout is asked for, and `min_margin=0` excludes nothing but is what a
+    page passes when its floor is at rest. Only None means "no bound".
+    """
+    clauses = []
+    for name, value in bounds.items():
+        if value is None:
+            continue
+        edge, _, subject = name.partition("_")
+        expression = _SCORELINE_BOUNDS.get(subject)
+        if expression is None or edge not in ("min", "max"):
+            raise ValueError(f"unknown scoreline filter {name!r}; expected "
+                             f"min_/max_ on one of "
+                             f"{sorted(_SCORELINE_BOUNDS)}")
+        clauses.append((f"{expression} {'>=' if edge == 'min' else '<='} ?",
+                        [value]))
+    return clauses
+
+
 def search_matches(con: sqlite3.Connection, club_id: str | None = None,
                    opponent_id: str | None = None, season: int | None = None,
                    season_from: int | None = None, season_to: int | None = None,
@@ -750,6 +792,13 @@ def search_matches(con: sqlite3.Connection, club_id: str | None = None,
                    team_position: str | None = None, scope: Scope = "all",
                    round_text: str | None = None,
                    min_margin: int | None = None,
+                   max_margin: int | None = None,
+                   min_low_score: int | None = None,
+                   max_low_score: int | None = None,
+                   min_high_score: int | None = None,
+                   max_high_score: int | None = None,
+                   min_total: int | None = None,
+                   max_total: int | None = None,
                    min_attendance: int | None = None,
                    order: str = "date_desc", limit: int = 500,
                    include_unlinked: bool = False) -> list[Match]:
@@ -759,12 +808,27 @@ def search_matches(con: sqlite3.Connection, club_id: str | None = None,
     lists matches rather than club-perspectives, so it returns one row per
     match instead of two; with one, every row is that club's view and
     `result`, `margin` and `points_for` are all from its side.
+
+    The eight scoreline bounds ask about the result itself rather than
+    about who was in it: `max_margin` is an absolute margin, `low_score`
+    and `high_score` are the smaller and the larger of the two sides'
+    scores, and `total` is the two added together. So a game decided by
+    under a goal in which both sides passed a hundred is
+    `max_margin=5, min_low_score=100`, with or without a club.
     """
     orders = {
         "date_desc": "a.match_date DESC",
         "date_asc": "a.match_date ASC",
         "margin_desc": "a.margin DESC",
         "margin_asc": "a.margin ASC",
+        # Absolute margin, for a listing with no club in it: there, a
+        # signed sort ranks by how heavily the *first-named* side won,
+        # which puts the biggest away wins at the bottom of "biggest
+        # margin" and at the top of "smallest".
+        "margin_abs_desc": "ABS(a.margin) DESC",
+        "margin_abs_asc": "ABS(a.margin) ASC",
+        "total_desc": f"{_TOTAL} DESC",
+        "total_asc": f"{_TOTAL} ASC",
         "crowd_desc": "a.attendance DESC",
         "crowd_asc": "a.attendance ASC",
     }
@@ -793,8 +857,12 @@ def search_matches(con: sqlite3.Connection, club_id: str | None = None,
          [team_position] if team_position else []),
         ("UPPER(a.round) = ?" if round_text else "",
          [round_text.upper()] if round_text else []),
-        ("ABS(a.margin) >= ?" if min_margin is not None else "",
-         [min_margin] if min_margin is not None else []),
+        *_scoreline({
+            "min_margin": min_margin, "max_margin": max_margin,
+            "min_low_score": min_low_score, "max_low_score": max_low_score,
+            "min_high_score": min_high_score, "max_high_score": max_high_score,
+            "min_total": min_total, "max_total": max_total,
+        }),
         ("a.attendance >= ?" if min_attendance is not None else "",
          [min_attendance] if min_attendance is not None else []),
         (f"a.{trust_sql}" if trust_sql else "", trust_params),
